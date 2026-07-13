@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, g
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import cents
@@ -80,12 +80,18 @@ def edit_product(product_id):
         try:
             units_per_case = int(request.form.get("units_per_case") or 0)
             min_stock = int(request.form.get("min_stock") or 0)
-            if units_per_case < 0 or min_stock < 0:
+            new_stock = int(request.form.get("stock") or 0)
+            if units_per_case < 0 or min_stock < 0 or new_stock < 0:
                 raise ValueError("As quantidades não podem ser negativas.")
             
+            stock_changed = new_stock != product["stock"]
+            reason = request.form.get("stock_reason", "").strip()
+            if stock_changed and not reason:
+                raise ValueError("Informe o motivo do ajuste de estoque.")
+
             db.execute(
                 """UPDATE products SET name=?,category=?,package_type=?,units_per_case=?,
-                price_cents=?,cost_cents=?,min_stock=? WHERE id=?""",
+                price_cents=?,cost_cents=?,min_stock=?,stock=? WHERE id=?""",
                 (
                     request.form["name"].strip(),
                     request.form["category"],
@@ -94,9 +100,15 @@ def edit_product(product_id):
                     cents(request.form["price"]),
                     cents(request.form.get("cost", "0")),
                     min_stock,
+                    new_stock,
                     product_id
                 )
             )
+            if stock_changed:
+                db.execute("""INSERT INTO stock_adjustments
+                    (product_id,user_id,previous_stock,new_stock,difference,reason)
+                    VALUES(?,?,?,?,?,?)""", (product_id, g.user["id"], product["stock"], new_stock,
+                    new_stock - product["stock"], reason))
             db.commit()
             flash("Produto atualizado.", "success")
             return redirect(url_for("products.products"))
@@ -156,4 +168,9 @@ def stock():
         """SELECT r.*, p.name product_name FROM restocks r JOIN products p ON p.id=r.product_id
         ORDER BY r.id DESC LIMIT 30"""
     ).fetchall()
-    return render_template("stock.html", products=product_rows, history=history)
+    adjustments = db.execute(
+        """SELECT a.*,p.name product_name,u.name user_name FROM stock_adjustments a
+        JOIN products p ON p.id=a.product_id LEFT JOIN users u ON u.id=a.user_id
+        ORDER BY a.id DESC LIMIT 30"""
+    ).fetchall()
+    return render_template("stock.html", products=product_rows, history=history, adjustments=adjustments)

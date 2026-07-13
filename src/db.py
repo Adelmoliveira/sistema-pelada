@@ -63,6 +63,16 @@ CREATE TABLE IF NOT EXISTS restocks (
     notes TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS stock_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    user_id INTEGER REFERENCES users(id),
+    previous_stock INTEGER NOT NULL CHECK(previous_stock >= 0),
+    new_stock INTEGER NOT NULL CHECK(new_stock >= 0),
+    difference INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS membership_payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL REFERENCES players(id),
