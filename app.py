@@ -85,16 +85,19 @@ def load_user_and_protect_routes():
         return None
 
     try:
-        # Check if there are any users in the DB
         has_users = get_db().execute("SELECT 1 FROM users LIMIT 1").fetchone()
     except Exception as exc:
         app.logger.error(f"Erro ao verificar tabela de usuários: {exc}")
         has_users = None
 
     if not has_users:
+        if request.endpoint == "auth.setup":
+            return None
         return redirect(url_for("auth.setup"))
 
     if not g.user:
+        if request.endpoint == "auth.login":
+            return None
         return redirect(url_for("auth.login", next=request.path))
 
 @app.context_processor
