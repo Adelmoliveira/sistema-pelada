@@ -46,7 +46,28 @@ def migrate():
         cur_sq = conn_sq.cursor()
         
         # Conexão Postgres
-        conn_pg = psycopg2.connect(database_url)
+        import urllib.parse
+        parsed = urllib.parse.urlparse(database_url)
+        username = parsed.username
+        password = parsed.password
+        hostname = parsed.hostname
+        port = parsed.port or 5432
+        database = parsed.path.lstrip('/')
+        
+        # Override direct host to IPv4 pooler if local network is IPv4-only
+        if hostname == "db.mvieafewarniqbjhrqxl.supabase.co":
+            hostname = "aws-0-ca-central-1.pooler.supabase.com"
+            port = 6543
+            username = "postgres.mvieafewarniqbjhrqxl"
+
+        conn_pg = psycopg2.connect(
+            user=username,
+            password=password,
+            host=hostname,
+            port=port,
+            database=database,
+            sslmode="require"
+        )
         cur_pg = conn_pg.cursor()
         
         # 1. Limpar tabelas no Postgres em ordem de dependência
