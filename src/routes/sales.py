@@ -371,6 +371,12 @@ def mercadopago_webhook():
     ):
         return "", 401
 
+    # A aplicação processa somente orders de QR Code. O simulador do painel
+    # envia uma order genérica do Point (`type=point`) com ID fictício; depois
+    # de validar a assinatura, basta confirmar o recebimento desse evento.
+    if notification_data.get("type") not in (None, "qr"):
+        return "", 200
+
     try:
         db = get_db()
         sale = db.execute(

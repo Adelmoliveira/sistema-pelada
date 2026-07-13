@@ -183,7 +183,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "type": "point",
             },
         }
-        with patch("src.routes.sales.get_order") as get_order_mock:
+        with (
+            patch("src.routes.sales.get_order") as get_order_mock,
+            patch("src.routes.sales.get_db") as get_db_mock,
+        ):
             response = self.client.post(
                 f"/webhooks/mercadopago?data.id={data_id}&type=order",
                 headers={"X-Request-Id": request_id, "X-Signature": f"ts={timestamp},v1={signature}"},
@@ -191,6 +194,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         get_order_mock.assert_not_called()
+        get_db_mock.assert_not_called()
 
 
 if __name__ == "__main__":
