@@ -30,6 +30,10 @@ app.config.update(
     SESSION_COOKIE_SECURE=is_vercel,
 )
 
+if is_vercel:
+    app.logger.info(f"[VERCEL] DATABASE_URL configurada: {bool(app.config['DATABASE_URL'])}")
+    app.logger.info(f"[VERCEL] SECRET_KEY customizada: {app.config['SECRET_KEY'] != 'troque-esta-chave-em-producao'}")
+
 # CSRF Protection
 csrf = CSRFProtect(app)
 
@@ -37,6 +41,16 @@ csrf = CSRFProtect(app)
 def handle_csrf_error(error):
     flash("Sessão expirada ou token inválido. Recarregue a página e tente novamente.", "danger")
     return redirect(request.referrer or url_for("auth.login"))
+
+@app.errorhandler(500)
+def handle_internal_error(error):
+    app.logger.error(f"Erro interno: {error}")
+    error_msg = str(error)
+    if "DATABASE_URL" in error_msg:
+        return "Erro: DATABASE_URL não configurada corretamente. Verifique o ambiente Vercel.", 500
+    elif "connection" in error_msg.lower() or "psycopg2" in error_msg.lower():
+        return "Erro: Não foi possível conectar ao banco de dados Supabase. Verifique DATABASE_URL.", 500
+    return "Erro interno no servidor. Tente novamente em alguns momentos.", 500
 
 # Register Blueprints
 app.register_blueprint(auth_bp)
