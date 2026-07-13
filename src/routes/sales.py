@@ -1,11 +1,22 @@
 from datetime import date
 from flask import Blueprint, render_template, request, redirect, url_for, flash, g, jsonify, current_app
+from itsdangerous import BadData, URLSafeTimedSerializer
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import money
 from src.services.pix import pix_payload, generate_qrcode_base64
 
 bp = Blueprint("sales", __name__)
+PIX_TOKEN_MAX_AGE = 60 * 60
+
+def pix_access_token(user):
+    serializer = URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="pix-qrcode")
+    return serializer.dumps({"user_id": user["id"], "role": user["role"]})
+
+def validate_pix_access_token(token):
+    serializer = URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="pix-qrcode")
+    data = serializer.loads(token, max_age=PIX_TOKEN_MAX_AGE)
+    return data.get("role") in ("manager", "staff", "client")
 
 @bp.route("/sale", methods=["GET", "POST"])
 @roles_allowed("manager", "staff", "client")
@@ -72,7 +83,12 @@ def sale():
 
     player_rows = db.execute("SELECT * FROM players WHERE active=1 ORDER BY name").fetchall()
     product_rows = db.execute("SELECT * FROM products WHERE active=1 AND stock>0 ORDER BY category, name").fetchall()
-    return render_template("sale.html", players=player_rows, products=product_rows)
+    return render_template(
+        "sale.html",
+        players=player_rows,
+        products=product_rows,
+        pix_token=pix_access_token(g.user),
+    )
 
 @bp.post("/sales/<int:sale_id>/delete")
 @roles_allowed("manager", "staff")
@@ -114,8 +130,13 @@ def pix():
     return render_template("pix.html", rows=rows, total=total, day=day)
 
 @bp.get("/pix/qrcode")
-@roles_allowed("manager", "staff", "client")
 def pix_qrcode():
+    try:
+        if not validate_pix_access_token(request.headers.get("X-Pix-Token", "")):
+            raise BadData
+    except BadData:
+        return jsonify(error="A autorização do Pix expirou. Recarregue a página e tente novamente."), 401
+
     try:
         amount_cents = int(request.args.get("amount_cents", 0))
         if amount_cents <= 0 or amount_cents > 100_000_000:

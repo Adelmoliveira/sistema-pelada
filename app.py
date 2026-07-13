@@ -95,6 +95,12 @@ def close_db(_error=None):
 @app.before_request
 def load_user_and_protect_routes():
     g.user = None
+
+    # A rota valida um token temporário próprio para não depender da cookie de
+    # sessão em requisições fetch do Safari/iOS.
+    if request.endpoint == "sales.pix_qrcode":
+        return None
+
     user_id = session.get("user_id")
     if user_id:
         try:
