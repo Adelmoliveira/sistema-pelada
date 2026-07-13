@@ -11,15 +11,22 @@ from src.routes.sales import bp as sales_bp
 from src.routes.finance import bp as finance_bp
 
 app = Flask(__name__)
+
+is_vercel = bool(os.environ.get("VERCEL") or os.environ.get("NOW_REGION"))
+database_path = os.environ.get("DATABASE_PATH")
+if not database_path:
+    database_path = "/tmp/bar.db" if is_vercel else os.path.join(app.root_path, "bar.db")
+
 app.config.update(
     SECRET_KEY=os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao"),
-    DATABASE=os.path.join(app.root_path, "bar.db"),
+    DATABASE=database_path,
     MAX_CONTENT_LENGTH=5 * 1024 * 1024,
     PIX_KEY=os.environ.get("PIX_KEY", "adelmoliveira@gmail.com"),
     PIX_MERCHANT_NAME=os.environ.get("PIX_MERCHANT_NAME", "BAR PELADEIROS GPCTA"),
     PIX_MERCHANT_CITY=os.environ.get("PIX_MERCHANT_CITY", "SAO PAULO"),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=is_vercel,
 )
 
 # CSRF Protection
