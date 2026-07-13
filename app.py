@@ -1,6 +1,6 @@
 import os
-from flask import Flask, g, redirect, request, session, url_for
-from flask_wtf.csrf import CSRFProtect
+from flask import Flask, g, redirect, request, session, url_for, flash
+from flask_wtf.csrf import CSRFProtect, CSRFError
 
 from src.db import get_db
 from src.utils import money, brdate, cpfmask
@@ -19,6 +19,7 @@ if not database_path:
 
 app.config.update(
     SECRET_KEY=os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao"),
+    DATABASE_URL=os.environ.get("DATABASE_URL"),
     DATABASE=database_path,
     MAX_CONTENT_LENGTH=5 * 1024 * 1024,
     PIX_KEY=os.environ.get("PIX_KEY", "adelmoliveira@gmail.com"),
@@ -32,12 +33,24 @@ app.config.update(
 # CSRF Protection
 csrf = CSRFProtect(app)
 
+@app.errorhandler(CSRFError)
+def handle_csrf_error(error):
+    flash("Sessão expirada ou token inválido. Recarregue a página e tente novamente.", "danger")
+    return redirect(request.referrer or url_for("auth.login"))
+
 # Register Blueprints
 app.register_blueprint(auth_bp)
 app.register_blueprint(players_bp)
 app.register_blueprint(products_bp)
 app.register_blueprint(sales_bp)
 app.register_blueprint(finance_bp)
+
+# Exempt public/authentication routes from CSRF to avoid login issues in local/dev deployments
+from src.routes.auth import setup, login, client_access, logout
+csrf.exempt(setup)
+csrf.exempt(login)
+csrf.exempt(client_access)
+csrf.exempt(logout)
 
 # Register Template Filters
 app.template_filter("money")(money)
