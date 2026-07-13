@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from flask import Flask, g, redirect, request, session, url_for, flash
+from flask import Flask, g, redirect, request, session, url_for, flash, jsonify
 from flask_wtf.csrf import CSRFProtect, CSRFError
 
 # Carregar variáveis de ambiente do arquivo .env.local se existir (desenvolvimento)
@@ -127,6 +127,8 @@ def load_user_and_protect_routes():
     if not g.user:
         if request.endpoint == "auth.login":
             return None
+        if request.accept_mimetypes.best == "application/json":
+            return jsonify(error="Sua sessão expirou. Recarregue a página e entre novamente."), 401
         return redirect(url_for("auth.login", next=request.path))
 
 @app.context_processor

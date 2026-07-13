@@ -1,6 +1,6 @@
 import os
 from functools import wraps
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app
+from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from src.db import get_db
 
@@ -11,6 +11,9 @@ def roles_allowed(*roles):
         @wraps(view)
         def wrapped(*args, **kwargs):
             if not g.user or g.user["role"] not in roles:
+                if request.accept_mimetypes.best == "application/json":
+                    message = "Sua sessão expirou ou seu usuário não possui acesso a esta funcionalidade."
+                    return jsonify(error=message), 401 if not g.user else 403
                 flash("Seu usuário não possui acesso a essa funcionalidade.", "danger")
                 return redirect(url_for("sales.sale") if g.user and g.user["role"] == "client" else url_for("finance.dashboard"))
             return view(*args, **kwargs)
