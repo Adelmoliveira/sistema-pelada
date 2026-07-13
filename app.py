@@ -19,7 +19,7 @@ if not database_path:
 
 app.config.update(
     SECRET_KEY=os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao"),
-    DATABASE_URL=os.environ.get("DATABASE_URL"),
+    DATABASE_URL=os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL"),
     DATABASE=database_path,
     MAX_CONTENT_LENGTH=5 * 1024 * 1024,
     PIX_KEY=os.environ.get("PIX_KEY", "adelmoliveira@gmail.com"),
@@ -85,13 +85,14 @@ def load_user_and_protect_routes():
         return None
 
     try:
-        # Verifica se existe algum usuário cadastrado no banco
         has_users = get_db().execute("SELECT 1 FROM users LIMIT 1").fetchone()
     except Exception as exc:
         app.logger.error(f"Erro ao verificar tabela de usuários: {exc}")
         has_users = None
 
     if not has_users:
+        if request.endpoint == "auth.setup":
+            return None
         return redirect(url_for("auth.setup"))
 
     public_endpoints = {"auth.login", "auth.client_access"}
@@ -99,6 +100,8 @@ def load_user_and_protect_routes():
         return None
 
     if not g.user:
+        if request.endpoint == "auth.login":
+            return None
         return redirect(url_for("auth.login", next=request.path))
 
 @app.context_processor
