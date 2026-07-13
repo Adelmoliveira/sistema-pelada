@@ -80,12 +80,12 @@ def load_user_and_protect_routes():
             app.logger.error(f"Erro ao carregar usuário da sessão: {exc}")
             session.clear()
 
-    public_endpoints = {"auth.login", "auth.client_access", "auth.setup", "static"}
-    if request.endpoint in public_endpoints or request.endpoint is None:
+    # Sempre permitir acesso a arquivos estáticos e à rota de setup inicial
+    if request.endpoint == "static" or request.endpoint == "auth.setup":
         return None
 
     try:
-        # Check if there are any users in the DB
+        # Verifica se existe algum usuário cadastrado no banco
         has_users = get_db().execute("SELECT 1 FROM users LIMIT 1").fetchone()
     except Exception as exc:
         app.logger.error(f"Erro ao verificar tabela de usuários: {exc}")
@@ -93,6 +93,10 @@ def load_user_and_protect_routes():
 
     if not has_users:
         return redirect(url_for("auth.setup"))
+
+    public_endpoints = {"auth.login", "auth.client_access"}
+    if request.endpoint in public_endpoints or request.endpoint is None:
+        return None
 
     if not g.user:
         return redirect(url_for("auth.login", next=request.path))
