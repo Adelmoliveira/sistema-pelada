@@ -1,0 +1,10 @@
+{% extends 'base.html' %}{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4"><div><h1 class="h3 mb-1">Painel do bar</h1><p class="text-muted mb-0">Resumo rápido da operação</p></div><a href="{{ url_for('sale') }}" class="btn btn-success btn-lg">+ Nova venda</a></div>
+<div class="row g-3 mb-4">
+ {% for label,value,color in [('Vendido hoje',metrics.day_total,'success'),('Vendido no mês',metrics.month_total,'primary'),('Vendas no mês',metrics.month_sales,'dark'),('Recebido em débito',metrics.debit_total,'warning')] %}
+ <div class="col-6 col-lg-3"><div class="card metric h-100 border-0 shadow-sm border-start border-4 border-{{color}}"><div class="card-body"><small class="text-muted">{{label}}</small><div class="fs-4 fw-bold">{{ value if label=='Vendas no mês' else value|money }}</div></div></div></div>{% endfor %}
+</div>
+<div class="row g-4"><div class="col-lg-5"><div class="card shadow-sm"><div class="card-header fw-bold">Estoque acabando</div><div class="list-group list-group-flush">
+{% for p in low %}<a href="{{url_for('stock')}}" class="list-group-item d-flex justify-content-between"><span>{{p.name}}</span><span class="badge bg-danger">{{p.stock}} restantes</span></a>{% else %}<div class="p-3 text-muted">Tudo abastecido.</div>{% endfor %}
+</div></div></div><div class="col-lg-7"><div class="card shadow-sm"><div class="card-header fw-bold">Últimas vendas</div><div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>#</th><th>Peladeiro</th><th>Pagamento</th><th>Total</th></tr></thead><tbody>{% for s in recent %}<tr><td>{{s.id}}</td><td>{{s.player_name}}</td><td>{{s.payment_method}}</td><td>{{s.total_cents|money}}</td></tr>{% else %}<tr><td colspan="4" class="text-muted">Nenhuma venda ainda.</td></tr>{% endfor %}</tbody></table></div></div></div></div>
+{% endblock %}

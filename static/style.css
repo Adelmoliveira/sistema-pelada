@@ -1,0 +1,14 @@
+body{background:#f4f6f5;color:#1d2a22}.navbar-brand{letter-spacing:-.3px}.card{border:0;border-radius:14px}.card-header{background:#fff;border-bottom:1px solid #edf0ee;padding:1rem 1.25rem}.table>:not(caption)>*>*{padding:.85rem 1rem}.btn,.form-control,.form-select{border-radius:9px}.metric{transition:transform .15s}.metric:hover{transform:translateY(-2px)}
+.brand-logo{width:42px;height:42px;object-fit:contain;background:#fff;border-radius:50%;padding:2px}.login-logo{width:150px;height:150px;object-fit:contain;background:#fff;border-radius:50%;box-shadow:0 .25rem 1rem rgba(0,0,0,.12)}@media(max-width:575.98px){.navbar-brand span{font-size:.9rem}.brand-logo{width:36px;height:36px}}
+:root{--fab-blue:#07558c;--fab-blue-dark:#043b63;--fab-blue-soft:#e7f1f8}
+body{background:#f2f6f9;color:#152d3d}
+.bg-success{background-color:var(--fab-blue)!important}
+.text-success{color:var(--fab-blue)!important}
+.border-success{border-color:var(--fab-blue)!important}
+.btn-success{--bs-btn-bg:var(--fab-blue);--bs-btn-border-color:var(--fab-blue);--bs-btn-hover-bg:var(--fab-blue-dark);--bs-btn-hover-border-color:var(--fab-blue-dark);--bs-btn-active-bg:var(--fab-blue-dark);--bs-btn-active-border-color:var(--fab-blue-dark)}
+.btn-outline-success{--bs-btn-color:var(--fab-blue);--bs-btn-border-color:var(--fab-blue);--bs-btn-hover-bg:var(--fab-blue);--bs-btn-hover-border-color:var(--fab-blue);--bs-btn-active-bg:var(--fab-blue-dark);--bs-btn-active-border-color:var(--fab-blue-dark)}
+.alert-success{--bs-alert-color:var(--fab-blue-dark);--bs-alert-bg:var(--fab-blue-soft);--bs-alert-border-color:#b9d6e9}
+.page-link{color:var(--fab-blue)}.active>.page-link,.page-link.active{background-color:var(--fab-blue);border-color:var(--fab-blue)}
+.form-control:focus,.form-select:focus{border-color:#65a3cb;box-shadow:0 0 0 .25rem rgba(7,85,140,.18)}
+.chart-box{position:relative;height:260px}.border-orange{border-color:#fd7e14!important}.indicator-card{min-width:115px}
+.emergency-field{background:#fff1f2;border:1px solid #f1aeb5}
