@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
     name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
+    password_required INTEGER NOT NULL DEFAULT 1,
     role TEXT NOT NULL CHECK(role IN ('manager','staff','client')),
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -130,7 +131,7 @@ def load_user_and_protect_routes():
         g.user = db().execute("SELECT * FROM users WHERE id=? AND active=1", (user_id,)).fetchone()
         if not g.user:
             session.clear()
-    public_endpoints = {"login", "setup", "static"}
+    public_endpoints = {"login", "client_access", "setup", "static"}
     if request.endpoint in public_endpoints or request.endpoint is None:
         return None
     if not db().execute("SELECT 1 FROM users LIMIT 1").fetchone():
@@ -183,12 +184,28 @@ def login():
     if request.method == "POST":
         user = db().execute("SELECT * FROM users WHERE username=? AND active=1",
                             (request.form["username"].strip(),)).fetchone()
-        if user and check_password_hash(user["password_hash"], request.form["password"]):
+        passwordless_client = user and user["role"] == "client" and not user["password_required"]
+        if user and (passwordless_client or check_password_hash(user["password_hash"], request.form.get("password", ""))):
             session.clear()
             session["user_id"] = user["id"]
             return redirect(url_for("sale") if user["role"] == "client" else url_for("dashboard"))
         flash("Usuário ou senha inválidos.", "danger")
     return render_template("login.html")
+
+
+@app.route("/cliente", methods=["GET", "POST"])
+def client_access():
+    if g.user:
+        return redirect(url_for("sale"))
+    if request.method == "POST":
+        user = db().execute("""SELECT * FROM users WHERE username=? AND active=1
+            AND role='client' AND password_required=0""", (request.form["username"].strip(),)).fetchone()
+        if user:
+            session.clear()
+            session["user_id"] = user["id"]
+            return redirect(url_for("sale"))
+        flash("Cliente não encontrado ou acesso sem senha não habilitado.", "danger")
+    return render_template("client_access.html")
 
 
 @app.post("/logout")
@@ -203,11 +220,17 @@ def users():
     conn = db()
     if request.method == "POST":
         try:
-            username, password = request.form["username"].strip(), request.form["password"]
-            if len(username) < 3 or len(password) < 8:
-                raise ValueError("Usuário deve ter 3 caracteres e senha ao menos 8.")
-            conn.execute("INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)", (
-                username, request.form["name"].strip(), generate_password_hash(password), request.form["role"]))
+            username, password, role = request.form["username"].strip(), request.form.get("password", ""), request.form["role"]
+            passwordless = role == "client" and request.form.get("passwordless") == "1"
+            if len(username) < 3:
+                raise ValueError("O usuário deve ter ao menos 3 caracteres.")
+            if role not in ("manager", "staff", "client"):
+                raise ValueError("Perfil inválido.")
+            if not passwordless and len(password) < 8:
+                raise ValueError("A senha deve ter ao menos 8 caracteres.")
+            password_hash = generate_password_hash(password if not passwordless else os.urandom(32).hex())
+            conn.execute("INSERT INTO users(username,name,password_hash,role,password_required) VALUES(?,?,?,?,?)", (
+                username, request.form["name"].strip(), password_hash, role, 0 if passwordless else 1))
             conn.commit()
             flash("Usuário criado.", "success")
         except (ValueError, sqlite3.IntegrityError) as exc:
@@ -215,6 +238,47 @@ def users():
         return redirect(url_for("users"))
     rows = conn.execute("SELECT * FROM users ORDER BY active DESC,name").fetchall()
     return render_template("users.html", users=rows)
+
+
+@app.post("/users/<int:user_id>/password")
+@roles_allowed("manager")
+def reset_user_password(user_id):
+    target = db().execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    password = request.form.get("new_password", "")
+    if not target:
+        flash("Usuário não encontrado.", "warning")
+    elif target["role"] not in ("manager", "staff"):
+        flash("Esta troca de senha é destinada a Gerente e Staff.", "danger")
+    elif len(password) < 8:
+        flash("A nova senha deve ter ao menos 8 caracteres.", "danger")
+    else:
+        db().execute("UPDATE users SET password_hash=?,password_required=1 WHERE id=?",
+                     (generate_password_hash(password), user_id))
+        db().commit()
+        flash(f"Senha de {target['name']} alterada.", "success")
+    return redirect(url_for("users"))
+
+
+@app.post("/users/<int:user_id>/passwordless")
+@roles_allowed("manager")
+def toggle_client_passwordless(user_id):
+    target = db().execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not target or target["role"] != "client":
+        flash("Somente clientes podem usar acesso sem senha.", "danger")
+    else:
+        new_value = 0 if target["password_required"] else 1
+        new_password = request.form.get("new_password", "")
+        if new_value and len(new_password) < 8:
+            flash("Informe uma nova senha de ao menos 8 caracteres para voltar a exigi-la.", "danger")
+        else:
+            if new_value:
+                db().execute("UPDATE users SET password_required=1,password_hash=? WHERE id=?",
+                             (generate_password_hash(new_password), user_id))
+            else:
+                db().execute("UPDATE users SET password_required=0 WHERE id=?", (user_id,))
+            db().commit()
+            flash("Cliente agora entra sem senha." if not new_value else "Nova senha definida e obrigatória.", "success")
+    return redirect(url_for("users"))
 
 
 @app.post("/users/<int:user_id>/toggle")
@@ -256,6 +320,10 @@ def init_db():
         connection.execute("ALTER TABLE products ADD COLUMN units_per_case INTEGER NOT NULL DEFAULT 0")
     connection.commit()
     migrate_product_categories(connection)
+    user_columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
+    if "password_required" not in user_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN password_required INTEGER NOT NULL DEFAULT 1")
+        connection.commit()
     connection.close()
 
 
