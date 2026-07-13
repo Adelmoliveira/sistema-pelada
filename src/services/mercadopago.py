@@ -36,26 +36,21 @@ def _request(method, path, access_token, payload=None, idempotency_key=None):
         raise MercadoPagoError("Não foi possível conectar ao Mercado Pago.") from exc
 
 
-def create_qr_order(access_token, external_pos_id, external_reference, amount_cents, idempotency_key, items):
+def create_pix_order(access_token, external_reference, amount_cents, idempotency_key, payer_email):
     amount = f"{amount_cents / 100:.2f}"
     payload = {
-        "type": "qr",
+        "type": "online",
         "total_amount": amount,
-        "description": "Consumo Bar Peladeiros",
         "external_reference": external_reference,
-        "expiration_time": "PT15M",
-        "config": {"qr": {"external_pos_id": external_pos_id, "mode": "dynamic"}},
-        "transactions": {"payments": [{"amount": amount}]},
-        "items": [
-            {
-                "title": item["name"][:100],
-                "unit_price": f"{item['unit_price_cents'] / 100:.2f}",
-                "unit_measure": "unit",
-                "external_code": str(item["product_id"]),
-                "quantity": item["quantity"],
-            }
-            for item in items
-        ],
+        "processing_mode": "automatic",
+        "transactions": {
+            "payments": [{
+                "amount": amount,
+                "payment_method": {"id": "pix", "type": "bank_transfer"},
+                "expiration_time": "PT30M",
+            }]
+        },
+        "payer": {"email": payer_email},
     }
     return _request("POST", "/v1/orders", access_token, payload, idempotency_key)
 

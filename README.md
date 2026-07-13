@@ -45,15 +45,14 @@ Abra `http://127.0.0.1:5000`. O banco SQLite `bar.db` é criado automaticamente 
 
 Em desenvolvimento local, `DATABASE_URL` é opcional e o sistema usa automaticamente o arquivo `bar.db`. Em produção na Vercel, `DATABASE_URL` deve apontar para o PostgreSQL/Supabase.
 
-## Mercado Pago
+## Mercado Pago Pix
 
-1. Em [Suas integrações do Mercado Pago](https://www.mercadopago.com.br/developers/panel/app), crie uma aplicação de **Pagamentos presenciais > QR Code**.
-2. Cadastre uma loja e um caixa e guarde o `external_id` do caixa.
+1. Em [Suas integrações do Mercado Pago](https://www.mercadopago.com.br/developers/panel/app), habilite o **Checkout Transparente via Orders** com Pix.
+2. Cadastre uma chave Pix na conta do Mercado Pago que receberá os pagamentos.
 3. Configure no ambiente local ou na Vercel:
 
 ```env
 MERCADOPAGO_ACCESS_TOKEN=APP_USR-seu-access-token
-MERCADOPAGO_POS_ID=external_id-do-caixa
 MERCADOPAGO_WEBHOOK_SECRET=assinatura-secreta-do-webhook
 ```
 
@@ -63,7 +62,7 @@ MERCADOPAGO_WEBHOOK_SECRET=assinatura-secreta-do-webhook
 https://SEU-DOMINIO/webhooks/mercadopago
 ```
 
-Use primeiro as credenciais de teste e o simulador de Webhooks. Troque pelo Access Token de produção somente depois de validar criação, aprovação, expiração e cancelamento das cobranças.
+O e-mail do peladeiro é obrigatório para criar a cobrança Pix. Use primeiro as credenciais de teste e o simulador de Webhooks. Troque pelo Access Token de produção somente depois de validar criação, aprovação, expiração e cancelamento das cobranças.
 
 Para recuperar a senha de um Gerente ou Staff no Supabase, configure a mesma `DATABASE_URL` em `.env.local` e execute `python scripts/reset_postgres_password.py`. A senha é solicitada de forma oculta e não fica salva no projeto.
 

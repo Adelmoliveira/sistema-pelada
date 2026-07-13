@@ -10,6 +10,7 @@ from src.db import get_db
 from src.routes.sales import pix_access_token
 from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
+from src.services.mercadopago import create_pix_order
 
 
 class MercadoPagoFlowTest(unittest.TestCase):
@@ -28,7 +29,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             db = get_db()
             db.execute("INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'manager')", ("teste", "Teste", "hash"))
-            db.execute("INSERT INTO players(name) VALUES(?)", ("Peladeiro",))
+            db.execute("INSERT INTO players(name,email) VALUES(?,?)", ("Peladeiro", "peladeiro@example.com"))
             db.execute(
                 "INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,?)",
                 ("Água", "Bebida", 300, 100, 5),
@@ -49,11 +50,17 @@ class MercadoPagoFlowTest(unittest.TestCase):
     def create_order(self, order_id, quantity):
         response_data = {
             "id": order_id,
-            "status": "created",
-            "type_response": {"qr_data": "000201010212TESTE6304ABCD"},
-            "transactions": {"payments": [{"id": f"PAY-{order_id}"}]},
+            "status": "action_required",
+            "transactions": {"payments": [{
+                "id": f"PAY-{order_id}",
+                "payment_method": {
+                    "id": "pix",
+                    "type": "bank_transfer",
+                    "qr_code": "000201010212TESTE6304ABCD",
+                },
+            }]},
         }
-        with patch("src.routes.sales.create_qr_order", return_value=response_data):
+        with patch("src.routes.sales.create_pix_order", return_value=response_data):
             response = self.client.post(
                 "/pix/mercadopago/orders",
                 headers=self.headers(),
@@ -110,6 +117,38 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertTrue(validate_webhook_signature(header, request_id, data_id, "webhook-secret"))
         self.assertFalse(validate_webhook_signature(header, request_id, data_id, "wrong-secret"))
 
+    @patch("src.services.mercadopago._request")
+    def test_pix_order_uses_interoperable_bank_transfer(self, request_mock):
+        request_mock.return_value = {"id": "ORD-PIX"}
+        create_pix_order("token", "pelada_ref", 300, "key", "peladeiro@example.com")
+        method, path, token, payload, idempotency_key = request_mock.call_args.args
+        payment = payload["transactions"]["payments"][0]
+        self.assertEqual((method, path, token, idempotency_key), ("POST", "/v1/orders", "token", "key"))
+        self.assertEqual(payload["type"], "online")
+        self.assertEqual(payload["processing_mode"], "automatic")
+        self.assertEqual(payment["payment_method"], {"id": "pix", "type": "bank_transfer"})
+        self.assertEqual(payload["payer"]["email"], "peladeiro@example.com")
+
+    def test_pix_requires_player_email_before_reserving_stock(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE players SET email='' WHERE id=?", (self.player_id,))
+            db.commit()
+        response = self.client.post(
+            "/pix/mercadopago/orders",
+            headers=self.headers(),
+            json={
+                "player_id": self.player_id,
+                "items": [{"product_id": self.product_id, "quantity": 1}],
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("e-mail", response.get_json()["error"])
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 5)
+            self.assertEqual(db.execute("SELECT COUNT(*) AS total FROM sales").fetchone()["total"], 0)
+
     def test_legacy_pix_remains_available_until_credentials_are_configured(self):
         app.config.update(
             MERCADOPAGO_ACCESS_TOKEN=None,
@@ -151,7 +190,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
             self.assertEqual((sale["paid"], sale["payment_status"]), (1, "approved"))
 
-        with patch("src.routes.sales.create_qr_order", side_effect=MercadoPagoError("falha simulada")):
+        with patch("src.routes.sales.create_pix_order", side_effect=MercadoPagoError("falha simulada")):
             failed = self.client.post(
                 "/pix/mercadopago/orders",
                 headers=self.headers(),

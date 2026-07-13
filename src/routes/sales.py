@@ -8,7 +8,7 @@ from src.utils import money
 from src.services.pix import pix_payload, generate_qrcode_base64
 from src.services.mercadopago import (
     MercadoPagoError,
-    create_qr_order,
+    create_pix_order,
     get_order,
     validate_webhook_signature,
 )
@@ -38,7 +38,8 @@ def mercadopago_config():
     )
 
 def mercadopago_enabled():
-    return all((*mercadopago_config(), current_app.config.get("MERCADOPAGO_WEBHOOK_SECRET")))
+    access_token, _ = mercadopago_config()
+    return bool(access_token and current_app.config.get("MERCADOPAGO_WEBHOOK_SECRET"))
 
 def order_payment_id(order):
     payments = (order.get("transactions") or {}).get("payments") or []
@@ -241,8 +242,8 @@ def pix_qrcode():
 def mercadopago_create_order():
     if not require_pix_access_token():
         return jsonify(error="A autorização do Pix expirou. Recarregue a página e tente novamente."), 401
-    access_token, external_pos_id = mercadopago_config()
-    if not access_token or not external_pos_id:
+    access_token, _ = mercadopago_config()
+    if not access_token:
         return jsonify(error="A integração com Mercado Pago ainda não foi configurada."), 503
 
     body = request.get_json(silent=True) or {}
@@ -260,7 +261,7 @@ def mercadopago_create_order():
         return jsonify(error="Selecione o peladeiro e produtos válidos."), 400
 
     db = get_db()
-    player = db.execute("SELECT id FROM players WHERE id=? AND active=1", (player_id,)).fetchone()
+    player = db.execute("SELECT id,email FROM players WHERE id=? AND active=1", (player_id,)).fetchone()
     placeholders = ",".join("?" for _ in requested)
     products = db.execute(
         f"SELECT * FROM products WHERE active=1 AND id IN ({placeholders})", tuple(requested)
@@ -268,6 +269,9 @@ def mercadopago_create_order():
     products_by_id = {product["id"]: product for product in products}
     if not player or len(products_by_id) != len(requested):
         return jsonify(error="Peladeiro ou produto inválido."), 400
+    payer_email = str(player["email"] or "").strip().lower()
+    if "@" not in payer_email:
+        return jsonify(error="Cadastre um e-mail válido para o peladeiro antes de gerar o Pix."), 400
     for product_id, quantity in requested.items():
         if products_by_id[product_id]["stock"] < quantity:
             return jsonify(error=f"Estoque insuficiente de {products_by_id[product_id]['name']}."), 409
@@ -275,7 +279,6 @@ def mercadopago_create_order():
     total_cents = sum(products_by_id[product_id]["price_cents"] * quantity for product_id, quantity in requested.items())
     external_reference = f"pelada_{uuid.uuid4().hex}"
     idempotency_key = str(uuid.uuid4())
-    api_items = []
     try:
         with db:
             sale_cursor = db.execute(
@@ -296,23 +299,17 @@ def mercadopago_create_order():
                 )
                 if updated.rowcount != 1:
                     raise ValueError(f"O estoque de {product['name']} mudou. Tente novamente.")
-                api_items.append({
-                    "product_id": product_id,
-                    "name": product["name"],
-                    "quantity": quantity,
-                    "unit_price_cents": product["price_cents"],
-                })
     except ValueError as exc:
         return jsonify(error=str(exc)), 409
 
     try:
-        order = create_qr_order(
-            access_token, external_pos_id, external_reference, total_cents, idempotency_key, api_items
-        )
+        order = create_pix_order(access_token, external_reference, total_cents, idempotency_key, payer_email)
         order_id = order.get("id")
-        qr_data = (order.get("type_response") or {}).get("qr_data") or order.get("qr_data")
+        payments = (order.get("transactions") or {}).get("payments") or []
+        payment_method = (payments[0].get("payment_method") or {}) if payments else {}
+        qr_data = payment_method.get("qr_code")
         if not order_id or not qr_data:
-            raise MercadoPagoError("O Mercado Pago não retornou o QR Code dinâmico.")
+            raise MercadoPagoError("O Mercado Pago não retornou o QR Code Pix.")
         db.execute(
             """UPDATE sales SET mercadopago_order_id=?,mercadopago_payment_id=?,
                payment_status=CASE WHEN payment_status='creating' THEN 'pending' ELSE payment_status END WHERE id=?""",
@@ -371,10 +368,10 @@ def mercadopago_webhook():
     ):
         return "", 401
 
-    # A aplicação processa somente orders de QR Code. O simulador do painel
+    # A aplicação processa somente orders do Pix online. O simulador do painel
     # envia uma order genérica do Point (`type=point`) com ID fictício; depois
     # de validar a assinatura, basta confirmar o recebimento desse evento.
-    if notification_data.get("type") not in (None, "qr"):
+    if notification_data.get("type") not in (None, "online"):
         return "", 200
 
     try:
