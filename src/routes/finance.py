@@ -18,12 +18,12 @@ def dashboard():
           COALESCE(SUM(CASE WHEN created_at>=? AND created_at<? AND payment_method!='Cortesia' THEN total_cents END),0) month_total,
           COUNT(CASE WHEN created_at>=? AND created_at<? THEN 1 END) month_sales,
           COALESCE(SUM(CASE WHEN created_at>=? AND created_at<? AND payment_method='Débito' THEN total_cents END),0) debit_total
-        FROM sales
+        FROM sales WHERE paid=1
     """, (today, start, end, start, end, start, end)).fetchone()
     
     low = db.execute("SELECT * FROM products WHERE active=1 AND stock<=min_stock ORDER BY stock, name").fetchall()
     recent = db.execute("""SELECT s.*, p.name player_name FROM sales s JOIN players p ON p.id=s.player_id
-                            ORDER BY s.id DESC LIMIT 8""").fetchall()
+                            WHERE s.paid=1 ORDER BY s.id DESC LIMIT 8""").fetchall()
     return render_template("dashboard.html", metrics=metrics, low=low, recent=recent, month=month)
 
 @bp.route("/reports")
@@ -37,19 +37,19 @@ def reports():
         COALESCE(SUM(CASE WHEN payment_method='Dinheiro' THEN total_cents END),0) cash,
         COALESCE(SUM(CASE WHEN payment_method='Débito' THEN total_cents END),0) debit,
         COALESCE(SUM(CASE WHEN payment_method='Cortesia' THEN total_cents END),0) courtesy
-        FROM sales WHERE created_at>=? AND created_at<?""", (start, end)).fetchone()
+        FROM sales WHERE paid=1 AND created_at>=? AND created_at<?""", (start, end)).fetchone()
         
     by_product = db.execute("""SELECT p.name, SUM(i.quantity) quantity,
         SUM(i.quantity*i.unit_price_cents) total, SUM(i.quantity*(i.unit_price_cents-i.unit_cost_cents)) profit
         FROM sale_items i JOIN sales s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id
-        WHERE s.created_at>=? AND s.created_at<? GROUP BY p.id, p.name ORDER BY quantity DESC""", (start, end)).fetchall()
+        WHERE s.paid=1 AND s.created_at>=? AND s.created_at<? GROUP BY p.id, p.name ORDER BY quantity DESC""", (start, end)).fetchall()
         
     by_player = db.execute("""SELECT p.name, COUNT(s.id) purchases, SUM(s.total_cents) total
-        FROM sales s JOIN players p ON p.id=s.player_id WHERE s.created_at>=? AND s.created_at<?
+        FROM sales s JOIN players p ON p.id=s.player_id WHERE s.paid=1 AND s.created_at>=? AND s.created_at<?
         GROUP BY p.id, p.name ORDER BY total DESC""", (start, end)).fetchall()
         
     sales_rows = db.execute("""SELECT s.*, p.name player_name FROM sales s JOIN players p ON p.id=s.player_id
-        WHERE s.created_at>=? AND s.created_at<? ORDER BY s.id DESC""", (start, end)).fetchall()
+        WHERE s.paid=1 AND s.created_at>=? AND s.created_at<? ORDER BY s.id DESC""", (start, end)).fetchall()
         
     profit = sum(r["profit"] for r in by_product)
     report_year, due_month = int(month[:4]), int(month[5:7])

@@ -10,6 +10,8 @@ Produtos podem ser editados, excluídos dos cadastros ativos e restaurados sem p
 
 Na venda rápida, pagamentos Pix podem gerar QR Code e código Copia e Cola com o valor total preenchido automaticamente.
 
+Quando a integração Mercado Pago está configurada, o QR Code Pix cria uma cobrança dinâmica. A venda fica pendente e o estoque reservado até o pagamento ser aprovado. O pedido é liberado automaticamente após a confirmação; cobranças expiradas ou canceladas devolvem os itens ao estoque.
+
 Vendas lançadas incorretamente podem ser apagadas na conferência de Pix ou no relatório mensal. A exclusão devolve automaticamente os itens ao estoque.
 
 No primeiro acesso, o sistema solicita a criação de um gerente. O gerente pode criar usuários Cliente (somente venda rápida), Staff (operações sem peladeiros e relatórios) e outros Gerentes (acesso completo).
@@ -42,6 +44,26 @@ python app.py
 Abra `http://127.0.0.1:5000`. O banco SQLite `bar.db` é criado automaticamente na primeira execução.
 
 Em desenvolvimento local, `DATABASE_URL` é opcional e o sistema usa automaticamente o arquivo `bar.db`. Em produção na Vercel, `DATABASE_URL` deve apontar para o PostgreSQL/Supabase.
+
+## Mercado Pago
+
+1. Em [Suas integrações do Mercado Pago](https://www.mercadopago.com.br/developers/panel/app), crie uma aplicação de **Pagamentos presenciais > QR Code**.
+2. Cadastre uma loja e um caixa e guarde o `external_id` do caixa.
+3. Configure no ambiente local ou na Vercel:
+
+```env
+MERCADOPAGO_ACCESS_TOKEN=APP_USR-seu-access-token
+MERCADOPAGO_POS_ID=external_id-do-caixa
+MERCADOPAGO_WEBHOOK_SECRET=assinatura-secreta-do-webhook
+```
+
+4. Na aplicação do Mercado Pago, configure o evento **Order (Mercado Pago)** com a URL de produção:
+
+```text
+https://SEU-DOMINIO/webhooks/mercadopago
+```
+
+Use primeiro as credenciais de teste e o simulador de Webhooks. Troque pelo Access Token de produção somente depois de validar criação, aprovação, expiração e cancelamento das cobranças.
 
 Para recuperar a senha de um Gerente ou Staff no Supabase, configure a mesma `DATABASE_URL` em `.env.local` e execute `python scripts/reset_postgres_password.py`. A senha é solicitada de forma oculta e não fica salva no projeto.
 

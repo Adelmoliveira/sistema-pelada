@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS sales (
     payment_method TEXT NOT NULL CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia')),
     total_cents INTEGER NOT NULL,
     paid INTEGER NOT NULL DEFAULT 1,
+    payment_status TEXT NOT NULL DEFAULT 'approved',
+    mercadopago_order_id TEXT,
+    mercadopago_payment_id TEXT,
+    external_reference TEXT,
+    idempotency_key TEXT,
+    paid_at TEXT,
     notes TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -153,7 +159,9 @@ class DbWrapper:
             return wrapped
         else:
             cursor = self.conn.execute(sql, params or ())
-            return CursorWrapper(cursor)
+            wrapped = CursorWrapper(cursor)
+            wrapped.lastrowid = cursor.lastrowid
+            return wrapped
 
     def commit(self):
         self.conn.commit()
@@ -338,6 +346,22 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE users ADD COLUMN password_required INTEGER NOT NULL DEFAULT 1")
         conn.commit()
 
+    sale_columns = {row[1] for row in conn.execute("PRAGMA table_info(sales)")}
+    sale_migrations = {
+        "payment_status": "TEXT NOT NULL DEFAULT 'approved'",
+        "mercadopago_order_id": "TEXT",
+        "mercadopago_payment_id": "TEXT",
+        "external_reference": "TEXT",
+        "idempotency_key": "TEXT",
+        "paid_at": "TEXT",
+    }
+    for column, definition in sale_migrations.items():
+        if column not in sale_columns:
+            conn.execute(f"ALTER TABLE sales ADD COLUMN {column} {definition}")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
+    conn.commit()
+
 def init_postgres(wrapper):
     wrapper.execute("""
     CREATE OR REPLACE FUNCTION date(t timestamp with time zone) RETURNS date AS $$
@@ -358,6 +382,7 @@ def init_postgres(wrapper):
     pg_schema = SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
     pg_schema = pg_schema.replace("COLLATE NOCASE", "")
     pg_schema = pg_schema.replace("created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP", "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    pg_schema = pg_schema.replace("paid_at TEXT", "paid_at TIMESTAMP")
     
     for stmt in pg_schema.split(';'):
         stmt_clean = stmt.strip()
@@ -366,4 +391,12 @@ def init_postgres(wrapper):
     
     # Run migration to add password_required if not exists in postgres
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_required INTEGER NOT NULL DEFAULT 1")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'approved'")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_order_id TEXT")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_payment_id TEXT")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS external_reference TEXT")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS idempotency_key TEXT")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP")
+    wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
+    wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
     wrapper.commit()

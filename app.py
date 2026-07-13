@@ -36,6 +36,9 @@ app.config.update(
     PIX_KEY=os.environ.get("PIX_KEY", "adelmoliveira@gmail.com"),
     PIX_MERCHANT_NAME=os.environ.get("PIX_MERCHANT_NAME", "BAR PELADEIROS GPCTA"),
     PIX_MERCHANT_CITY=os.environ.get("PIX_MERCHANT_CITY", "SAO PAULO"),
+    MERCADOPAGO_ACCESS_TOKEN=os.environ.get("MERCADOPAGO_ACCESS_TOKEN"),
+    MERCADOPAGO_POS_ID=os.environ.get("MERCADOPAGO_POS_ID"),
+    MERCADOPAGO_WEBHOOK_SECRET=os.environ.get("MERCADOPAGO_WEBHOOK_SECRET"),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=is_vercel,
@@ -72,10 +75,13 @@ app.register_blueprint(finance_bp)
 
 # Exempt public/authentication routes from CSRF to avoid login issues in local/dev deployments
 from src.routes.auth import setup, login, client_access, logout
+from src.routes.sales import mercadopago_create_order, mercadopago_webhook
 csrf.exempt(setup)
 csrf.exempt(login)
 csrf.exempt(client_access)
 csrf.exempt(logout)
+csrf.exempt(mercadopago_create_order)
+csrf.exempt(mercadopago_webhook)
 
 # Register Template Filters
 app.template_filter("money")(money)
@@ -98,7 +104,12 @@ def load_user_and_protect_routes():
 
     # A rota valida um token temporário próprio para não depender da cookie de
     # sessão em requisições fetch do Safari/iOS.
-    if request.endpoint == "sales.pix_qrcode":
+    if request.endpoint in {
+        "sales.pix_qrcode",
+        "sales.mercadopago_create_order",
+        "sales.mercadopago_order_status",
+        "sales.mercadopago_webhook",
+    }:
         return None
 
     user_id = session.get("user_id")
