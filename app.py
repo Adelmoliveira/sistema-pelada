@@ -1,6 +1,16 @@
 import os
+from pathlib import Path
 from flask import Flask, g, redirect, request, session, url_for, flash
 from flask_wtf.csrf import CSRFProtect, CSRFError
+
+# Carregar variáveis de ambiente do arquivo .env.local se existir (desenvolvimento)
+try:
+    from dotenv import load_dotenv
+    env_file = Path(__file__).parent / ".env.local"
+    if env_file.exists():
+        load_dotenv(env_file)
+except ImportError:
+    pass
 
 from src.db import get_db
 from src.utils import money, brdate, cpfmask
@@ -18,7 +28,8 @@ if not database_path:
     database_path = "/tmp/bar.db" if is_vercel else os.path.join(app.root_path, "bar.db")
 
 app.config.update(
-    SECRET_KEY=os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao"),
+    # `or` também cobre variável criada com valor vazio na hospedagem.
+    SECRET_KEY=os.environ.get("SECRET_KEY") or "troque-esta-chave-em-producao",
     DATABASE_URL=os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL"),
     DATABASE=database_path,
     MAX_CONTENT_LENGTH=5 * 1024 * 1024,

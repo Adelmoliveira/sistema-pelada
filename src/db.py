@@ -171,28 +171,30 @@ def get_db():
 def connect_db(app):
     db_url = os.environ.get("DATABASE_URL") or app.config.get("DATABASE_URL")
     if not db_url:
-        raise RuntimeError("DATABASE_URL não configurada. Defina a URL do Supabase no ambiente da aplicação.")
+        # Desenvolvimento local: usa o SQLite já configurado pela aplicação.
+        # Na Vercel o filesystem é temporário, portanto o Supabase continua
+        # obrigatório para evitar perda silenciosa de dados em produção.
+        if os.environ.get("VERCEL") or os.environ.get("NOW_REGION"):
+            raise RuntimeError("DATABASE_URL não configurada. Defina a URL do Supabase no ambiente da aplicação.")
+        database_path = app.config.get("DATABASE")
+        if not database_path:
+            raise RuntimeError("Banco local não configurado. Defina DATABASE ou DATABASE_URL.")
+        conn = sqlite3.connect(database_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        wrapper = DbWrapper(conn, is_postgres=False)
+        init_sqlite(wrapper)
+        return wrapper
 
     if not (db_url.startswith("postgresql://") or db_url.startswith("postgres://")):
         raise RuntimeError("DATABASE_URL inválida. Use uma URL PostgreSQL do Supabase.")
 
-    import urllib.parse
-    parsed = urllib.parse.urlparse(db_url)
-    username = parsed.username
-    password = parsed.password
-    hostname = parsed.hostname
-    port = parsed.port or 5432
-    database = parsed.path.lstrip('/')
-
     import psycopg2
     import psycopg2.extras
     conn = psycopg2.connect(
-        user=username,
-        password=password,
-        host=hostname,
-        port=port,
-        database=database,
+        db_url,
         sslmode="require",
+        connect_timeout=10,
         cursor_factory=psycopg2.extras.DictCursor
     )
     wrapper = DbWrapper(conn, is_postgres=True)
