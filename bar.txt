@@ -1,0 +1,5 @@
+https://mvieafewarniqbjhrqxl.supabase.co
+
+sb_publishable_9mfDlJhHeG7TpZcC7FOBcQ_UKWAWu_V
+
+postgresql://postgres:@abcd@1234!!@db.mvieafewarniqbjhrqxl.supabase.co:5432/postgres
