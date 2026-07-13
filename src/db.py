@@ -170,44 +170,34 @@ def get_db():
 
 def connect_db(app):
     db_url = os.environ.get("DATABASE_URL") or app.config.get("DATABASE_URL")
-    if db_url and (db_url.startswith("postgresql://") or db_url.startswith("postgres://")):
-        import urllib.parse
-        parsed = urllib.parse.urlparse(db_url)
-        username = parsed.username
-        password = parsed.password
-        hostname = parsed.hostname
-        port = parsed.port or 5432
-        database = parsed.path.lstrip('/')
-        
-        # Override direct host to IPv4 pooler if local network is IPv4-only
-        if hostname == "db.mvieafewarniqbjhrqxl.supabase.co":
-            hostname = "aws-0-ca-central-1.pooler.supabase.com"
-            port = 6543
-            username = "postgres.mvieafewarniqbjhrqxl"
+    if not db_url:
+        raise RuntimeError("DATABASE_URL não configurada. Defina a URL do Supabase no ambiente da aplicação.")
 
-        import psycopg2
-        import psycopg2.extras
-        conn = psycopg2.connect(
-            user=username,
-            password=password,
-            host=hostname,
-            port=port,
-            database=database,
-            sslmode="require",
-            cursor_factory=psycopg2.extras.DictCursor
-        )
-        wrapper = DbWrapper(conn, is_postgres=True)
-        init_postgres(wrapper)
-        return wrapper
-    else:
-        conn = sqlite3.connect(app.config["DATABASE"])
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        # Enable WAL mode for SQLite performance
-        conn.execute("PRAGMA journal_mode=WAL")
-        wrapper = DbWrapper(conn, is_postgres=False)
-        init_sqlite(wrapper)
-        return wrapper
+    if not (db_url.startswith("postgresql://") or db_url.startswith("postgres://")):
+        raise RuntimeError("DATABASE_URL inválida. Use uma URL PostgreSQL do Supabase.")
+
+    import urllib.parse
+    parsed = urllib.parse.urlparse(db_url)
+    username = parsed.username
+    password = parsed.password
+    hostname = parsed.hostname
+    port = parsed.port or 5432
+    database = parsed.path.lstrip('/')
+
+    import psycopg2
+    import psycopg2.extras
+    conn = psycopg2.connect(
+        user=username,
+        password=password,
+        host=hostname,
+        port=port,
+        database=database,
+        sslmode="require",
+        cursor_factory=psycopg2.extras.DictCursor
+    )
+    wrapper = DbWrapper(conn, is_postgres=True)
+    init_postgres(wrapper)
+    return wrapper
 
 def migrate_payment_method(connection):
     row = connection.execute(
