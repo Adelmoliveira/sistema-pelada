@@ -19,7 +19,7 @@ if not database_path:
 
 app.config.update(
     SECRET_KEY=os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao"),
-    DATABASE_URL=os.environ.get("DATABASE_URL"),
+    DATABASE_URL=os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL"),
     DATABASE=database_path,
     MAX_CONTENT_LENGTH=5 * 1024 * 1024,
     PIX_KEY=os.environ.get("PIX_KEY", "adelmoliveira@gmail.com"),
