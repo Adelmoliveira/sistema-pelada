@@ -138,13 +138,14 @@ class MercadoPagoFlowTest(unittest.TestCase):
             "total_paid_amount": "3.00",
             "transactions": {"payments": [{"id": "PAY-WEBHOOK"}]},
         }
-        with patch("src.routes.sales.get_order", return_value=approved):
+        with patch("src.routes.sales.get_order") as get_order_mock:
             response = self.client.post(
                 f"/webhooks/mercadopago?data.id={data_id}&type=order",
                 headers={"X-Request-Id": request_id, "X-Signature": f"ts={timestamp},v1={signature}"},
-                json={"type": "order", "data": {"id": data_id}},
+                json={"type": "order", "data": approved},
             )
         self.assertEqual(response.status_code, 200)
+        get_order_mock.assert_not_called()
         with app.app_context():
             db = get_db()
             sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
@@ -163,6 +164,33 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             db = get_db()
             self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 4)
+
+    def test_webhook_simulator_acknowledges_unknown_order(self):
+        data_id = "123456"
+        request_id = "request-simulator"
+        timestamp = "1742505638683"
+        template = f"id:{data_id};request-id:{request_id};ts:{timestamp};"
+        signature = hmac.new(b"webhook-secret", template.encode(), hashlib.sha256).hexdigest()
+        payload = {
+            "action": "order.processed",
+            "type": "order",
+            "data": {
+                "id": data_id,
+                "external_reference": "ext_ref_1234",
+                "status": "processed",
+                "status_detail": "accredited",
+                "total_paid_amount": 100000,
+                "type": "point",
+            },
+        }
+        with patch("src.routes.sales.get_order") as get_order_mock:
+            response = self.client.post(
+                f"/webhooks/mercadopago?data.id={data_id}&type=order",
+                headers={"X-Request-Id": request_id, "X-Signature": f"ts={timestamp},v1={signature}"},
+                json=payload,
+            )
+        self.assertEqual(response.status_code, 200)
+        get_order_mock.assert_not_called()
 
 
 if __name__ == "__main__":

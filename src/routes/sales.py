@@ -359,7 +359,9 @@ def mercadopago_order_status(sale_id):
 
 @bp.post("/webhooks/mercadopago")
 def mercadopago_webhook():
-    data_id = request.args.get("data.id") or (request.get_json(silent=True) or {}).get("data", {}).get("id")
+    payload = request.get_json(silent=True) or {}
+    notification_data = payload.get("data") or {}
+    data_id = request.args.get("data.id") or notification_data.get("id")
     secret = current_app.config.get("MERCADOPAGO_WEBHOOK_SECRET")
     if not validate_webhook_signature(
         request.headers.get("X-Signature", ""),
@@ -368,18 +370,25 @@ def mercadopago_webhook():
         secret,
     ):
         return "", 401
-    access_token, _ = mercadopago_config()
-    if not access_token:
-        return "", 503
+
     try:
-        order = get_order(access_token, str(data_id))
         db = get_db()
         sale = db.execute(
             "SELECT * FROM sales WHERE mercadopago_order_id=? OR external_reference=?",
-            (order.get("id"), order.get("external_reference")),
+            (str(data_id or ""), notification_data.get("external_reference")),
         ).fetchone()
-        if sale:
-            apply_mercadopago_status(db, sale, order)
+        if not sale:
+            # O simulador usa IDs fictícios. Uma notificação válida, mas sem uma
+            # cobrança local correspondente, deve apenas ser reconhecida.
+            return "", 200
+
+        order = notification_data
+        if not order.get("status"):
+            access_token, _ = mercadopago_config()
+            if not access_token:
+                return "", 503
+            order = get_order(access_token, str(data_id))
+        apply_mercadopago_status(db, sale, order)
         return "", 200
     except Exception as exc:
         current_app.logger.error(f"Erro ao processar webhook Mercado Pago: {exc}")
