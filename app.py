@@ -60,7 +60,7 @@ def load_user_and_protect_routes():
             app.logger.error(f"Erro ao carregar usuário da sessão: {exc}")
             session.clear()
 
-    public_endpoints = {"auth.login", "auth.setup", "static"}
+    public_endpoints = {"auth.login", "auth.client_access", "auth.setup", "static"}
     if request.endpoint in public_endpoints or request.endpoint is None:
         return None
 

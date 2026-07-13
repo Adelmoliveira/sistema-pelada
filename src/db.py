@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
     name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
+    password_required INTEGER NOT NULL DEFAULT 1,
     role TEXT NOT NULL CHECK(role IN ('manager','staff','client')),
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -329,6 +330,11 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE products ADD COLUMN units_per_case INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     migrate_product_categories(conn)
+    
+    user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if "password_required" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN password_required INTEGER NOT NULL DEFAULT 1")
+        conn.commit()
 
 def init_postgres(wrapper):
     wrapper.execute("""
@@ -355,4 +361,7 @@ def init_postgres(wrapper):
         stmt_clean = stmt.strip()
         if stmt_clean:
             wrapper.execute(stmt_clean)
+    
+    # Run migration to add password_required if not exists in postgres
+    wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_required INTEGER NOT NULL DEFAULT 1")
     wrapper.commit()

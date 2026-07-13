@@ -14,6 +14,10 @@ Vendas lançadas incorretamente podem ser apagadas na conferência de Pix ou no 
 
 No primeiro acesso, o sistema solicita a criação de um gerente. O gerente pode criar usuários Cliente (somente venda rápida), Staff (operações sem peladeiros e relatórios) e outros Gerentes (acesso completo).
 
+Clientes podem opcionalmente entrar apenas com o usuário, sem senha. Gerentes e Staff exigem senha, que pode ser redefinida pelo Gerente na tela de usuários.
+
+O endereço `/cliente` oferece uma tela simplificada para clientes com acesso sem senha e os direciona diretamente à Venda rápida.
+
 O Financeiro, exclusivo do gerente, controla a mensalidade de manutenção de R$ 15 por peladeiro. É possível registrar um mês ou até 12 meses de uma vez, acompanhar a situação anual e apagar lançamentos incorretos.
 
 Goleiros e membros da diretoria podem ser classificados como isentos no cadastro de peladeiros e não entram nas previsões ou pendências de mensalidades.
