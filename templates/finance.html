@@ -5,8 +5,11 @@
         <p class="text-muted mb-0">Mensalidades de manutenção · {{monthly_fee|money}} por mês · {{exempt_count}}
             isento(s)</p>
     </div>
-    <form><input type="number" name="year" value="{{year}}" min="2020" max="2100" class="form-control"
-            onchange="this.form.submit()"></form>
+    <div class="d-flex gap-2 align-items-center">
+        <a class="btn btn-outline-primary" href="{{url_for('finance.reminders')}}">Lembretes por e-mail</a>
+        <form><input type="number" name="year" value="{{year}}" min="2020" max="2100" class="form-control"
+                onchange="this.form.submit()"></form>
+    </div>
 </div>
 <div class="row g-3 my-2">
     <div class="col-md-4">

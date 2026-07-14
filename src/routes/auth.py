@@ -1,6 +1,6 @@
 import os
 from functools import wraps
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app
+from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from src.db import get_db
 
@@ -11,6 +11,9 @@ def roles_allowed(*roles):
         @wraps(view)
         def wrapped(*args, **kwargs):
             if not g.user or g.user["role"] not in roles:
+                if request.accept_mimetypes.best == "application/json":
+                    message = "Sua sessão expirou ou seu usuário não possui acesso a esta funcionalidade."
+                    return jsonify(error=message), 401 if not g.user else 403
                 flash("Seu usuário não possui acesso a essa funcionalidade.", "danger")
                 return redirect(url_for("sales.sale") if g.user and g.user["role"] == "client" else url_for("finance.dashboard"))
             return view(*args, **kwargs)
@@ -141,6 +144,31 @@ def reset_user_password(user_id):
             db.rollback()
             current_app.logger.error(f"Erro ao redefinir senha do usuário {user_id}: {exc}")
             flash("Erro interno ao alterar a senha.", "danger")
+    return redirect(url_for("auth.users"))
+
+@bp.post("/users/<int:user_id>/edit")
+@roles_allowed("manager")
+def edit_user(user_id):
+    db = get_db()
+    target = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    name = request.form.get("name", "").strip()
+    username = request.form.get("username", "").strip()
+    if not target:
+        flash("Usuário não encontrado.", "warning")
+    elif not name:
+        flash("Informe o nome do usuário.", "danger")
+    elif len(username) < 3:
+        flash("O usuário deve ter ao menos 3 caracteres.", "danger")
+    else:
+        try:
+            db.execute("UPDATE users SET name=?,username=? WHERE id=?", (name, username, user_id))
+            db.commit()
+            flash("Usuário atualizado.", "success")
+        except Exception as exc:
+            db.rollback()
+            current_app.logger.error(f"Erro ao editar usuário {user_id}: {exc}")
+            flash("Já existe um usuário com esse nome de acesso." if "unique" in str(exc).lower()
+                  else "Erro interno ao editar usuário.", "danger")
     return redirect(url_for("auth.users"))
 
 @bp.post("/users/<int:user_id>/passwordless")

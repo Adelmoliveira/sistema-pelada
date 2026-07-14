@@ -1,5 +1,7 @@
 import os
 import sqlite3
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from flask import g, current_app
 
 SCHEMA = """
@@ -44,6 +46,15 @@ CREATE TABLE IF NOT EXISTS sales (
     payment_method TEXT NOT NULL CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia')),
     total_cents INTEGER NOT NULL,
     paid INTEGER NOT NULL DEFAULT 1,
+    payment_status TEXT NOT NULL DEFAULT 'approved',
+    mercadopago_order_id TEXT,
+    mercadopago_payment_id TEXT,
+    external_reference TEXT,
+    idempotency_key TEXT,
+    paid_at TEXT,
+    ready_for_delivery INTEGER NOT NULL DEFAULT 0,
+    delivered_at TEXT,
+    delivered_by INTEGER REFERENCES users(id),
     notes TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -89,6 +100,24 @@ CREATE TABLE IF NOT EXISTS membership_months (
     player_id INTEGER NOT NULL REFERENCES players(id),
     month TEXT NOT NULL,
     UNIQUE(player_id, month)
+);
+CREATE TABLE IF NOT EXISTS reminder_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    schedule_day INTEGER NOT NULL DEFAULT 5 CHECK(schedule_day BETWEEN 1 AND 28),
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS reminder_dispatches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id),
+    period TEXT NOT NULL,
+    recipient_email TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('sent','failed')),
+    error_message TEXT DEFAULT '',
+    sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(player_id, period)
 );
 CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_items_sale ON sale_items(sale_id);
@@ -153,7 +182,9 @@ class DbWrapper:
             return wrapped
         else:
             cursor = self.conn.execute(sql, params or ())
-            return CursorWrapper(cursor)
+            wrapped = CursorWrapper(cursor)
+            wrapped.lastrowid = cursor.lastrowid
+            return wrapped
 
     def commit(self):
         self.conn.commit()
@@ -192,6 +223,16 @@ def connect_db(app):
         conn = sqlite3.connect(database_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        sao_paulo = ZoneInfo("America/Sao_Paulo")
+        def local_date(value):
+            try:
+                parsed = datetime.fromisoformat(str(value))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(sao_paulo).date().isoformat()
+            except (TypeError, ValueError):
+                return None
+        conn.create_function("date", 1, local_date)
         wrapper = DbWrapper(conn, is_postgres=False)
         init_sqlite(wrapper)
         return wrapper
@@ -207,6 +248,8 @@ def connect_db(app):
         connect_timeout=10,
         cursor_factory=psycopg2.extras.DictCursor
     )
+    with conn.cursor() as cursor:
+        cursor.execute("SET TIME ZONE 'UTC'")
     wrapper = DbWrapper(conn, is_postgres=True)
     init_postgres(wrapper)
     return wrapper
@@ -338,26 +381,47 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE users ADD COLUMN password_required INTEGER NOT NULL DEFAULT 1")
         conn.commit()
 
+    sale_columns = {row[1] for row in conn.execute("PRAGMA table_info(sales)")}
+    sale_migrations = {
+        "payment_status": "TEXT NOT NULL DEFAULT 'approved'",
+        "mercadopago_order_id": "TEXT",
+        "mercadopago_payment_id": "TEXT",
+        "external_reference": "TEXT",
+        "idempotency_key": "TEXT",
+        "paid_at": "TEXT",
+        "ready_for_delivery": "INTEGER NOT NULL DEFAULT 0",
+        "delivered_at": "TEXT",
+        "delivered_by": "INTEGER REFERENCES users(id)",
+    }
+    for column, definition in sale_migrations.items():
+        if column not in sale_columns:
+            conn.execute(f"ALTER TABLE sales ADD COLUMN {column} {definition}")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
+    conn.commit()
+
 def init_postgres(wrapper):
     wrapper.execute("""
     CREATE OR REPLACE FUNCTION date(t timestamp with time zone) RETURNS date AS $$
-        SELECT t::date;
+        SELECT timezone('America/Sao_Paulo', t)::date;
     $$ LANGUAGE SQL IMMUTABLE;
     """)
     wrapper.execute("""
     CREATE OR REPLACE FUNCTION date(t timestamp without time zone) RETURNS date AS $$
-        SELECT t::date;
+        SELECT timezone('America/Sao_Paulo', t AT TIME ZONE 'UTC')::date;
     $$ LANGUAGE SQL IMMUTABLE;
     """)
     wrapper.execute("""
     CREATE OR REPLACE FUNCTION date(t text) RETURNS date AS $$
-        SELECT t::date;
+        SELECT timezone('America/Sao_Paulo', t::timestamp AT TIME ZONE 'UTC')::date;
     $$ LANGUAGE SQL IMMUTABLE;
     """)
     
     pg_schema = SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
     pg_schema = pg_schema.replace("COLLATE NOCASE", "")
     pg_schema = pg_schema.replace("created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP", "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    pg_schema = pg_schema.replace("paid_at TEXT", "paid_at TIMESTAMP")
+    pg_schema = pg_schema.replace("delivered_at TEXT", "delivered_at TIMESTAMP")
     
     for stmt in pg_schema.split(';'):
         stmt_clean = stmt.strip()
@@ -366,4 +430,15 @@ def init_postgres(wrapper):
     
     # Run migration to add password_required if not exists in postgres
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_required INTEGER NOT NULL DEFAULT 1")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'approved'")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_order_id TEXT")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_payment_id TEXT")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS external_reference TEXT")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS idempotency_key TEXT")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS ready_for_delivery INTEGER NOT NULL DEFAULT 0")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_by INTEGER REFERENCES users(id)")
+    wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
+    wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
     wrapper.commit()

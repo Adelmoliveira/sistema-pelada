@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from flask import Flask, g, redirect, request, session, url_for, flash
+from flask import Flask, g, redirect, request, session, url_for, flash, jsonify
 from flask_wtf.csrf import CSRFProtect, CSRFError
 
 # Carregar variáveis de ambiente do arquivo .env.local se existir (desenvolvimento)
@@ -29,16 +29,19 @@ if not database_path:
 
 app.config.update(
     # `or` também cobre variável criada com valor vazio na hospedagem.
-    SECRET_KEY=os.environ.get("SECRET_KEY") or os.getenv("SECRET_KEY", "troque-esta-chave-em-producao"),
-    DATABASE_URL=os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL") or os.getenv("DATABASE_URL"),
+    SECRET_KEY=os.environ.get("SECRET_KEY") or "troque-esta-chave-em-producao",
+    DATABASE_URL=os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL"),
     DATABASE=database_path,
     MAX_CONTENT_LENGTH=5 * 1024 * 1024,
     PIX_KEY=os.environ.get("PIX_KEY", "adelmoliveira@gmail.com"),
     PIX_MERCHANT_NAME=os.environ.get("PIX_MERCHANT_NAME", "BAR PELADEIROS GPCTA"),
     PIX_MERCHANT_CITY=os.environ.get("PIX_MERCHANT_CITY", "SAO PAULO"),
     MERCADOPAGO_ACCESS_TOKEN=os.environ.get("MERCADOPAGO_ACCESS_TOKEN"),
+    MERCADOPAGO_POS_ID=os.environ.get("MERCADOPAGO_POS_ID"),
     MERCADOPAGO_WEBHOOK_SECRET=os.environ.get("MERCADOPAGO_WEBHOOK_SECRET"),
-    APP_BASE_URL=(os.environ.get("APP_BASE_URL") or "").rstrip("/"),
+    GMAIL_SMTP_USER=os.environ.get("GMAIL_SMTP_USER"),
+    GMAIL_APP_PASSWORD=os.environ.get("GMAIL_APP_PASSWORD"),
+    CRON_SECRET=os.environ.get("CRON_SECRET"),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=is_vercel,
@@ -75,11 +78,12 @@ app.register_blueprint(finance_bp)
 
 # Exempt public/authentication routes from CSRF to avoid login issues in local/dev deployments
 from src.routes.auth import setup, login, client_access, logout
-from src.routes.sales import mercadopago_webhook
+from src.routes.sales import mercadopago_create_order, mercadopago_webhook
 csrf.exempt(setup)
 csrf.exempt(login)
 csrf.exempt(client_access)
 csrf.exempt(logout)
+csrf.exempt(mercadopago_create_order)
 csrf.exempt(mercadopago_webhook)
 
 # Register Template Filters
@@ -100,6 +104,18 @@ def close_db(_error=None):
 @app.before_request
 def load_user_and_protect_routes():
     g.user = None
+
+    # A rota valida um token temporário próprio para não depender da cookie de
+    # sessão em requisições fetch do Safari/iOS.
+    if request.endpoint in {
+        "sales.pix_qrcode",
+        "sales.mercadopago_create_order",
+        "sales.mercadopago_order_status",
+        "sales.mercadopago_webhook",
+        "finance.payment_reminders_cron",
+    }:
+        return None
+
     user_id = session.get("user_id")
     if user_id:
         try:
@@ -125,13 +141,15 @@ def load_user_and_protect_routes():
             return None
         return redirect(url_for("auth.setup"))
 
-    public_endpoints = {"auth.login", "auth.client_access", "sales.mercadopago_webhook"}
+    public_endpoints = {"auth.login", "auth.client_access"}
     if request.endpoint in public_endpoints or request.endpoint is None:
         return None
 
     if not g.user:
         if request.endpoint == "auth.login":
             return None
+        if request.accept_mimetypes.best == "application/json":
+            return jsonify(error="Sua sessão expirou. Recarregue a página e entre novamente."), 401
         return redirect(url_for("auth.login", next=request.path))
 
 @app.context_processor

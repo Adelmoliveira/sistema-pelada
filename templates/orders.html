@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block title %}Pedidos · BAR PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div><h1 class="h3 mb-1">Pedidos para entregar</h1><p class="text-muted mb-0">Pix aprovados aparecem automaticamente nesta fila.</p></div>
+  <span id="connection" class="badge bg-secondary">Conectando...</span>
+</div>
+<div id="new-order-alert" class="alert alert-warning d-none fw-bold" role="alert">Novo pedido recebido!</div>
+<div id="pending-orders" class="row g-3"></div>
+<div id="empty-orders" class="card shadow-sm d-none"><div class="card-body text-center py-5"><div class="display-6 mb-2">✓</div><strong>Nenhum pedido aguardando entrega.</strong></div></div>
+<h2 class="h5 mt-5">Entregues recentemente</h2>
+<div id="delivered-orders" class="list-group shadow-sm"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const feedUrl={{ url_for('sales.orders_feed')|tojson }},deliverBase={{ url_for('sales.deliver_order',sale_id=0)|tojson }},csrfToken={{ csrf_token()|tojson }};
+const pendingBox=document.querySelector('#pending-orders'),deliveredBox=document.querySelector('#delivered-orders'),emptyBox=document.querySelector('#empty-orders'),connection=document.querySelector('#connection'),newAlert=document.querySelector('#new-order-alert');let knownOrders=null,refreshTimer=null;
+function money(cents){return(cents/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}
+function time(value){if(!value)return'';const date=new Date(value);return Number.isNaN(date.getTime())?value:date.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}
+function escapeHtml(value){const element=document.createElement('div');element.textContent=value??'';return element.innerHTML}
+function pendingCard(order){const items=order.items.map(item=>`<li class="list-group-item d-flex justify-content-between"><strong>${escapeHtml(item.name)}</strong><span class="badge bg-dark rounded-pill">${item.quantity}×</span></li>`).join('');return `<div class="col-md-6 col-xl-4"><div class="card shadow border-warning h-100"><div class="card-header bg-warning-subtle d-flex justify-content-between"><strong>Pedido #${order.id}</strong><span>${time(order.paid_at)}</span></div><div class="card-body"><h2 class="h4">${escapeHtml(order.player_name)}</h2><ul class="list-group list-group-flush mb-3">${items}</ul><div class="d-flex justify-content-between align-items-center"><strong class="text-success fs-5">${money(order.total_cents)}</strong><button class="btn btn-success btn-lg deliver" data-id="${order.id}">✓ Entregue</button></div></div></div></div>`}
+function deliveredRow(order){return `<div class="list-group-item d-flex flex-wrap justify-content-between gap-2"><span><strong>#${order.id} · ${escapeHtml(order.player_name)}</strong><br><small>${order.items.map(item=>`${item.quantity}× ${escapeHtml(item.name)}`).join(', ')}</small></span><span class="text-end"><span class="badge bg-success">Entregue</span><br><small>${time(order.delivered_at)} · ${escapeHtml(order.delivered_by_name)}</small></span></div>`}
+async function refresh(){clearTimeout(refreshTimer);try{const response=await fetch(feedUrl,{cache:'no-store',headers:{Accept:'application/json'}}),data=await response.json();if(!response.ok)throw new Error(data.error||'Falha ao atualizar.');const ids=new Set(data.pending.map(order=>order.id));if(knownOrders&&data.pending.some(order=>!knownOrders.has(order.id))){newAlert.classList.remove('d-none');setTimeout(()=>newAlert.classList.add('d-none'),5000)}knownOrders=ids;pendingBox.innerHTML=data.pending.map(pendingCard).join('');emptyBox.classList.toggle('d-none',data.pending.length>0);deliveredBox.innerHTML=data.delivered.map(deliveredRow).join('')||'<div class="list-group-item text-muted">Nenhuma entrega registrada.</div>';connection.className='badge bg-success';connection.textContent=`Atualizado · ${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`}catch(error){connection.className='badge bg-danger';connection.textContent='Sem conexão'}finally{refreshTimer=setTimeout(refresh,3000)}}
+pendingBox.addEventListener('click',async event=>{const button=event.target.closest('.deliver');if(!button)return;button.disabled=true;button.textContent='Confirmando...';try{const response=await fetch(deliverBase.replace('/0/','/'+button.dataset.id+'/'),{method:'POST',headers:{Accept:'application/json','X-CSRFToken':csrfToken}}),data=await response.json();if(!response.ok)throw new Error(data.error);await refresh()}catch(error){button.disabled=false;button.textContent='✓ Entregue';alert(error.message||'Não foi possível confirmar a entrega.')}});
+refresh();
+</script>
+{% endblock %}

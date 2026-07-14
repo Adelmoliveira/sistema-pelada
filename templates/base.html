@@ -14,7 +14,7 @@
  <div id="nav" class="collapse navbar-collapse"><div class="navbar-nav ms-auto">
   <a class="nav-link" href="{{ url_for('sales.sale') }}">Venda rápida</a>{% if current_user.role in ['manager','staff'] %}<a class="nav-link" href="{{ url_for('products.products') }}">Produtos</a>
   {% if current_user.role == 'manager' %}<a class="nav-link" href="{{ url_for('players.players') }}">Peladeiros</a>{% endif %}<a class="nav-link" href="{{ url_for('products.stock') }}">Estoque</a>
-  <a class="nav-link" href="{{ url_for('sales.pix') }}">Conferir Pix</a>{% endif %}{% if current_user.role == 'manager' %}<a class="nav-link" href="{{url_for('finance.finance')}}">Financeiro</a><a class="nav-link" href="{{ url_for('finance.reports') }}">Relatórios</a><a class="nav-link" href="{{url_for('auth.users')}}">Usuários</a>{% endif %}
+  <a class="nav-link" href="{{ url_for('sales.orders') }}">Pedidos</a><a class="nav-link" href="{{ url_for('sales.pix') }}">Conferir Pix</a>{% endif %}{% if current_user.role == 'manager' %}<a class="nav-link" href="{{url_for('finance.finance')}}">Financeiro</a><a class="nav-link" href="{{ url_for('finance.reports') }}">Relatórios</a><a class="nav-link" href="{{url_for('auth.users')}}">Usuários</a>{% endif %}
   <span class="navbar-text ms-lg-3 me-2">{{current_user.name}}</span><form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/><button class="btn btn-sm btn-outline-light">Sair</button></form>
  </div></div></div>
 </nav>
