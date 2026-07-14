@@ -14,3 +14,4 @@ body{background:#f2f6f9;color:#152d3d}
 .emergency-field{background:#fff1f2;border:1px solid #f1aeb5}
 .navbar-dark .navbar-nav .nav-urgent{color:#ffb4b4}.navbar-dark .navbar-nav .nav-urgent:hover,.navbar-dark .navbar-nav .nav-urgent:focus{color:#fff;background:#dc3545;border-radius:.5rem}
 .navbar-dark .navbar-nav .nav-sale{color:#7ee2a8}.navbar-dark .navbar-nav .nav-sale:hover,.navbar-dark .navbar-nav .nav-sale:focus{color:#0f5132;background:#d1e7dd;border-radius:.5rem}
+.login-copyright{font-size:.8rem;line-height:1.4;margin-top:1.5rem;padding-bottom:1rem}

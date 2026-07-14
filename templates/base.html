@@ -7,9 +7,9 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-{% if current_user %}
 <nav class="navbar navbar-expand-lg navbar-dark bg-success sticky-top shadow-sm">
- <div class="container"><a class="navbar-brand fw-bold d-flex align-items-center gap-2" href="{{ url_for('finance.dashboard') }}"><img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" class="brand-logo" alt="GPCTA"> <span>BAR PELADEIROS GPCTA</span></a>
+ <div class="container"><a class="navbar-brand fw-bold d-flex align-items-center gap-2" href="{{ url_for('finance.dashboard') if current_user else url_for('auth.login') }}"><img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" class="brand-logo" alt="GPCTA"> <span>BAR PELADEIROS GPCTA</span></a>
+ {% if current_user %}
  <button class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#nav"><span class="navbar-toggler-icon"></span></button>
  <div id="nav" class="collapse navbar-collapse"><div class="navbar-nav ms-auto">
   {% if current_user.role in ['manager','staff'] %}<a class="nav-link" href="{{ url_for('sales.pix') }}">Conferir Pix</a>
@@ -23,9 +23,10 @@
   {% if current_user.role == 'manager' %}<a class="nav-link" href="{{url_for('auth.users')}}">Usuários</a>{% endif %}
   <a class="nav-link nav-sale fw-bold" href="{{ url_for('sales.sale') }}">Venda rápida</a>
   <span class="navbar-text ms-lg-3 me-2">{{current_user.name}}</span><form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/><button class="btn btn-sm btn-outline-light">Sair</button></form>
- </div></div></div>
+ </div></div>
+ {% endif %}
+</div>
 </nav>
-{% endif %}
 <main class="container py-4">
  {% for category,message in get_flashed_messages(with_categories=true) %}<div class="alert alert-{{ category }} alert-dismissible fade show">{{ message }}<button class="btn-close" data-bs-dismiss="alert"></button></div>{% endfor %}
  {% block content %}{% endblock %}

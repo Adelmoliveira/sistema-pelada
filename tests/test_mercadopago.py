@@ -200,6 +200,13 @@ class MercadoPagoFlowTest(unittest.TestCase):
         positions = [page.index(f">{label}</a>") for label in labels]
         self.assertEqual(positions, sorted(positions))
 
+    def test_login_shows_public_brand_bar_and_copyright(self):
+        page = self.client.get("/login").get_data(as_text=True)
+        self.assertIn('class="brand-logo"', page)
+        self.assertIn("BAR PELADEIROS GPCTA", page)
+        self.assertIn("Copyright © 2026 | Grupo de Peladas do CTA - GPTCA", page)
+        self.assertNotIn(">Sair</button>", page)
+
     def test_manager_can_edit_user_display_name_and_username(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
