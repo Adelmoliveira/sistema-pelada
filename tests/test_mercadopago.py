@@ -207,7 +207,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('class="login-logo mb-3"', page)
         self.assertNotIn('class="navbar ', page)
         self.assertIn("BAR PELADEIROS GPCTA", page)
-        self.assertIn("Copyright © 2026 | Grupo de Peladas do CTA - GPTCA", page)
+        self.assertIn("Copyright © 2026 | Grupo de Peladas do CTA - GPCTA", page)
         self.assertNotIn(">Sair</button>", page)
 
     def test_manager_can_edit_user_display_name_and_username(self):
