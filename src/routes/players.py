@@ -24,7 +24,7 @@ def players():
     if request.method == "POST":
         try:
             membership_type = request.form.get("membership_type", "regular")
-            if membership_type not in ("regular", "goalkeeper", "board"):
+            if membership_type not in ("regular", "goalkeeper", "board", "veteran"):
                 raise ValueError("Classificação financeira inválida.")
             
             db.execute(
@@ -58,6 +58,7 @@ def players():
         "regular": ("active=1 AND membership_type=?", ("regular",)),
         "board": ("active=1 AND membership_type=?", ("board",)),
         "goalkeeper": ("active=1 AND membership_type=?", ("goalkeeper",)),
+        "veteran": ("active=1 AND membership_type=?", ("veteran",)),
         "inactive": ("active=0", ()),
         "all": ("1=1", ()),
     }
@@ -71,7 +72,7 @@ def players():
 @roles_allowed("manager")
 def player_membership_type(player_id):
     membership_type = request.form.get("membership_type")
-    if membership_type not in ("regular", "goalkeeper", "board"):
+    if membership_type not in ("regular", "goalkeeper", "board", "veteran"):
         flash("Classificação inválida.", "danger")
     else:
         try:
@@ -95,7 +96,7 @@ def edit_player(player_id):
     
     if request.method == "POST":
         membership_type = request.form.get("membership_type", "regular")
-        if membership_type not in ("regular", "goalkeeper", "board"):
+        if membership_type not in ("regular", "goalkeeper", "board", "veteran"):
             flash("Classificação financeira inválida.", "danger")
         else:
             try:

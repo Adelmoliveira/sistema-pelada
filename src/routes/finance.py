@@ -82,7 +82,7 @@ def reports():
         "over_6": sum(debt > 6 for debt in debts),
         "active": db.execute("SELECT COUNT(*) FROM players WHERE active=1").fetchone()[0],
         "inactive": db.execute("SELECT COUNT(*) FROM players WHERE active=0").fetchone()[0],
-        "exempt": db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board')").fetchone()[0],
+        "exempt": db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board','veteran')").fetchone()[0],
     }
     
     return render_template("reports.html", month=month, summary=summary, by_product=by_product,
@@ -128,7 +128,7 @@ def finance():
         year = local_today().year
         
     players_rows = db.execute("SELECT * FROM players WHERE active=1 AND membership_type='regular' ORDER BY name").fetchall()
-    exempt_count = db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board')").fetchone()[0]
+    exempt_count = db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board','veteran')").fetchone()[0]
     paid_rows = db.execute("SELECT player_id, month FROM membership_months WHERE month LIKE ?", (f"{year}-%",)).fetchall()
     
     paid_by_player = {}
