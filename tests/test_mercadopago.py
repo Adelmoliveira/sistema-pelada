@@ -202,9 +202,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('class="nav-item dropdown"', page)
         self.assertLess(page.index(">Estoque</a>"), page.index(">Produtos</a>"))
 
-    def test_login_shows_public_brand_bar_and_copyright(self):
+    def test_login_shows_centered_logo_without_navigation_bar_and_copyright(self):
         page = self.client.get("/login").get_data(as_text=True)
-        self.assertIn('class="brand-logo"', page)
+        self.assertIn('class="login-logo mb-3"', page)
+        self.assertNotIn('class="navbar ', page)
         self.assertIn("BAR PELADEIROS GPCTA", page)
         self.assertIn("Copyright © 2026 | Grupo de Peladas do CTA - GPTCA", page)
         self.assertNotIn(">Sair</button>", page)
