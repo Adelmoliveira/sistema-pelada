@@ -62,7 +62,8 @@ def apply_mercadopago_status(db, sale, order):
 
     if status == "processed" and detail == "accredited" and paid_cents == sale["total_cents"]:
         db.execute(
-            """UPDATE sales SET paid=1,payment_status='approved',mercadopago_payment_id=?,paid_at=CURRENT_TIMESTAMP
+            """UPDATE sales SET paid=1,payment_status='approved',mercadopago_payment_id=?,
+               paid_at=CURRENT_TIMESTAMP,ready_for_delivery=1
                WHERE id=? AND paid=0""",
             (payment_id, sale["id"]),
         )
@@ -204,6 +205,59 @@ def pix():
     ).fetchall()
     total = sum(r["total_cents"] for r in rows)
     return render_template("pix.html", rows=rows, total=total, day=day)
+
+@bp.get("/orders")
+@roles_allowed("manager", "staff")
+def orders():
+    return render_template("orders.html")
+
+def delivery_order_data(db, sale):
+    items = db.execute(
+        """SELECT si.quantity,p.name FROM sale_items si
+           JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
+        (sale["id"],),
+    ).fetchall()
+    return {
+        "id": sale["id"],
+        "player_name": sale["war_name"] or sale["player_name"],
+        "total_cents": sale["total_cents"],
+        "paid_at": str(sale["paid_at"] or sale["created_at"]),
+        "delivered_at": str(sale["delivered_at"] or ""),
+        "delivered_by_name": sale["delivered_by_name"] or "",
+        "items": [{"name": item["name"], "quantity": item["quantity"]} for item in items],
+    }
+
+@bp.get("/orders/feed")
+@roles_allowed("manager", "staff")
+def orders_feed():
+    db = get_db()
+    select = """SELECT s.*,p.name player_name,p.war_name,u.name delivered_by_name
+                FROM sales s JOIN players p ON p.id=s.player_id
+                LEFT JOIN users u ON u.id=s.delivered_by"""
+    pending = db.execute(
+        f"{select} WHERE s.ready_for_delivery=1 AND s.paid=1 AND s.delivered_at IS NULL ORDER BY s.paid_at,s.id"
+    ).fetchall()
+    delivered = db.execute(
+        f"{select} WHERE s.ready_for_delivery=1 AND s.delivered_at IS NOT NULL ORDER BY s.delivered_at DESC LIMIT 20"
+    ).fetchall()
+    return jsonify(
+        pending=[delivery_order_data(db, sale) for sale in pending],
+        delivered=[delivery_order_data(db, sale) for sale in delivered],
+    )
+
+@bp.post("/orders/<int:sale_id>/deliver")
+@roles_allowed("manager", "staff")
+def deliver_order(sale_id):
+    db = get_db()
+    updated = db.execute(
+        """UPDATE sales SET delivered_at=CURRENT_TIMESTAMP,delivered_by=?
+           WHERE id=? AND ready_for_delivery=1 AND paid=1 AND delivered_at IS NULL""",
+        (g.user["id"], sale_id),
+    )
+    db.commit()
+    if updated.rowcount != 1:
+        return jsonify(error="Pedido não encontrado ou já entregue."), 409
+    return jsonify(ok=True, sale_id=sale_id)
 
 @bp.get("/pix/qrcode")
 def pix_qrcode():

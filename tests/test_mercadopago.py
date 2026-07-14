@@ -36,6 +36,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             )
             db.commit()
             user = db.execute("SELECT * FROM users WHERE username='teste'").fetchone()
+            self.user_id = user["id"]
             self.token = pix_access_token(user)
             self.player_id = db.execute("SELECT id FROM players WHERE name='Peladeiro'").fetchone()["id"]
             self.product_id = db.execute("SELECT id FROM products WHERE name='Água'").fetchone()["id"]
@@ -234,6 +235,45 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         get_order_mock.assert_not_called()
         get_db_mock.assert_not_called()
+
+    def test_paid_pix_enters_delivery_queue_and_staff_confirms_it(self):
+        sale_id = self.create_order("ORD-DELIVERY", 2)
+        data_id = "ORD-DELIVERY"
+        request_id = "request-delivery"
+        timestamp = "1742505638683"
+        template = f"id:{data_id.lower()};request-id:{request_id};ts:{timestamp};"
+        signature = hmac.new(b"webhook-secret", template.encode(), hashlib.sha256).hexdigest()
+        approved = {
+            "id": data_id,
+            "type": "online",
+            "status": "processed",
+            "status_detail": "accredited",
+            "total_paid_amount": "6.00",
+            "transactions": {"payments": [{"id": "PAY-DELIVERY"}]},
+        }
+        response = self.client.post(
+            f"/webhooks/mercadopago?data.id={data_id}&type=order",
+            headers={"X-Request-Id": request_id, "X-Signature": f"ts={timestamp},v1={signature}"},
+            json={"type": "order", "data": approved},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/orders")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Pedidos para entregar", page.get_data(as_text=True))
+        feed = self.client.get("/orders/feed", headers={"Accept": "application/json"})
+        self.assertEqual(feed.status_code, 200)
+        pending = feed.get_json()["pending"]
+        self.assertEqual(len(pending), 1)
+        self.assertEqual((pending[0]["id"], pending[0]["items"][0]["quantity"]), (sale_id, 2))
+
+        delivered = self.client.post(f"/orders/{sale_id}/deliver", headers={"Accept": "application/json"})
+        self.assertEqual(delivered.status_code, 200)
+        feed = self.client.get("/orders/feed", headers={"Accept": "application/json"}).get_json()
+        self.assertEqual(feed["pending"], [])
+        self.assertEqual(feed["delivered"][0]["delivered_by_name"], "Teste")
 
 
 if __name__ == "__main__":
