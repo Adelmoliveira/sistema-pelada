@@ -214,6 +214,28 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('alt="Logo GPCTA"', page)
         self.assertNotIn('class="navbar ', page)
 
+    def test_urgent_is_visible_and_accessible_to_every_user_role(self):
+        with app.app_context():
+            db = get_db()
+            role_ids = {"manager": self.user_id}
+            for role in ("staff", "client", "infra"):
+                cursor = db.execute(
+                    "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)",
+                    (f"teste.{role}", f"Teste {role}", "hash", role),
+                )
+                role_ids[role] = cursor.lastrowid
+            db.commit()
+
+        for role, user_id in role_ids.items():
+            with self.subTest(role=role):
+                with self.client.session_transaction() as session:
+                    session["user_id"] = user_id
+                response = self.client.get("/urgent")
+                self.assertEqual(response.status_code, 200)
+                page = response.get_data(as_text=True)
+                self.assertIn('class="sidebar-module sidebar-direct urgent active"', page)
+                self.assertIn("<span>Urgente</span>", page)
+
     def test_material_crud_with_optimized_photo(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
@@ -553,12 +575,15 @@ class MercadoPagoFlowTest(unittest.TestCase):
         html = page.get_data(as_text=True)
         self.assertIn("<span>Infra-Estrutura</span>", html)
         self.assertIn(">Manutenção</a>", html)
-        for hidden_module in ("Bar", "Financeiro", "Urgente", "Administração"):
+        self.assertIn('class="sidebar-module sidebar-direct urgent ', html)
+        self.assertIn("<span>Urgente</span>", html)
+        for hidden_module in ("Bar", "Financeiro", "Administração"):
             self.assertNotIn(f"<span>{hidden_module}</span>", html)
         for hidden_link in ("Conferir Pix", "Estoque", "Produtos", "Pedidos", "Peladeiros", "Relatórios", "Usuários", "Venda rápida"):
             self.assertNotIn(f">{hidden_link}</a>", html)
         self.assertEqual(self.client.get("/infra/materials").status_code, 200)
         self.assertEqual(self.client.get("/infra/maintenance").status_code, 200)
+        self.assertEqual(self.client.get("/urgent").status_code, 200)
 
         for forbidden_path in ("/", "/sale", "/stock", "/players", "/users"):
             denied = self.client.get(forbidden_path)
