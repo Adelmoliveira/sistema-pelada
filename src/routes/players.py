@@ -6,7 +6,7 @@ from src.utils import alphabetical_key, normalize_cpf, spreadsheet_rows
 bp = Blueprint("players", __name__)
 
 @bp.get("/urgent")
-@roles_allowed("manager", "staff")
+@roles_allowed("manager", "staff", "client", "infra", "maintenance")
 def urgent():
     db = get_db()
     items = db.execute(

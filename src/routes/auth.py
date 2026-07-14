@@ -6,6 +6,22 @@ from src.db import get_db
 
 bp = Blueprint("auth", __name__)
 
+def home_endpoint(role):
+    if role == "client":
+        return "sales.sale"
+    if role == "infra":
+        return "infra.load_relation"
+    if role == "maintenance":
+        return "maintenance.new_request"
+    return "finance.dashboard"
+
+def safe_next_url(value):
+    return value if value and value.startswith("/") and not value.startswith("//") else None
+
+def make_password_hash(password):
+    # Compatível com o Python do macOS e com o ambiente de produção.
+    return generate_password_hash(password, method="pbkdf2:sha256", salt_length=16)
+
 def roles_allowed(*roles):
     def decorator(view):
         @wraps(view)
@@ -15,7 +31,7 @@ def roles_allowed(*roles):
                     message = "Sua sessão expirou ou seu usuário não possui acesso a esta funcionalidade."
                     return jsonify(error=message), 401 if not g.user else 403
                 flash("Seu usuário não possui acesso a essa funcionalidade.", "danger")
-                return redirect(url_for("sales.sale") if g.user and g.user["role"] == "client" else url_for("finance.dashboard"))
+                return redirect(url_for(home_endpoint(g.user["role"])))
             return view(*args, **kwargs)
         return wrapped
     return decorator
@@ -36,7 +52,7 @@ def setup():
             try:
                 db.execute(
                     "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'manager')",
-                    (username, request.form["name"].strip(), generate_password_hash(password))
+                    (username, request.form["name"].strip(), make_password_hash(password))
                 )
                 db.commit()
                 flash("Gerente criado. Entre com seu usuário e senha.", "success")
@@ -49,7 +65,7 @@ def setup():
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if g.user:
-        return redirect(url_for("sales.sale") if g.user["role"] == "client" else url_for("finance.dashboard"))
+        return redirect(safe_next_url(request.args.get("next")) or url_for(home_endpoint(g.user["role"])))
     if request.method == "POST":
         db = get_db()
         # Case insensitive query for username
@@ -57,11 +73,11 @@ def login():
             "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND active=1",
             (request.form["username"].strip(),)
         ).fetchone()
-        passwordless_client = user and user["role"] == "client" and not user["password_required"]
-        if user and (passwordless_client or check_password_hash(user["password_hash"], request.form.get("password", ""))):
+        passwordless_user = user and user["role"] in ("client", "maintenance") and not user["password_required"]
+        if user and (passwordless_user or check_password_hash(user["password_hash"], request.form.get("password", ""))):
             session.clear()
             session["user_id"] = user["id"]
-            return redirect(url_for("sales.sale") if user["role"] == "client" else url_for("finance.dashboard"))
+            return redirect(safe_next_url(request.form.get("next")) or url_for(home_endpoint(user["role"])))
         flash("Usuário ou senha inválidos.", "danger")
     return render_template("login.html")
 
@@ -96,14 +112,14 @@ def users():
             username = request.form["username"].strip()
             password = request.form.get("password", "")
             role = request.form["role"]
-            passwordless = role == "client" and request.form.get("passwordless") == "1"
+            passwordless = role == "maintenance" or (role == "client" and request.form.get("passwordless") == "1")
             if len(username) < 3:
                 raise ValueError("O usuário deve ter ao menos 3 caracteres.")
-            if role not in ("manager", "staff", "client"):
+            if role not in ("manager", "staff", "client", "infra", "maintenance"):
                 raise ValueError("Perfil inválido.")
             if not passwordless and len(password) < 8:
                 raise ValueError("A senha deve ter ao menos 8 caracteres.")
-            password_hash = generate_password_hash(password if not passwordless else os.urandom(32).hex())
+            password_hash = make_password_hash(password if not passwordless else os.urandom(32).hex())
             db.execute("INSERT INTO users(username,name,password_hash,role,password_required) VALUES(?,?,?,?,?)", (
                 username, request.form["name"].strip(), password_hash, role, 0 if passwordless else 1))
             db.commit()
@@ -130,14 +146,14 @@ def reset_user_password(user_id):
     password = request.form.get("new_password", "")
     if not target:
         flash("Usuário não encontrado.", "warning")
-    elif target["role"] not in ("manager", "staff"):
-        flash("Esta troca de senha é destinada a Gerente e Staff.", "danger")
+    elif target["role"] not in ("manager", "staff", "infra"):
+        flash("Esta troca de senha é destinada a Gerente, Staff e Infra.", "danger")
     elif len(password) < 8:
         flash("A nova senha deve ter ao menos 8 caracteres.", "danger")
     else:
         try:
             db.execute("UPDATE users SET password_hash=?,password_required=1 WHERE id=?",
-                         (generate_password_hash(password), user_id))
+                         (make_password_hash(password), user_id))
             db.commit()
             flash(f"Senha de {target['name']} alterada.", "success")
         except Exception as exc:
@@ -187,7 +203,7 @@ def toggle_client_passwordless(user_id):
             try:
                 if new_value:
                     db.execute("UPDATE users SET password_required=1,password_hash=? WHERE id=?",
-                                 (generate_password_hash(new_password), user_id))
+                                 (make_password_hash(new_password), user_id))
                 else:
                     db.execute("UPDATE users SET password_required=0 WHERE id=?", (user_id,))
                 db.commit()

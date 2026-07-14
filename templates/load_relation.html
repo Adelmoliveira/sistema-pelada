@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+{% block title %}Relação de Carga · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap gap-3 justify-content-between align-items-center mb-4">
+  <div>
+    <h1 class="h3 mb-1">Relação de Carga</h1>
+    <p class="text-muted mb-0">{{total}} {{'carga cadastrada' if total == 1 else 'cargas cadastradas'}}</p>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <form method="get" class="d-flex gap-2">
+      <select class="form-select" name="area" aria-label="Filtrar por área"><option value="">Todas as áreas</option>{% for code,name in load_areas.items() %}<option value="{{code}}" {{'selected' if code == area_code}}>{{code}} - {{name}}</option>{% endfor %}</select>
+      <input class="form-control" type="search" name="q" value="{{query}}" placeholder="Filtrar cargas" aria-label="Filtrar cargas">
+      <button class="btn btn-outline-secondary">Filtrar</button>
+    </form>
+    <a class="btn btn-outline-primary" href="{{url_for('infra.load_relation_report',q=query,area=area_code)}}">Relatório PDF</a>
+    <a class="btn btn-outline-secondary" href="{{url_for('infra.load_qr_codes',area=area_code)}}">Códigos QR</a>
+    <a class="btn btn-primary" href="{{url_for('infra.new_load_entry')}}">Adicionar carga</a>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="table-responsive load-table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead><tr><th>BMP</th><th>Material</th><th>Nº de série</th><th>Localização</th><th>Fotos</th><th>Cadastro</th><th class="text-end">Ações</th></tr></thead>
+      <tbody>
+        {% for entry in entries %}<tr>
+          <td><strong class="text-nowrap">{{entry.bmp}}</strong><div><span class="badge {{'text-bg-success' if entry.status == 'active' else 'text-bg-secondary'}}">{{'Em carga' if entry.status == 'active' else 'Descarregado'}}</span></div></td>
+          <td class="load-material"><strong>{{entry.material_description}}</strong>{% if entry.material_fcg %}<div class="small text-muted">FCG: {{entry.material_fcg}}</div>{% endif %}</td>
+          <td>{{entry.serial_number or '—'}}</td>
+          <td>{{entry.location or '—'}}</td>
+          <td>{% if entry.thumbnail_data %}<span class="load-photo-preview"><img class="load-thumb" src="{{entry.thumbnail_data}}" alt="Foto de {{entry.bmp}}"><span class="badge text-bg-secondary">{{entry.photo_count}}</span></span>{% else %}<span class="text-muted">Sem fotos</span>{% endif %}</td>
+          <td class="text-nowrap">{{entry.created_at|brdate}}</td>
+          <td class="text-end"><div class="dropdown">
+            <button class="btn btn-sm btn-light load-actions-button" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Ações de {{entry.bmp}}">•••</button>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li><a class="dropdown-item" href="{{url_for('infra.load_entry_detail',entry_id=entry.id)}}">Detalhes</a></li>
+              <li><a class="dropdown-item" href="{{url_for('infra.edit_load_entry',entry_id=entry.id)}}">Editar</a></li>
+              <li><form method="post" action="{{url_for('infra.delete_load_entry',entry_id=entry.id)}}" onsubmit="return confirm('Apagar esta carga permanentemente?')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="dropdown-item text-danger" type="submit">Apagar</button></form></li>
+              <li><a class="dropdown-item" href="{{url_for('infra.load_entry_qr_code',entry_id=entry.id)}}">Código QR</a></li>
+              {% if entry.status == 'active' %}<li><form method="post" action="{{url_for('infra.discharge_load_entry',entry_id=entry.id)}}" onsubmit="return confirm('Descarregar {{entry.bmp}}? O item será mantido no histórico.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="dropdown-item" type="submit">Descarregar</button></form></li>{% endif %}
+            </ul>
+          </div></td>
+        </tr>{% else %}<tr><td colspan="7" class="text-center text-muted py-5">{{'Nenhuma carga encontrada para este filtro.' if query else 'Nenhuma carga cadastrada.'}}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if pages > 1 %}<nav class="mt-3" aria-label="Paginação da Relação de Carga"><ul class="pagination justify-content-end">
+  <li class="page-item {{'disabled' if page == 1}}"><a class="page-link" href="{{url_for('infra.load_relation',q=query,area=area_code,page=page-1)}}">Anterior</a></li>
+  {% for number in range(1, pages + 1) %}<li class="page-item {{'active' if number == page}}"><a class="page-link" href="{{url_for('infra.load_relation',q=query,area=area_code,page=number)}}">{{number}}</a></li>{% endfor %}
+  <li class="page-item {{'disabled' if page == pages}}"><a class="page-link" href="{{url_for('infra.load_relation',q=query,area=area_code,page=page+1)}}">Próxima</a></li>
+</ul></nav>{% endif %}
+{% endblock %}
+{% block scripts %}<script>
+document.querySelectorAll('.load-actions-button').forEach(button=>{
+  bootstrap.Dropdown.getOrCreateInstance(button,{
+    boundary:'viewport',
+    popperConfig(defaultConfig){
+      return {...defaultConfig,strategy:'fixed',modifiers:[
+        ...(defaultConfig.modifiers||[]),
+        {name:'flip',options:{boundary:'viewport',padding:8,fallbackPlacements:['top-end','left-start','bottom-end']}},
+        {name:'preventOverflow',options:{boundary:'viewport',padding:8}}
+      ]};
+    }
+  });
+});
+</script>{% endblock %}

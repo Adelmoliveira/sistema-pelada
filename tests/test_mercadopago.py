@@ -3,17 +3,22 @@ import hmac
 import tempfile
 import unittest
 from datetime import date, datetime
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 from app import app
 from src.db import get_db
+from src.routes.auth import make_password_hash
 from src.routes.sales import pix_access_token
 from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
 from src.utils import alphabetical_key, brdate, local_today, month_bounds
+from werkzeug.security import check_password_hash
 
 
 class MercadoPagoFlowTest(unittest.TestCase):
@@ -189,26 +194,408 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertLess(urgent_page.index("<td>Ana</td>"), urgent_page.index("<td>Peladeiro</td>"))
         self.assertLess(urgent_page.index("<td>Peladeiro</td>"), urgent_page.index("<td>Zeca</td>"))
 
-    def test_manager_navigation_tabs_are_alphabetical(self):
+    def test_manager_sidebar_groups_modules_and_links(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
         page = self.client.get("/players").get_data(as_text=True)
-        labels = [
-            "Conferir Pix", "Estoque e Produtos", "Financeiro", "Pedidos", "Peladeiros",
-            "Relatórios", "Urgente", "Usuários", "Venda rápida",
-        ]
-        positions = [page.index(f">{label}</a>") for label in labels]
+        self.assertIn('id="app-sidebar"', page)
+        modules = ["Bar", "Financeiro", "Infra-Estrutura", "Urgente", "Administração"]
+        positions = [page.index(f"<span>{label}</span>") for label in modules]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn('class="nav-item dropdown"', page)
-        self.assertLess(page.index(">Estoque</a>"), page.index(">Produtos</a>"))
+        for links in (
+            ["Conferir Pix", "Estoque", "Produtos", "Pedidos", "Venda rápida"],
+            ["Manutenção", "Materiais", "Relação de Carga"],
+            ["Peladeiros", "Relatórios", "Usuários"],
+        ):
+            link_positions = [page.index(f">{label}</a>") for label in links]
+            self.assertEqual(link_positions, sorted(link_positions))
+        self.assertIn('data-bs-target="#sidebar-bar"', page)
+        self.assertIn('class="offcanvas-lg offcanvas-start app-sidebar"', page)
+        self.assertIn('alt="Logo GPCTA"', page)
+        self.assertNotIn('class="navbar ', page)
+        self.assertNotIn('class="sidebar-user"', page)
+        self.assertIn('class="topbar-account"', page)
+        self.assertIn('<strong>Teste</strong><small>Gerente</small>', page)
+        self.assertEqual(page.count('<strong>Teste</strong>'), 1)
+        self.assertIn('action="/logout"', page)
+
+    def test_urgent_is_visible_and_accessible_to_every_user_role(self):
+        with app.app_context():
+            db = get_db()
+            role_ids = {"manager": self.user_id}
+            for role in ("staff", "client", "infra", "maintenance"):
+                cursor = db.execute(
+                    "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)",
+                    (f"teste.{role}", f"Teste {role}", "hash", role),
+                )
+                role_ids[role] = cursor.lastrowid
+            db.commit()
+
+        for role, user_id in role_ids.items():
+            with self.subTest(role=role):
+                with self.client.session_transaction() as session:
+                    session["user_id"] = user_id
+                response = self.client.get("/urgent")
+                self.assertEqual(response.status_code, 200)
+                page = response.get_data(as_text=True)
+                self.assertIn('class="sidebar-module sidebar-direct urgent active"', page)
+                self.assertIn("<span>Urgente</span>", page)
+
+    def test_passwordless_maintenance_user_only_opens_new_requests(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        created = self.client.post(
+            "/users",
+            data={"name": "Portaria", "username": "manutencao", "role": "maintenance", "password": ""},
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            user = get_db().execute("SELECT * FROM users WHERE username='manutencao'").fetchone()
+            self.assertEqual((user["role"], user["password_required"]), ("maintenance", 0))
+            maintenance_user_id = user["id"]
+
+        self.client.post("/logout")
+        login = self.client.post("/login", data={"username": "manutencao", "password": ""})
+        self.assertEqual(login.status_code, 302)
+        self.assertTrue(login.headers["Location"].endswith("/infra/maintenance/new"))
+
+        form = self.client.get("/infra/maintenance/new")
+        self.assertEqual(form.status_code, 200)
+        page = form.get_data(as_text=True)
+        self.assertIn("<span>Novo chamado</span>", page)
+        self.assertIn("<span>Urgente</span>", page)
+        self.assertNotIn("<span>Infra-Estrutura</span>", page)
+        self.assertNotIn("Acompanhamento e resolução", page)
+        self.assertNotIn("← Voltar", page)
+
+        submitted = self.client.post(
+            "/infra/maintenance/new",
+            data={
+                "title": "Lâmpada queimada",
+                "area_code": "SAL",
+                "location": "Entrada principal",
+                "category": "electrical",
+                "priority": "medium",
+                "description": "A luminária da entrada não acende.",
+                "occurred_on": "2026-07-14",
+                "notes": "Verificar antes do evento.",
+                "status": "completed",
+                "responsible": "valor indevido",
+                "cost": "999,99",
+            },
+        )
+        self.assertEqual(submitted.status_code, 302)
+        self.assertTrue(submitted.headers["Location"].endswith("/infra/maintenance/new"))
+        with app.app_context():
+            maintenance = get_db().execute(
+                "SELECT * FROM maintenance_requests WHERE created_by=?", (maintenance_user_id,)
+            ).fetchone()
+            self.assertIsNotNone(maintenance)
+            self.assertEqual(
+                (maintenance["status"], maintenance["responsible"], maintenance["cost_cents"], maintenance["notes"]),
+                ("open", "", 0, "Verificar antes do evento."),
+            )
+
+        for forbidden_path in ("/infra/maintenance", "/infra/materials", "/sale", "/users"):
+            denied = self.client.get(forbidden_path)
+            self.assertEqual(denied.status_code, 302)
+            self.assertTrue(denied.headers["Location"].endswith("/infra/maintenance/new"))
+
+    def test_material_crud_with_optimized_photo(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        invalid = self.client.post("/infra/materials/new", data={"description": ""})
+        self.assertEqual(invalid.status_code, 200)
+        self.assertIn("descrição é obrigatória", invalid.get_data(as_text=True))
+        invalid_photo = self.client.post(
+            "/infra/materials/new",
+            data={"description": "Teste", "photo": (BytesIO(b"nao-e-imagem"), "foto.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(invalid_photo.status_code, 200)
+        self.assertIn("foto enviada é inválida", invalid_photo.get_data(as_text=True))
+
+        photo = BytesIO()
+        Image.new("RGB", (1400, 900), color=(20, 110, 180)).save(photo, format="PNG")
+        photo.seek(0)
+        created = self.client.post(
+            "/infra/materials/new",
+            data={
+                "description": "Analisador de espectro",
+                "load_sheet": "FCG-1877",
+                "notes": "Material em bom estado.",
+                "photo": (photo, "analisador.png"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            material = get_db().execute("SELECT * FROM materials").fetchone()
+            material_id = material["id"]
+            original_photo = material["photo_data"]
+            self.assertTrue(original_photo.startswith("data:image/jpeg;base64,"))
+            self.assertTrue(material["thumbnail_data"].startswith("data:image/jpeg;base64,"))
+
+        listing = self.client.get("/infra/materials?q=espectro").get_data(as_text=True)
+        self.assertIn("Analisador de espectro", listing)
+        self.assertIn("FCG-1877", listing)
+        detail = self.client.get(f"/infra/materials/{material_id}").get_data(as_text=True)
+        self.assertIn("Material em bom estado.", detail)
+        self.assertIn("FCG - Código de controle patrimonial", detail)
+
+        edited = self.client.post(
+            f"/infra/materials/{material_id}/edit",
+            data={"description": "Analisador atualizado", "load_sheet": "FCG-2000", "notes": "Revisado."},
+        )
+        self.assertEqual(edited.status_code, 302)
+        with app.app_context():
+            material = get_db().execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
+            self.assertEqual((material["description"], material["photo_data"]), ("Analisador atualizado", original_photo))
+
+        removed = self.client.post(
+            f"/infra/materials/{material_id}/edit",
+            data={"description": "Analisador atualizado", "load_sheet": "", "notes": "", "remove_photo": "1"},
+        )
+        self.assertEqual(removed.status_code, 302)
+        with app.app_context():
+            material = get_db().execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
+            self.assertEqual((material["photo_data"], material["thumbnail_data"]), ("", ""))
+
+        deleted = self.client.post(f"/infra/materials/{material_id}/delete")
+        self.assertEqual(deleted.status_code, 302)
+        with app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM materials").fetchone()[0], 0)
+
+        self.assertEqual(self.client.get("/infra/load-relation").status_code, 200)
+
+    def test_load_relation_crud_generates_bmp_photos_and_pdf(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            cursor = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES(?,?)",
+                ("Cadeira giratória", "FCG-1317918"),
+            )
+            material_id = cursor.lastrowid
+            db.commit()
+
+        missing_material = self.client.post("/infra/load-relation/new", data={"material_id": ""})
+        self.assertEqual(missing_material.status_code, 200)
+        self.assertIn("Selecione um material", missing_material.get_data(as_text=True))
+
+        photos = []
+        for index, color in enumerate(((25, 90, 150), (180, 110, 30)), start=1):
+            photo = BytesIO()
+            Image.new("RGB", (800, 600), color=color).save(photo, format="JPEG")
+            photo.seek(0)
+            photos.append((photo, f"foto-{index}.jpg"))
+        created = self.client.post(
+            "/infra/load-relation/new",
+            data={
+                "material_id": str(material_id),
+                "area_code": "COZ",
+                "serial_number": "SERIE-001",
+                "location": "Sala G-7",
+                "notes": "Carga em bom estado.",
+                "photos": photos,
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            entry = db.execute("SELECT * FROM load_entries").fetchone()
+            entry_id = entry["id"]
+            self.assertEqual((entry["bmp"], entry["area_code"]), (f"BMP-{entry_id:06d} | COZ", "COZ"))
+            stored_photos = db.execute(
+                "SELECT * FROM load_entry_photos WHERE load_entry_id=? ORDER BY id", (entry_id,)
+            ).fetchall()
+            self.assertEqual(len(stored_photos), 2)
+            self.assertTrue(stored_photos[0]["thumbnail_data"].startswith("data:image/jpeg;base64,"))
+            first_photo_id = stored_photos[0]["id"]
+
+        listing = self.client.get("/infra/load-relation?q=cadeira").get_data(as_text=True)
+        self.assertIn("Cadeira giratória", listing)
+        self.assertIn(f"BMP-{entry_id:06d}", listing)
+        self.assertIn("| COZ", listing)
+        filtered_listing = self.client.get("/infra/load-relation?area=BAR").get_data(as_text=True)
+        self.assertNotIn("Cadeira giratória", filtered_listing)
+        detail = self.client.get(f"/infra/load-relation/{entry_id}").get_data(as_text=True)
+        self.assertIn("Carga em bom estado.", detail)
+        self.assertIn("SERIE-001", detail)
+
+        qr_page = self.client.get(f"/infra/load-relation/{entry_id}/qr-code")
+        self.assertEqual(qr_page.status_code, 200)
+        self.assertIn("data:image/png;base64,", qr_page.get_data(as_text=True))
+        self.assertIn(f"/infra/load-relation/{entry_id}", qr_page.get_data(as_text=True))
+
+        qr_selection = self.client.get("/infra/load-relation/qr-codes?area=COZ")
+        self.assertEqual(qr_selection.status_code, 200)
+        self.assertIn(f"BMP-{entry_id:06d} | COZ", qr_selection.get_data(as_text=True))
+        labels = self.client.post(
+            "/infra/load-relation/qr-codes.pdf",
+            data={"entry_ids": str(entry_id), "size": "standard", "area_code": "COZ"},
+        )
+        self.assertEqual(labels.status_code, 200)
+        self.assertEqual(labels.mimetype, "application/pdf")
+        self.assertTrue(labels.data.startswith(b"%PDF-"))
+
+        blocked_material_delete = self.client.post(f"/infra/materials/{material_id}/delete")
+        self.assertEqual(blocked_material_delete.status_code, 302)
+        with app.app_context():
+            self.assertIsNotNone(
+                get_db().execute("SELECT id FROM materials WHERE id=?", (material_id,)).fetchone()
+            )
+
+        edited = self.client.post(
+            f"/infra/load-relation/{entry_id}/edit",
+            data={
+                "material_id": str(material_id),
+                "area_code": "SAL",
+                "serial_number": "SERIE-002",
+                "location": "Armário H-14",
+                "notes": "Inventariado.",
+                "remove_photo_ids": str(first_photo_id),
+            },
+        )
+        self.assertEqual(edited.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            entry = db.execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+            photo_count = db.execute(
+                "SELECT COUNT(*) FROM load_entry_photos WHERE load_entry_id=?", (entry_id,)
+            ).fetchone()[0]
+            self.assertEqual(
+                (entry["bmp"], entry["area_code"], entry["serial_number"], entry["location"], photo_count),
+                (f"BMP-{entry_id:06d} | SAL", "SAL", "SERIE-002", "Armário H-14", 1),
+            )
+
+        report = self.client.get("/infra/load-relation/report.pdf?q=cadeira")
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(report.mimetype, "application/pdf")
+        self.assertTrue(report.data.startswith(b"%PDF-"))
+        self.assertIn("attachment", report.headers["Content-Disposition"])
+
+        discharged = self.client.post(f"/infra/load-relation/{entry_id}/discharge")
+        self.assertEqual(discharged.status_code, 302)
+        with app.app_context():
+            entry = get_db().execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+            self.assertEqual((entry["status"], entry["discharged_by"]), ("discharged", self.user_id))
+            self.assertIsNotNone(entry["discharged_at"])
+        listing = self.client.get("/infra/load-relation").get_data(as_text=True)
+        self.assertIn("Descarregado", listing)
+        self.assertNotIn(f'action="/infra/load-relation/{entry_id}/discharge"', listing)
+
+        deleted = self.client.post(f"/infra/load-relation/{entry_id}/delete")
+        self.assertEqual(deleted.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entries").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entry_photos").fetchone()[0], 0)
+
+    def test_maintenance_crud_dashboard_photos_and_report(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        invalid = self.client.post("/infra/maintenance/new", data={"title": ""})
+        self.assertEqual(invalid.status_code, 200)
+        self.assertIn("título do problema é obrigatório", invalid.get_data(as_text=True))
+
+        problem_photo = BytesIO()
+        Image.new("RGB", (900, 700), color=(180, 60, 40)).save(problem_photo, format="JPEG")
+        problem_photo.seek(0)
+        created = self.client.post(
+            "/infra/maintenance/new",
+            data={
+                "title": "Vazamento no banheiro",
+                "area_code": "BAN",
+                "location": "Banheiro masculino",
+                "category": "plumbing",
+                "priority": "urgent",
+                "description": "Vazamento próximo ao lavatório.",
+                "responsible": "Equipe hidráulica",
+                "status": "open",
+                "occurred_on": "2026-07-14",
+                "due_on": "2026-07-15",
+                "cost": "0,00",
+                "problem_photos": (problem_photo, "problema.jpg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            maintenance = db.execute("SELECT * FROM maintenance_requests").fetchone()
+            request_id = maintenance["id"]
+            self.assertEqual((maintenance["code"], maintenance["area_code"]), (f"MAN-{request_id:06d}", "BAN"))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM maintenance_photos").fetchone()[0], 1)
+
+        listing = self.client.get("/infra/maintenance?area=BAN&priority=urgent")
+        self.assertEqual(listing.status_code, 200)
+        self.assertIn("Vazamento no banheiro", listing.get_data(as_text=True))
+        dashboard = self.client.get("/infra/maintenance/dashboard")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn("Painel de manutenção", dashboard.get_data(as_text=True))
+        detail = self.client.get(f"/infra/maintenance/{request_id}")
+        self.assertIn("Vazamento próximo", detail.get_data(as_text=True))
+
+        resolution_photo = BytesIO()
+        Image.new("RGB", (900, 700), color=(40, 150, 80)).save(resolution_photo, format="JPEG")
+        resolution_photo.seek(0)
+        completed = self.client.post(
+            f"/infra/maintenance/{request_id}/edit",
+            data={
+                "title": "Vazamento no banheiro",
+                "area_code": "BAN",
+                "location": "Banheiro masculino",
+                "category": "plumbing",
+                "priority": "urgent",
+                "description": "Vazamento próximo ao lavatório.",
+                "responsible": "Equipe hidráulica",
+                "status": "completed",
+                "occurred_on": "2026-07-14",
+                "due_on": "2026-07-15",
+                "completed_on": "2026-07-14",
+                "resolution": "Sifão substituído e instalação testada.",
+                "cost": "125,50",
+                "notes": "Serviço conferido.",
+                "resolution_photos": (resolution_photo, "resolucao.jpg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(completed.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            maintenance = db.execute("SELECT * FROM maintenance_requests WHERE id=?", (request_id,)).fetchone()
+            self.assertEqual((maintenance["status"], maintenance["cost_cents"]), ("completed", 12550))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM maintenance_photos").fetchone()[0], 2)
+
+        report = self.client.get("/infra/maintenance/report.pdf?area=BAN")
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(report.mimetype, "application/pdf")
+        self.assertTrue(report.data.startswith(b"%PDF-"))
+
+        deleted = self.client.post(f"/infra/maintenance/{request_id}/delete")
+        self.assertEqual(deleted.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM maintenance_requests").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM maintenance_photos").fetchone()[0], 0)
 
     def test_login_shows_centered_logo_without_navigation_bar_and_copyright(self):
         page = self.client.get("/login").get_data(as_text=True)
         self.assertIn('class="login-logo mb-3"', page)
         self.assertNotIn('class="navbar ', page)
-        self.assertIn("BAR PELADEIROS GPCTA", page)
+        self.assertIn("PELADEIROS GPCTA", page)
+        self.assertNotIn("BAR PELADEIROS GPCTA", page)
         self.assertIn("Copyright © 2026 | Grupo de Peladas do CTA - GPCTA", page)
         self.assertNotIn(">Sair</button>", page)
+
+    def test_password_hash_is_compatible_with_local_python(self):
+        password_hash = make_password_hash("senha-segura-123")
+        self.assertTrue(password_hash.startswith("pbkdf2:sha256:"))
+        self.assertTrue(check_password_hash(password_hash, "senha-segura-123"))
 
     def test_manager_can_edit_user_display_name_and_username(self):
         with self.client.session_transaction() as session:
@@ -221,6 +608,65 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             user = get_db().execute("SELECT * FROM users WHERE id=?", (self.user_id,)).fetchone()
             self.assertEqual((user["name"], user["username"], user["role"]), ("Ana", "ana.staff", "manager"))
+
+    def test_infra_user_sees_and_accesses_only_infra(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        created = self.client.post(
+            "/users",
+            data={
+                "name": "Equipe Infra",
+                "username": "infra.teste",
+                "role": "infra",
+                "password": "senha-infra-123",
+            },
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            infra_user = get_db().execute(
+                "SELECT * FROM users WHERE username=?", ("infra.teste",)
+            ).fetchone()
+            self.assertEqual(infra_user["role"], "infra")
+
+        self.client.post("/logout")
+        login = self.client.post(
+            "/login", data={"username": "infra.teste", "password": "senha-infra-123"}
+        )
+        self.assertEqual(login.status_code, 302)
+        self.assertTrue(login.headers["Location"].endswith("/infra/load-relation"))
+
+        page = self.client.get("/infra/load-relation")
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        self.assertIn("<span>Infra-Estrutura</span>", html)
+        self.assertIn(">Manutenção</a>", html)
+        self.assertIn('class="sidebar-module sidebar-direct urgent ', html)
+        self.assertIn("<span>Urgente</span>", html)
+        for hidden_module in ("Bar", "Financeiro", "Administração"):
+            self.assertNotIn(f"<span>{hidden_module}</span>", html)
+        for hidden_link in ("Conferir Pix", "Estoque", "Produtos", "Pedidos", "Peladeiros", "Relatórios", "Usuários", "Venda rápida"):
+            self.assertNotIn(f">{hidden_link}</a>", html)
+        self.assertEqual(self.client.get("/infra/materials").status_code, 200)
+        self.assertEqual(self.client.get("/infra/maintenance").status_code, 200)
+        self.assertEqual(self.client.get("/urgent").status_code, 200)
+
+        for forbidden_path in ("/", "/sale", "/stock", "/players", "/users"):
+            denied = self.client.get(forbidden_path)
+            self.assertEqual(denied.status_code, 302)
+            self.assertTrue(denied.headers["Location"].endswith("/infra/load-relation"))
+
+        self.client.post("/logout")
+        protected = self.client.get("/infra/materials")
+        self.assertEqual(protected.status_code, 302)
+        self.assertIn("next=/infra/materials", protected.headers["Location"])
+        resumed = self.client.post(
+            "/login",
+            data={
+                "username": "infra.teste", "password": "senha-infra-123",
+                "next": "/infra/materials",
+            },
+        )
+        self.assertTrue(resumed.headers["Location"].endswith("/infra/materials"))
 
     def test_reminders_calculate_debt_render_and_prevent_duplicate_email(self):
         sent_messages = []

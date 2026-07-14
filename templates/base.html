@@ -2,40 +2,76 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{% block title %}BAR PELADEIROS GPCTA{% endblock %}</title>
+  <title>{% block title %}PELADEIROS GPCTA{% endblock %}</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{url_for('static',filename='style.css')}}">
 </head>
 <body>
 {% if current_user %}
-<nav class="navbar navbar-expand-lg navbar-dark bg-success sticky-top shadow-sm">
- <div class="container"><a class="navbar-brand fw-bold d-flex align-items-center gap-2" href="{{ url_for('finance.dashboard') }}"><img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" class="brand-logo" alt="GPCTA"> <span>BAR PELADEIROS GPCTA</span></a>
- <button class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#nav"><span class="navbar-toggler-icon"></span></button>
- <div id="nav" class="collapse navbar-collapse"><div class="navbar-nav ms-auto">
-  {% if current_user.role in ['manager','staff'] %}<a class="nav-link" href="{{ url_for('sales.pix') }}">Conferir Pix</a>
-  <div class="nav-item dropdown">
-   <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">Estoque e Produtos</a>
-   <ul class="dropdown-menu dropdown-menu-end">
-    <li><a class="dropdown-item" href="{{ url_for('products.stock') }}">Estoque</a></li>
-    <li><a class="dropdown-item" href="{{ url_for('products.products') }}">Produtos</a></li>
-   </ul>
-  </div>{% endif %}
-  {% if current_user.role == 'manager' %}<a class="nav-link" href="{{url_for('finance.finance')}}">Financeiro</a>{% endif %}
-  {% if current_user.role in ['manager','staff'] %}<a class="nav-link" href="{{ url_for('sales.orders') }}">Pedidos</a>{% endif %}
-  {% if current_user.role == 'manager' %}<a class="nav-link" href="{{ url_for('players.players') }}">Peladeiros</a>{% endif %}
-  {% if current_user.role == 'manager' %}<a class="nav-link" href="{{ url_for('finance.reports') }}">Relatórios</a>{% endif %}
-  {% if current_user.role in ['manager','staff'] %}<a class="nav-link nav-urgent fw-bold" href="{{ url_for('players.urgent') }}">Urgente</a>{% endif %}
-  {% if current_user.role == 'manager' %}<a class="nav-link" href="{{url_for('auth.users')}}">Usuários</a>{% endif %}
-  <a class="nav-link nav-sale fw-bold" href="{{ url_for('sales.sale') }}">Venda rápida</a>
-  <span class="navbar-text ms-lg-3 me-2">{{current_user.name}}</span><form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/><button class="btn btn-sm btn-outline-light">Sair</button></form>
- </div></div>
-</div>
-</nav>
-{% endif %}
+{% set endpoint=request.endpoint or '' %}
+{% set bar_active=endpoint.startswith('sales.') or endpoint.startswith('products.') %}
+{% set finance_active=endpoint.startswith('finance.') and endpoint not in ['finance.dashboard','finance.reports'] %}
+{% set infra_active=endpoint.startswith('infra.') or endpoint.startswith('maintenance.') %}
+{% set urgent_active=endpoint == 'players.urgent' %}
+{% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) or endpoint == 'finance.reports' %}
+{% set role_label={'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção'}.get(current_user.role,current_user.role) %}
+<div class="app-shell" id="app-shell">
+  <aside class="offcanvas-lg offcanvas-start app-sidebar" tabindex="-1" id="app-sidebar" aria-labelledby="sidebar-title">
+    <div class="offcanvas-header sidebar-mobile-header"><span class="fw-semibold">Menu</span><button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" data-bs-target="#app-sidebar" aria-label="Fechar"></button></div>
+    <div class="offcanvas-body sidebar-body">
+      <a class="sidebar-brand" href="{{url_for('maintenance.new_request') if current_user.role == 'maintenance' else (url_for('infra.load_relation') if current_user.role == 'infra' else (url_for('sales.sale') if current_user.role == 'client' else url_for('finance.dashboard')))}}" id="sidebar-title">
+        <img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" alt="Logo GPCTA"><span><small>Grupo de Peladas do CTA</small><strong>PELADEIROS GPCTA</strong></span>
+      </a>
+      <nav class="sidebar-nav" aria-label="Menu principal">
+        {% if current_user.role in ['manager','staff','client'] %}<div class="sidebar-group">
+          <button class="sidebar-module {{'active' if bar_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-bar" aria-expanded="{{'true' if bar_active else 'false'}}" aria-controls="sidebar-bar"><span class="sidebar-module-icon">B</span><span>Bar</span><span class="sidebar-chevron">⌄</span></button>
+          <div class="collapse {{'show' if bar_active}}" id="sidebar-bar"><div class="sidebar-submenu">
+            {% if current_user.role in ['manager','staff'] %}<a class="{{'active' if endpoint == 'sales.pix'}}" href="{{url_for('sales.pix')}}">Conferir Pix</a><a class="{{'active' if endpoint == 'products.stock'}}" href="{{url_for('products.stock')}}">Estoque</a><a class="{{'active' if endpoint.startswith('products.products') or endpoint.startswith('products.edit_product')}}" href="{{url_for('products.products')}}">Produtos</a><a class="{{'active' if endpoint.startswith('sales.orders')}}" href="{{url_for('sales.orders')}}">Pedidos</a>{% endif %}
+            <a class="{{'active' if endpoint == 'sales.sale'}}" href="{{url_for('sales.sale')}}">Venda rápida</a>
+          </div></div>
+        </div>{% endif %}
+        {% if current_user.role == 'manager' %}<div class="sidebar-group">
+          <button class="sidebar-module {{'active' if finance_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-finance" aria-expanded="{{'true' if finance_active else 'false'}}" aria-controls="sidebar-finance"><span class="sidebar-module-icon">$</span><span>Financeiro</span><span class="sidebar-chevron">⌄</span></button>
+          <div class="collapse {{'show' if finance_active}}" id="sidebar-finance"><div class="sidebar-submenu"><a class="{{'active' if finance_active}}" href="{{url_for('finance.finance')}}">Financeiro</a></div></div>
+        </div>{% endif %}
+        {% if current_user.role in ['manager','staff','infra'] %}<div class="sidebar-group">
+          <button class="sidebar-module {{'active' if infra_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-infra" aria-expanded="{{'true' if infra_active else 'false'}}" aria-controls="sidebar-infra"><span class="sidebar-module-icon">I</span><span>Infra-Estrutura</span><span class="sidebar-chevron">⌄</span></button>
+          <div class="collapse {{'show' if infra_active}}" id="sidebar-infra"><div class="sidebar-submenu">
+            {% if current_user.role in ['manager','infra'] %}<a class="{{'active' if endpoint.startswith('maintenance.')}}" href="{{url_for('maintenance.requests_list')}}">Manutenção</a>{% endif %}<a class="{{'active' if endpoint.startswith('infra.material')}}" href="{{url_for('infra.materials')}}">Materiais</a><a class="{{'active' if endpoint.startswith('infra.load_')}}" href="{{url_for('infra.load_relation')}}">Relação de Carga</a>
+          </div></div>
+        </div>{% endif %}
+        {% if current_user.role == 'maintenance' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}"><span class="sidebar-module-icon">M</span><span>Novo chamado</span></a>{% endif %}
+        <a class="sidebar-module sidebar-direct urgent {{'active' if urgent_active}}" href="{{url_for('players.urgent')}}"><span class="sidebar-module-icon">!</span><span>Urgente</span></a>
+        {% if current_user.role == 'manager' %}<div class="sidebar-group">
+          <button class="sidebar-module {{'active' if admin_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-admin" aria-expanded="{{'true' if admin_active else 'false'}}" aria-controls="sidebar-admin"><span class="sidebar-module-icon">A</span><span>Administração</span><span class="sidebar-chevron">⌄</span></button>
+          <div class="collapse {{'show' if admin_active}}" id="sidebar-admin"><div class="sidebar-submenu"><a class="{{'active' if endpoint.startswith('players.') and not urgent_active}}" href="{{url_for('players.players')}}">Peladeiros</a><a class="{{'active' if endpoint == 'finance.reports'}}" href="{{url_for('finance.reports')}}">Relatórios</a><a class="{{'active' if endpoint.startswith('auth.user')}}" href="{{url_for('auth.users')}}">Usuários</a></div></div>
+        </div>{% endif %}
+      </nav>
+    </div>
+  </aside>
+  <div class="app-main">
+    <header class="app-topbar sticky-top">
+      <button class="sidebar-toggle" id="sidebar-toggle" type="button" data-bs-toggle="offcanvas" data-bs-target="#app-sidebar" aria-controls="app-sidebar" aria-label="Abrir ou recolher menu"><span></span><span></span><span></span></button>
+      <div class="topbar-title"><strong>PELADEIROS GPCTA</strong><small>Gestão integrada</small></div>
+      <div class="topbar-account"><div class="topbar-avatar">{{current_user.name[:1]|upper}}</div><div class="topbar-account-info"><strong>{{current_user.name}}</strong><small>{{role_label}}</small></div><form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-secondary">Sair</button></form></div>
+    </header>
+    <main class="app-page container-fluid">
+{% else %}
 <main class="container py-4">
- {% for category,message in get_flashed_messages(with_categories=true) %}<div class="alert alert-{{ category }} alert-dismissible fade show">{{ message }}<button class="btn-close" data-bs-dismiss="alert"></button></div>{% endfor %}
- {% block content %}{% endblock %}
+{% endif %}
+  {% for category,message in get_flashed_messages(with_categories=true) %}<div class="alert alert-{{category}} alert-dismissible fade show">{{message}}<button class="btn-close" data-bs-dismiss="alert"></button></div>{% endfor %}
+  {% block content %}{% endblock %}
 </main>
+{% if current_user %}
+  </div>
+</div>
+{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+{% if current_user %}<script>
+const shell=document.querySelector('#app-shell'),sidebar=document.querySelector('#app-sidebar'),toggle=document.querySelector('#sidebar-toggle'),desktop=window.matchMedia('(min-width: 992px)');
+if(desktop.matches&&localStorage.getItem('sidebar-collapsed')==='1')shell.classList.add('sidebar-collapsed');
+toggle.addEventListener('click',event=>{if(desktop.matches){event.preventDefault();event.stopPropagation();shell.classList.toggle('sidebar-collapsed');localStorage.setItem('sidebar-collapsed',shell.classList.contains('sidebar-collapsed')?'1':'0')}});
+sidebar.querySelectorAll('a[href]').forEach(link=>link.addEventListener('click',()=>{if(!desktop.matches)bootstrap.Offcanvas.getInstance(sidebar)?.hide()}));
+</script>{% endif %}
 {% block scripts %}{% endblock %}
 </body></html>

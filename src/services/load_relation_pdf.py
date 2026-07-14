@@ -8,7 +8,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from src.utils import money
+from src.utils import brdate
 
 
 NAVY = colors.HexColor("#073B5C")
@@ -18,7 +18,7 @@ LIGHT_GRAY = colors.HexColor("#F4F6F7")
 TEXT = colors.HexColor("#183042")
 
 
-def build_debtors_pdf(debtors, today, monthly_fee=1500):
+def build_load_relation_pdf(entries, today, query=""):
     output = BytesIO()
     document = SimpleDocTemplate(
         output,
@@ -27,63 +27,50 @@ def build_debtors_pdf(debtors, today, monthly_fee=1500):
         rightMargin=15 * mm,
         topMargin=16 * mm,
         bottomMargin=17 * mm,
-        title=f"Relatório de devedores - {today.strftime('%m/%Y')}",
+        title=f"Relação de Carga - {today.strftime('%d/%m/%Y')}",
         author="PELADEIROS GPCTA",
     )
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(
-        name="ReportTitle", parent=styles["Title"], fontName="Helvetica-Bold",
+        name="LoadTitle", parent=styles["Title"], fontName="Helvetica-Bold",
         fontSize=19, leading=23, textColor=NAVY, alignment=TA_CENTER, spaceAfter=4,
     ))
     styles.add(ParagraphStyle(
-        name="ReportSubtitle", parent=styles["Normal"], fontSize=9.5, leading=13,
-        textColor=colors.HexColor("#5E6B73"), alignment=TA_CENTER,
-    ))
-    styles.add(ParagraphStyle(
-        name="ReportHeading", parent=styles["Heading2"], fontSize=13, leading=16,
+        name="LoadHeading", parent=styles["Heading2"], fontSize=13, leading=16,
         textColor=BLUE, alignment=TA_CENTER, spaceAfter=3,
     ))
     styles.add(ParagraphStyle(
-        name="Cell", parent=styles["Normal"], fontSize=8.5, leading=11, textColor=TEXT,
+        name="LoadSubtitle", parent=styles["Normal"], fontSize=9.5, leading=13,
+        textColor=colors.HexColor("#5E6B73"), alignment=TA_CENTER,
     ))
     styles.add(ParagraphStyle(
-        name="CellRight", parent=styles["Cell"], alignment=2,
+        name="LoadCell", parent=styles["Normal"], fontSize=7.8, leading=10,
+        textColor=TEXT,
     ))
     styles.add(ParagraphStyle(
-        name="CellCenter", parent=styles["Cell"], alignment=TA_CENTER,
+        name="LoadCenter", parent=styles["LoadCell"], alignment=TA_CENTER,
     ))
     styles.add(ParagraphStyle(
-        name="HeaderCell", parent=styles["CellCenter"], fontName="Helvetica-Bold",
+        name="LoadHeader", parent=styles["LoadCenter"], fontName="Helvetica-Bold",
         textColor=colors.white,
     ))
-    styles.add(ParagraphStyle(
-        name="MissingEmail", parent=styles["Cell"], fontName="Helvetica-Bold",
-        textColor=colors.HexColor("#B02A37"),
-    ))
 
-    total_due = sum(debtor["amount_cents"] for debtor in debtors)
-    without_email = sum(not debtor["email"] for debtor in debtors)
+    total_photos = sum(int(entry["photo_count"] or 0) for entry in entries)
     story = [
-        Paragraph("PELADEIROS GPCTA", styles["ReportTitle"]),
-        Paragraph("Relatório de mensalidades pendentes", styles["ReportHeading"]),
+        Paragraph("PELADEIROS GPCTA", styles["LoadTitle"]),
+        Paragraph("Relação de Carga", styles["LoadHeading"]),
         Paragraph(
-            f"Posição em {today.strftime('%d/%m/%Y')} - mensalidade de {money(monthly_fee)}",
-            styles["ReportSubtitle"],
+            f"Emitido em {today.strftime('%d/%m/%Y')}" + (f" - Filtro: {escape(query)}" if query else ""),
+            styles["LoadSubtitle"],
         ),
         Spacer(1, 6 * mm),
     ]
-
     summary = Table([
-        [Paragraph("PELADEIROS PENDENTES", styles["CellCenter"]),
-         Paragraph("VALOR TOTAL PENDENTE", styles["CellCenter"]),
-         Paragraph("SEM E-MAIL CADASTRADO", styles["CellCenter"])],
-        [Paragraph(f"<b>{len(debtors)}</b>", styles["CellCenter"]),
-         Paragraph(f"<b>{money(total_due)}</b>", styles["CellCenter"]),
-         Paragraph(f"<b>{without_email}</b>", styles["CellCenter"])],
-    ], colWidths=[85 * mm, 85 * mm, 85 * mm])
+        [Paragraph("ITENS CADASTRADOS", styles["LoadCenter"]), Paragraph("FOTOS VINCULADAS", styles["LoadCenter"])],
+        [Paragraph(f"<b>{len(entries)}</b>", styles["LoadCenter"]), Paragraph(f"<b>{total_photos}</b>", styles["LoadCenter"])],
+    ], colWidths=[127.5 * mm, 127.5 * mm])
     summary.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), LIGHT_BLUE),
-        ("TEXTCOLOR", (0, 0), (-1, 0), BLUE),
         ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#B9D5E1")),
         ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#B9D5E1")),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
@@ -91,25 +78,27 @@ def build_debtors_pdf(debtors, today, monthly_fee=1500):
     ]))
     story.extend([summary, Spacer(1, 6 * mm)])
 
-    header = ["#", "Peladeiro", "E-mail", "Meses pendentes", "Qtd.", "Total"]
-    rows = [[Paragraph(value, styles["HeaderCell"]) for value in header]]
-    for position, debtor in enumerate(debtors, 1):
-        email = debtor["email"] or "Não cadastrado"
+    headers = ["BMP", "Material", "Nº de série", "Localização", "Observações", "Cadastro"]
+    rows = [[Paragraph(header, styles["LoadHeader"]) for header in headers]]
+    for entry in entries:
         rows.append([
-            Paragraph(str(position), styles["CellCenter"]),
-            Paragraph(escape(debtor["name"]), styles["Cell"]),
-            Paragraph(escape(email), styles["Cell"] if debtor["email"] else styles["MissingEmail"]),
-            Paragraph(escape(debtor["missing_month_names"]), styles["Cell"]),
-            Paragraph(str(len(debtor["missing_months"])), styles["CellCenter"]),
-            Paragraph(f"<b>{money(debtor['amount_cents'])}</b>", styles["CellRight"]),
+            Paragraph(escape(entry["bmp"]), styles["LoadCenter"]),
+            Paragraph(escape(entry["material_description"]), styles["LoadCell"]),
+            Paragraph(escape(entry["serial_number"] or "-"), styles["LoadCell"]),
+            Paragraph(escape(entry["location"] or "-"), styles["LoadCell"]),
+            Paragraph(escape(entry["notes"] or "-"), styles["LoadCell"]),
+            Paragraph(escape(brdate(entry["created_at"]).split(" ")[0]), styles["LoadCenter"]),
         ])
-    if not debtors:
-        rows.append([Paragraph("Nenhuma mensalidade pendente na data deste relatório.", styles["CellCenter"]), "", "", "", "", ""])
+    if not entries:
+        rows.append([Paragraph("Nenhuma carga encontrada.", styles["LoadCenter"]), "", "", "", "", ""])
 
-    table = Table(rows, colWidths=[10 * mm, 48 * mm, 62 * mm, 92 * mm, 14 * mm, 29 * mm], repeatRows=1)
+    table = Table(
+        rows,
+        colWidths=[33 * mm, 79 * mm, 35 * mm, 34 * mm, 48 * mm, 26 * mm],
+        repeatRows=1,
+    )
     table_style = [
         ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CFD8DC")),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
@@ -118,7 +107,7 @@ def build_debtors_pdf(debtors, today, monthly_fee=1500):
     for row_number in range(1, len(rows)):
         if row_number % 2 == 0:
             table_style.append(("BACKGROUND", (0, row_number), (-1, row_number), LIGHT_GRAY))
-    if not debtors:
+    if not entries:
         table_style.append(("SPAN", (0, 1), (-1, 1)))
     table.setStyle(TableStyle(table_style))
     story.append(table)

@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     password_required INTEGER NOT NULL DEFAULT 1,
-    role TEXT NOT NULL CHECK(role IN ('manager','staff','client')),
+    role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra','maintenance')),
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -84,6 +84,71 @@ CREATE TABLE IF NOT EXISTS stock_adjustments (
     reason TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS materials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    description TEXT NOT NULL,
+    load_sheet TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    photo_data TEXT DEFAULT '',
+    thumbnail_data TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS load_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    material_id INTEGER NOT NULL REFERENCES materials(id),
+    bmp TEXT NOT NULL UNIQUE,
+    area_code TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN')),
+    serial_number TEXT DEFAULT '',
+    location TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged')),
+    discharged_at TEXT,
+    discharged_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS load_entry_photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    load_entry_id INTEGER NOT NULL REFERENCES load_entries(id) ON DELETE CASCADE,
+    photo_data TEXT NOT NULL,
+    thumbnail_data TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_load_entries_material ON load_entries(material_id);
+CREATE INDEX IF NOT EXISTS idx_load_photos_entry ON load_entry_photos(load_entry_id);
+CREATE TABLE IF NOT EXISTS maintenance_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    area_code TEXT NOT NULL CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN')),
+    location TEXT DEFAULT '',
+    category TEXT NOT NULL CHECK(category IN ('electrical','plumbing','civil','painting','equipment','cleaning','other')),
+    priority TEXT NOT NULL CHECK(priority IN ('low','medium','high','urgent')),
+    description TEXT NOT NULL,
+    responsible TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','analysis','in_progress','waiting_material','completed')),
+    occurred_on TEXT NOT NULL,
+    due_on TEXT,
+    resolution TEXT DEFAULT '',
+    completed_on TEXT,
+    cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents >= 0),
+    notes TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS maintenance_photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES maintenance_requests(id) ON DELETE CASCADE,
+    phase TEXT NOT NULL CHECK(phase IN ('problem','resolution')),
+    photo_data TEXT NOT NULL,
+    thumbnail_data TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_status ON maintenance_requests(status);
+CREATE INDEX IF NOT EXISTS idx_maintenance_area ON maintenance_requests(area_code);
+CREATE INDEX IF NOT EXISTS idx_maintenance_photos_request ON maintenance_photos(request_id);
 CREATE TABLE IF NOT EXISTS membership_payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL REFERENCES players(id),
@@ -294,6 +359,34 @@ def migrate_payment_method(connection):
     """)
     connection.execute("PRAGMA foreign_keys = ON")
 
+def migrate_user_roles(connection):
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+    ).fetchone()
+    if not row or "'maintenance'" in (row[0] or ""):
+        return
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.executescript("""
+        BEGIN;
+        CREATE TABLE users_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            password_required INTEGER NOT NULL DEFAULT 1,
+            role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra','maintenance')),
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO users_new(id,username,name,password_hash,password_required,role,active,created_at)
+        SELECT id,username,name,password_hash,password_required,role,active,created_at FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_new RENAME TO users;
+        COMMIT;
+    """)
+    connection.execute("PRAGMA foreign_keys = ON")
+
 def migrate_product_categories(connection):
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='products'"
@@ -350,6 +443,7 @@ def migrate_product_categories(connection):
 
 def init_sqlite(wrapper):
     conn = wrapper.conn
+    migrate_user_roles(conn)
     migrate_payment_method(conn)
     conn.executescript(SCHEMA)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(players)")}
@@ -400,6 +494,19 @@ def init_sqlite(wrapper):
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
     conn.commit()
 
+    load_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entries)")}
+    load_migrations = {
+        "area_code": "TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN'))",
+        "status": "TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged'))",
+        "discharged_at": "TEXT",
+        "discharged_by": "INTEGER REFERENCES users(id)",
+    }
+    for column, definition in load_migrations.items():
+        if column not in load_columns:
+            conn.execute(f"ALTER TABLE load_entries ADD COLUMN {column} {definition}")
+    conn.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
+    conn.commit()
+
 def init_postgres(wrapper):
     wrapper.execute("""
     CREATE OR REPLACE FUNCTION date(t timestamp with time zone) RETURNS date AS $$
@@ -422,6 +529,7 @@ def init_postgres(wrapper):
     pg_schema = pg_schema.replace("created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP", "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP")
     pg_schema = pg_schema.replace("paid_at TEXT", "paid_at TIMESTAMP")
     pg_schema = pg_schema.replace("delivered_at TEXT", "delivered_at TIMESTAMP")
+    pg_schema = pg_schema.replace("discharged_at TEXT", "discharged_at TIMESTAMP")
     
     for stmt in pg_schema.split(';'):
         stmt_clean = stmt.strip()
@@ -430,6 +538,8 @@ def init_postgres(wrapper):
     
     # Run migration to add password_required if not exists in postgres
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_required INTEGER NOT NULL DEFAULT 1")
+    wrapper.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
+    wrapper.execute("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('manager','staff','client','infra','maintenance'))")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'approved'")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_order_id TEXT")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_payment_id TEXT")
@@ -439,6 +549,11 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS ready_for_delivery INTEGER NOT NULL DEFAULT 0")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_by INTEGER REFERENCES users(id)")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS area_code TEXT NOT NULL DEFAULT 'BAR'")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_by INTEGER REFERENCES users(id)")
+    wrapper.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
     wrapper.commit()

@@ -19,6 +19,8 @@ from src.routes.players import bp as players_bp
 from src.routes.products import bp as products_bp
 from src.routes.sales import bp as sales_bp
 from src.routes.finance import bp as finance_bp
+from src.routes.infra import bp as infra_bp
+from src.routes.maintenance import bp as maintenance_bp
 
 app = Flask(__name__)
 
@@ -34,7 +36,7 @@ app.config.update(
     DATABASE=database_path,
     MAX_CONTENT_LENGTH=5 * 1024 * 1024,
     PIX_KEY=os.environ.get("PIX_KEY", "adelmoliveira@gmail.com"),
-    PIX_MERCHANT_NAME=os.environ.get("PIX_MERCHANT_NAME", "BAR PELADEIROS GPCTA"),
+    PIX_MERCHANT_NAME=os.environ.get("PIX_MERCHANT_NAME", "PELADEIROS GPCTA"),
     PIX_MERCHANT_CITY=os.environ.get("PIX_MERCHANT_CITY", "SAO PAULO"),
     MERCADOPAGO_ACCESS_TOKEN=os.environ.get("MERCADOPAGO_ACCESS_TOKEN"),
     MERCADOPAGO_POS_ID=os.environ.get("MERCADOPAGO_POS_ID"),
@@ -75,6 +77,8 @@ app.register_blueprint(players_bp)
 app.register_blueprint(products_bp)
 app.register_blueprint(sales_bp)
 app.register_blueprint(finance_bp)
+app.register_blueprint(infra_bp)
+app.register_blueprint(maintenance_bp)
 
 # Exempt public/authentication routes from CSRF to avoid login issues in local/dev deployments
 from src.routes.auth import setup, login, client_access, logout

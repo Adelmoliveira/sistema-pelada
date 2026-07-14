@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block title %}Detalhes do material · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-3">
+  <a class="btn btn-outline-secondary" href="{{url_for('infra.materials')}}">← Voltar para Materiais</a>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-primary" href="{{url_for('infra.edit_material',material_id=material.id)}}">Editar</a>
+    <form method="post" action="{{url_for('infra.delete_material',material_id=material.id)}}" onsubmit="return confirm('Apagar este material permanentemente?')">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-outline-danger">Apagar</button>
+    </form>
+  </div>
+</div>
+<div class="card shadow-sm"><div class="card-body p-4 p-lg-5">
+  <div class="row g-4">
+    <div class="col-lg-4 text-center">{% if material.photo_data %}<img class="material-photo" src="{{material.photo_data}}" alt="Foto de {{material.description}}">{% else %}<div class="material-photo-placeholder">Sem foto</div>{% endif %}</div>
+    <div class="col-lg-8">
+      <small class="text-muted">Descrição</small><h1 class="h4 mt-1 mb-4">{{material.description}}</h1>
+      <div class="row g-3 mb-4"><div class="col-sm-6"><small class="text-muted">FCG - Código de controle patrimonial</small><div class="fw-semibold">{{material.load_sheet or 'Não informado'}}</div></div>
+      <div class="col-sm-6"><small class="text-muted">Cadastrado em</small><div>{{material.created_at|brdate}}</div></div></div>
+      <small class="text-muted">Observações</small><div class="material-notes mt-1">{{material.notes or 'Nenhuma observação.'}}</div>
+    </div>
+  </div>
+</div></div>
+{% endblock %}
