@@ -331,6 +331,11 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Carga em bom estado.", detail)
         self.assertIn("SERIE-001", detail)
 
+        qr_page = self.client.get(f"/infra/load-relation/{entry_id}/qr-code")
+        self.assertEqual(qr_page.status_code, 200)
+        self.assertIn("data:image/png;base64,", qr_page.get_data(as_text=True))
+        self.assertIn(f"/infra/load-relation/{entry_id}", qr_page.get_data(as_text=True))
+
         blocked_material_delete = self.client.post(f"/infra/materials/{material_id}/delete")
         self.assertEqual(blocked_material_delete.status_code, 302)
         with app.app_context():
@@ -362,6 +367,16 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(report.mimetype, "application/pdf")
         self.assertTrue(report.data.startswith(b"%PDF-"))
         self.assertIn("attachment", report.headers["Content-Disposition"])
+
+        discharged = self.client.post(f"/infra/load-relation/{entry_id}/discharge")
+        self.assertEqual(discharged.status_code, 302)
+        with app.app_context():
+            entry = get_db().execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+            self.assertEqual((entry["status"], entry["discharged_by"]), ("discharged", self.user_id))
+            self.assertIsNotNone(entry["discharged_at"])
+        listing = self.client.get("/infra/load-relation").get_data(as_text=True)
+        self.assertIn("Descarregado", listing)
+        self.assertNotIn(f'action="/infra/load-relation/{entry_id}/discharge"', listing)
 
         deleted = self.client.post(f"/infra/load-relation/{entry_id}/delete")
         self.assertEqual(deleted.status_code, 302)

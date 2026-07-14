@@ -3,7 +3,7 @@
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
   <div><a class="btn btn-sm btn-outline-secondary mb-2" href="{{url_for('infra.load_relation')}}">← Voltar para Relação de Carga</a><h1 class="h3 mb-0">{{entry.bmp}}</h1></div>
-  <div class="d-flex gap-2"><a class="btn btn-outline-primary" href="{{url_for('infra.edit_load_entry',entry_id=entry.id)}}">Editar</a><form method="post" action="{{url_for('infra.delete_load_entry',entry_id=entry.id)}}" onsubmit="return confirm('Apagar esta carga permanentemente?')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-outline-danger">Apagar</button></form></div>
+  <div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="{{url_for('infra.load_entry_qr_code',entry_id=entry.id)}}">Código QR</a><a class="btn btn-outline-primary" href="{{url_for('infra.edit_load_entry',entry_id=entry.id)}}">Editar</a></div>
 </div>
 <div class="row g-4">
   <div class="col-lg-7"><div class="card shadow-sm h-100"><div class="card-body p-4">
@@ -12,6 +12,8 @@
       <dt class="col-sm-4">FCG patrimonial</dt><dd class="col-sm-8">{{entry.material_fcg or '—'}}</dd>
       <dt class="col-sm-4">Nº de série</dt><dd class="col-sm-8">{{entry.serial_number or '—'}}</dd>
       <dt class="col-sm-4">Localização</dt><dd class="col-sm-8">{{entry.location or '—'}}</dd>
+      <dt class="col-sm-4">Situação</dt><dd class="col-sm-8"><span class="badge {{'text-bg-success' if entry.status == 'active' else 'text-bg-secondary'}}">{{'Em carga' if entry.status == 'active' else 'Descarregado'}}</span></dd>
+      {% if entry.status == 'discharged' %}<dt class="col-sm-4">Descarregado em</dt><dd class="col-sm-8">{{entry.discharged_at|brdate}}</dd><dt class="col-sm-4">Descarregado por</dt><dd class="col-sm-8">{{entry.discharged_by_name or '—'}}</dd>{% endif %}
       <dt class="col-sm-4">Cadastro</dt><dd class="col-sm-8">{{entry.created_at|brdate}}</dd>
       <dt class="col-sm-4">Última atualização</dt><dd class="col-sm-8">{{entry.updated_at|brdate}}</dd>
       <dt class="col-sm-4">Observações</dt><dd class="col-sm-8 load-notes">{{entry.notes or '—'}}</dd>

@@ -22,18 +22,21 @@
       <thead><tr><th>BMP</th><th>Material</th><th>Nº de série</th><th>Localização</th><th>Fotos</th><th>Cadastro</th><th class="text-end">Ações</th></tr></thead>
       <tbody>
         {% for entry in entries %}<tr>
-          <td><strong class="text-nowrap">{{entry.bmp}}</strong></td>
+          <td><strong class="text-nowrap">{{entry.bmp}}</strong><div><span class="badge {{'text-bg-success' if entry.status == 'active' else 'text-bg-secondary'}}">{{'Em carga' if entry.status == 'active' else 'Descarregado'}}</span></div></td>
           <td class="load-material"><strong>{{entry.material_description}}</strong>{% if entry.material_fcg %}<div class="small text-muted">FCG: {{entry.material_fcg}}</div>{% endif %}</td>
           <td>{{entry.serial_number or '—'}}</td>
           <td>{{entry.location or '—'}}</td>
           <td>{% if entry.thumbnail_data %}<span class="load-photo-preview"><img class="load-thumb" src="{{entry.thumbnail_data}}" alt="Foto de {{entry.bmp}}"><span class="badge text-bg-secondary">{{entry.photo_count}}</span></span>{% else %}<span class="text-muted">Sem fotos</span>{% endif %}</td>
           <td class="text-nowrap">{{entry.created_at|brdate}}</td>
-          <td><div class="d-flex flex-wrap gap-1 justify-content-end">
-            <a class="btn btn-sm btn-outline-secondary" href="{{url_for('infra.load_entry_detail',entry_id=entry.id)}}">Detalhes</a>
-            <a class="btn btn-sm btn-outline-primary" href="{{url_for('infra.edit_load_entry',entry_id=entry.id)}}">Editar</a>
-            <form method="post" action="{{url_for('infra.delete_load_entry',entry_id=entry.id)}}" onsubmit="return confirm('Apagar esta carga permanentemente?')">
-              <input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger">Apagar</button>
-            </form>
+          <td class="text-end"><div class="dropdown">
+            <button class="btn btn-sm btn-light load-actions-button" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Ações de {{entry.bmp}}">•••</button>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li><a class="dropdown-item" href="{{url_for('infra.load_entry_detail',entry_id=entry.id)}}">Detalhes</a></li>
+              <li><a class="dropdown-item" href="{{url_for('infra.edit_load_entry',entry_id=entry.id)}}">Editar</a></li>
+              <li><form method="post" action="{{url_for('infra.delete_load_entry',entry_id=entry.id)}}" onsubmit="return confirm('Apagar esta carga permanentemente?')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="dropdown-item text-danger" type="submit">Apagar</button></form></li>
+              <li><a class="dropdown-item" href="{{url_for('infra.load_entry_qr_code',entry_id=entry.id)}}">Código QR</a></li>
+              {% if entry.status == 'active' %}<li><form method="post" action="{{url_for('infra.discharge_load_entry',entry_id=entry.id)}}" onsubmit="return confirm('Descarregar {{entry.bmp}}? O item será mantido no histórico.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="dropdown-item" type="submit">Descarregar</button></form></li>{% endif %}
+            </ul>
           </div></td>
         </tr>{% else %}<tr><td colspan="7" class="text-center text-muted py-5">{{'Nenhuma carga encontrada para este filtro.' if query else 'Nenhuma carga cadastrada.'}}</td></tr>{% endfor %}
       </tbody>

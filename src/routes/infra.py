@@ -1,11 +1,12 @@
 import uuid
 
-from flask import Blueprint, current_app, flash, redirect, render_template, request, send_file, url_for
+from flask import Blueprint, current_app, flash, g, redirect, render_template, request, send_file, url_for
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.services.load_relation_pdf import build_load_relation_pdf
 from src.services.material_photos import process_material_photo
+from src.services.pix import generate_qrcode_base64
 from src.utils import alphabetical_key, local_today
 
 
@@ -262,8 +263,10 @@ def new_load_entry():
 def load_entry_detail(entry_id):
     db = get_db()
     entry = db.execute(
-        """SELECT le.*,m.description material_description,m.load_sheet material_fcg
-           FROM load_entries le JOIN materials m ON m.id=le.material_id WHERE le.id=?""",
+        """SELECT le.*,m.description material_description,m.load_sheet material_fcg,
+                  u.name discharged_by_name
+           FROM load_entries le JOIN materials m ON m.id=le.material_id
+           LEFT JOIN users u ON u.id=le.discharged_by WHERE le.id=?""",
         (entry_id,),
     ).fetchone()
     if not entry:
@@ -273,6 +276,44 @@ def load_entry_detail(entry_id):
         "SELECT * FROM load_entry_photos WHERE load_entry_id=? ORDER BY id", (entry_id,)
     ).fetchall()
     return render_template("load_entry_detail.html", entry=entry, photos=photos)
+
+
+@bp.get("/load-relation/<int:entry_id>/qr-code")
+@roles_allowed("manager", "staff")
+def load_entry_qr_code(entry_id):
+    entry = get_db().execute(
+        """SELECT le.id,le.bmp,le.status,m.description material_description
+           FROM load_entries le JOIN materials m ON m.id=le.material_id WHERE le.id=?""",
+        (entry_id,),
+    ).fetchone()
+    if not entry:
+        flash("Carga não encontrada.", "warning")
+        return redirect(url_for("infra.load_relation"))
+    detail_url = url_for("infra.load_entry_detail", entry_id=entry_id, _external=True)
+    qr_image = generate_qrcode_base64(detail_url)
+    return render_template(
+        "load_entry_qr_code.html", entry=entry, detail_url=detail_url, qr_image=qr_image,
+    )
+
+
+@bp.post("/load-relation/<int:entry_id>/discharge")
+@roles_allowed("manager", "staff")
+def discharge_load_entry(entry_id):
+    db = get_db()
+    entry = db.execute("SELECT bmp,status FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+    if not entry:
+        flash("Carga não encontrada.", "warning")
+    elif entry["status"] == "discharged":
+        flash(f"A carga {entry['bmp']} já foi descarregada.", "warning")
+    else:
+        db.execute(
+            """UPDATE load_entries SET status='discharged',discharged_at=CURRENT_TIMESTAMP,
+               discharged_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (g.user["id"], entry_id),
+        )
+        db.commit()
+        flash(f"Carga {entry['bmp']} descarregada e mantida no histórico.", "success")
+    return redirect(url_for("infra.load_relation"))
 
 
 @bp.route("/load-relation/<int:entry_id>/edit", methods=["GET", "POST"])

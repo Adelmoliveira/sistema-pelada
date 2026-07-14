@@ -101,6 +101,9 @@ CREATE TABLE IF NOT EXISTS load_entries (
     serial_number TEXT DEFAULT '',
     location TEXT DEFAULT '',
     notes TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged')),
+    discharged_at TEXT,
+    discharged_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -429,6 +432,17 @@ def init_sqlite(wrapper):
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
     conn.commit()
 
+    load_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entries)")}
+    load_migrations = {
+        "status": "TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged'))",
+        "discharged_at": "TEXT",
+        "discharged_by": "INTEGER REFERENCES users(id)",
+    }
+    for column, definition in load_migrations.items():
+        if column not in load_columns:
+            conn.execute(f"ALTER TABLE load_entries ADD COLUMN {column} {definition}")
+    conn.commit()
+
 def init_postgres(wrapper):
     wrapper.execute("""
     CREATE OR REPLACE FUNCTION date(t timestamp with time zone) RETURNS date AS $$
@@ -451,6 +465,7 @@ def init_postgres(wrapper):
     pg_schema = pg_schema.replace("created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP", "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP")
     pg_schema = pg_schema.replace("paid_at TEXT", "paid_at TIMESTAMP")
     pg_schema = pg_schema.replace("delivered_at TEXT", "delivered_at TIMESTAMP")
+    pg_schema = pg_schema.replace("discharged_at TEXT", "discharged_at TIMESTAMP")
     
     for stmt in pg_schema.split(';'):
         stmt_clean = stmt.strip()
@@ -468,6 +483,9 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS ready_for_delivery INTEGER NOT NULL DEFAULT 0")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_by INTEGER REFERENCES users(id)")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_by INTEGER REFERENCES users(id)")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
     wrapper.commit()
