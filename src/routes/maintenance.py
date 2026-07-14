@@ -41,7 +41,8 @@ def _form_values():
     area_code = request.form.get("area_code", "").strip().upper()
     category = request.form.get("category", "")
     priority = request.form.get("priority", "")
-    status = request.form.get("status", "open")
+    limited_access = g.user and g.user["role"] == "maintenance"
+    status = "open" if limited_access else request.form.get("status", "open")
     if not title:
         raise ValueError("O título do problema é obrigatório.")
     if not description:
@@ -55,23 +56,23 @@ def _form_values():
     if status not in STATUSES:
         raise ValueError("Selecione um status válido.")
     location = request.form.get("location", "").strip()
-    responsible = request.form.get("responsible", "").strip()
-    resolution = request.form.get("resolution", "").strip()
+    responsible = "" if limited_access else request.form.get("responsible", "").strip()
+    resolution = "" if limited_access else request.form.get("resolution", "").strip()
     notes = request.form.get("notes", "").strip()
     if len(title) > 200 or len(location) > 200 or len(responsible) > 150:
         raise ValueError("Um dos campos de identificação ultrapassou o tamanho permitido.")
     if any(len(value) > 5000 for value in (description, resolution, notes)):
         raise ValueError("Os textos devem ter no máximo 5.000 caracteres.")
     occurred_on = _valid_date(request.form.get("occurred_on"), "a ocorrência", required=True)
-    due_on = _valid_date(request.form.get("due_on"), "a previsão")
-    completed_on = _valid_date(request.form.get("completed_on"), "a conclusão")
+    due_on = "" if limited_access else _valid_date(request.form.get("due_on"), "a previsão")
+    completed_on = "" if limited_access else _valid_date(request.form.get("completed_on"), "a conclusão")
     if status == "completed":
         if not resolution:
             raise ValueError("Descreva a resolução antes de concluir o chamado.")
         completed_on = completed_on or local_today().isoformat()
     else:
         completed_on = ""
-    cost_cents = cents(request.form.get("cost", "0"))
+    cost_cents = 0 if limited_access else cents(request.form.get("cost", "0"))
     if cost_cents < 0:
         raise ValueError("O custo não pode ser negativo.")
     return (
@@ -173,13 +174,13 @@ def dashboard():
 
 
 @bp.route("/new", methods=["GET", "POST"])
-@roles_allowed("manager", "infra")
+@roles_allowed("manager", "infra", "maintenance")
 def new_request():
     if request.method == "POST":
         try:
             values = _form_values()
             problem_photos = _process_photos(request.files.getlist("problem_photos"))
-            resolution_photos = _process_photos(request.files.getlist("resolution_photos"))
+            resolution_photos = [] if g.user["role"] == "maintenance" else _process_photos(request.files.getlist("resolution_photos"))
             db = get_db()
             with db:
                 cursor = db.execute(
@@ -203,6 +204,8 @@ def new_request():
                         (request_id, photo, thumbnail),
                     )
             flash(f"Chamado {code} criado.", "success")
+            if g.user["role"] == "maintenance":
+                return redirect(url_for("maintenance.new_request"))
             return redirect(url_for("maintenance.request_detail", request_id=request_id))
         except ValueError as exc:
             flash(str(exc), "danger")

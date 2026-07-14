@@ -11,6 +11,8 @@ def home_endpoint(role):
         return "sales.sale"
     if role == "infra":
         return "infra.load_relation"
+    if role == "maintenance":
+        return "maintenance.new_request"
     return "finance.dashboard"
 
 def safe_next_url(value):
@@ -71,8 +73,8 @@ def login():
             "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND active=1",
             (request.form["username"].strip(),)
         ).fetchone()
-        passwordless_client = user and user["role"] == "client" and not user["password_required"]
-        if user and (passwordless_client or check_password_hash(user["password_hash"], request.form.get("password", ""))):
+        passwordless_user = user and user["role"] in ("client", "maintenance") and not user["password_required"]
+        if user and (passwordless_user or check_password_hash(user["password_hash"], request.form.get("password", ""))):
             session.clear()
             session["user_id"] = user["id"]
             return redirect(safe_next_url(request.form.get("next")) or url_for(home_endpoint(user["role"])))
@@ -110,10 +112,10 @@ def users():
             username = request.form["username"].strip()
             password = request.form.get("password", "")
             role = request.form["role"]
-            passwordless = role == "client" and request.form.get("passwordless") == "1"
+            passwordless = role == "maintenance" or (role == "client" and request.form.get("passwordless") == "1")
             if len(username) < 3:
                 raise ValueError("O usuário deve ter ao menos 3 caracteres.")
-            if role not in ("manager", "staff", "client", "infra"):
+            if role not in ("manager", "staff", "client", "infra", "maintenance"):
                 raise ValueError("Perfil inválido.")
             if not passwordless and len(password) < 8:
                 raise ValueError("A senha deve ter ao menos 8 caracteres.")

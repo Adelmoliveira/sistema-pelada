@@ -16,6 +16,7 @@
                     <select name="role" id="new-role" class="form-select mb-3">
                         <option value="client">Cliente — somente venda rápida</option>
                         <option value="infra">Infra — somente Materiais e Relação de Carga</option>
+                        <option value="maintenance">Manutenção — somente novo chamado, sem senha</option>
                         <option value="staff">Staff — sem peladeiros e relatórios</option>
                         <option value="manager">Gerente — acesso completo</option>
                     </select>
@@ -44,7 +45,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {% set labels={'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra'} %}
+                        {% set labels={'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção'} %}
                         {% for u in users %}
                         <tr class="{{'text-muted' if not u.active}}">
                             <td>{{u.name}}</td>
@@ -52,7 +53,7 @@
                             <td>
                                 {{labels[u.role]}}<br>
                                 <span class="badge {{'bg-success' if u.active else 'bg-secondary'}}">{{'Ativo' if u.active else 'Inativo'}}</span>
-                                {% if u.role=='client' %}
+                                {% if u.role in ['client','maintenance'] %}
                                 <span class="badge {{'bg-warning text-dark' if not u.password_required else 'bg-primary'}}">{{'Sem senha' if not u.password_required else 'Com senha'}}</span>
                                 {% endif %}
                             </td>
@@ -65,12 +66,12 @@
                                         <input type="password" name="new_password" class="form-control form-control-sm" minlength="8" placeholder="Nova senha" required>
                                         <button class="btn btn-sm btn-outline-primary text-nowrap">Trocar senha</button>
                                     </form>
-                                    {% elif u.password_required %}
+                                    {% elif u.role == 'client' and u.password_required %}
                                     <form method="post" action="{{url_for('auth.toggle_client_passwordless',user_id=u.id)}}">
                                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                                         <button class="btn btn-sm btn-outline-warning text-nowrap">Entrar sem senha</button>
                                     </form>
-                                    {% else %}
+                                    {% elif u.role == 'client' %}
                                     <form method="post" action="{{url_for('auth.toggle_client_passwordless',user_id=u.id)}}" class="d-flex gap-1">
                                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                                         <input type="password" name="new_password" class="form-control form-control-sm" minlength="8" placeholder="Nova senha" required>
@@ -116,9 +117,10 @@
 
     function accessMode() {
         const client = role.value === 'client';
+        const maintenance = role.value === 'maintenance';
         box.classList.toggle('d-none', !client);
         if (!client) check.checked = false;
-        password.disabled = client && check.checked;
+        password.disabled = maintenance || (client && check.checked);
         password.required = !password.disabled;
     }
 

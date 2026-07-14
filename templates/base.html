@@ -18,7 +18,7 @@
   <aside class="offcanvas-lg offcanvas-start app-sidebar" tabindex="-1" id="app-sidebar" aria-labelledby="sidebar-title">
     <div class="offcanvas-header sidebar-mobile-header"><span class="fw-semibold">Menu</span><button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" data-bs-target="#app-sidebar" aria-label="Fechar"></button></div>
     <div class="offcanvas-body sidebar-body">
-      <a class="sidebar-brand" href="{{url_for('infra.load_relation') if current_user.role == 'infra' else (url_for('sales.sale') if current_user.role == 'client' else url_for('finance.dashboard'))}}" id="sidebar-title">
+      <a class="sidebar-brand" href="{{url_for('maintenance.new_request') if current_user.role == 'maintenance' else (url_for('infra.load_relation') if current_user.role == 'infra' else (url_for('sales.sale') if current_user.role == 'client' else url_for('finance.dashboard')))}}" id="sidebar-title">
         <img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" alt="Logo GPCTA"><span><small>Grupo de Peladas do CTA</small><strong>PELADEIROS GPCTA</strong></span>
       </a>
       <nav class="sidebar-nav" aria-label="Menu principal">
@@ -39,13 +39,14 @@
             {% if current_user.role in ['manager','infra'] %}<a class="{{'active' if endpoint.startswith('maintenance.')}}" href="{{url_for('maintenance.requests_list')}}">Manutenção</a>{% endif %}<a class="{{'active' if endpoint.startswith('infra.material')}}" href="{{url_for('infra.materials')}}">Materiais</a><a class="{{'active' if endpoint.startswith('infra.load_')}}" href="{{url_for('infra.load_relation')}}">Relação de Carga</a>
           </div></div>
         </div>{% endif %}
+        {% if current_user.role == 'maintenance' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}"><span class="sidebar-module-icon">M</span><span>Novo chamado</span></a>{% endif %}
         <a class="sidebar-module sidebar-direct urgent {{'active' if urgent_active}}" href="{{url_for('players.urgent')}}"><span class="sidebar-module-icon">!</span><span>Urgente</span></a>
         {% if current_user.role == 'manager' %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if admin_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-admin" aria-expanded="{{'true' if admin_active else 'false'}}" aria-controls="sidebar-admin"><span class="sidebar-module-icon">A</span><span>Administração</span><span class="sidebar-chevron">⌄</span></button>
           <div class="collapse {{'show' if admin_active}}" id="sidebar-admin"><div class="sidebar-submenu"><a class="{{'active' if endpoint.startswith('players.') and not urgent_active}}" href="{{url_for('players.players')}}">Peladeiros</a><a class="{{'active' if endpoint == 'finance.reports'}}" href="{{url_for('finance.reports')}}">Relatórios</a><a class="{{'active' if endpoint.startswith('auth.user')}}" href="{{url_for('auth.users')}}">Usuários</a></div></div>
         </div>{% endif %}
       </nav>
-      <div class="sidebar-user"><div class="sidebar-user-avatar">{{current_user.name[:1]|upper}}</div><div class="sidebar-user-info"><strong>{{current_user.name}}</strong><small>{{{'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra'}.get(current_user.role,current_user.role)}}</small></div><form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-light">Sair</button></form></div>
+      <div class="sidebar-user"><div class="sidebar-user-avatar">{{current_user.name[:1]|upper}}</div><div class="sidebar-user-info"><strong>{{current_user.name}}</strong><small>{{{'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção'}.get(current_user.role,current_user.role)}}</small></div><form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-light">Sair</button></form></div>
     </div>
   </aside>
   <div class="app-main">

@@ -218,7 +218,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             db = get_db()
             role_ids = {"manager": self.user_id}
-            for role in ("staff", "client", "infra"):
+            for role in ("staff", "client", "infra", "maintenance"):
                 cursor = db.execute(
                     "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)",
                     (f"teste.{role}", f"Teste {role}", "hash", role),
@@ -235,6 +235,66 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 page = response.get_data(as_text=True)
                 self.assertIn('class="sidebar-module sidebar-direct urgent active"', page)
                 self.assertIn("<span>Urgente</span>", page)
+
+    def test_passwordless_maintenance_user_only_opens_new_requests(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        created = self.client.post(
+            "/users",
+            data={"name": "Portaria", "username": "manutencao", "role": "maintenance", "password": ""},
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            user = get_db().execute("SELECT * FROM users WHERE username='manutencao'").fetchone()
+            self.assertEqual((user["role"], user["password_required"]), ("maintenance", 0))
+            maintenance_user_id = user["id"]
+
+        self.client.post("/logout")
+        login = self.client.post("/login", data={"username": "manutencao", "password": ""})
+        self.assertEqual(login.status_code, 302)
+        self.assertTrue(login.headers["Location"].endswith("/infra/maintenance/new"))
+
+        form = self.client.get("/infra/maintenance/new")
+        self.assertEqual(form.status_code, 200)
+        page = form.get_data(as_text=True)
+        self.assertIn("<span>Novo chamado</span>", page)
+        self.assertIn("<span>Urgente</span>", page)
+        self.assertNotIn("<span>Infra-Estrutura</span>", page)
+        self.assertNotIn("Acompanhamento e resolução", page)
+        self.assertNotIn("← Voltar", page)
+
+        submitted = self.client.post(
+            "/infra/maintenance/new",
+            data={
+                "title": "Lâmpada queimada",
+                "area_code": "SAL",
+                "location": "Entrada principal",
+                "category": "electrical",
+                "priority": "medium",
+                "description": "A luminária da entrada não acende.",
+                "occurred_on": "2026-07-14",
+                "notes": "Verificar antes do evento.",
+                "status": "completed",
+                "responsible": "valor indevido",
+                "cost": "999,99",
+            },
+        )
+        self.assertEqual(submitted.status_code, 302)
+        self.assertTrue(submitted.headers["Location"].endswith("/infra/maintenance/new"))
+        with app.app_context():
+            maintenance = get_db().execute(
+                "SELECT * FROM maintenance_requests WHERE created_by=?", (maintenance_user_id,)
+            ).fetchone()
+            self.assertIsNotNone(maintenance)
+            self.assertEqual(
+                (maintenance["status"], maintenance["responsible"], maintenance["cost_cents"], maintenance["notes"]),
+                ("open", "", 0, "Verificar antes do evento."),
+            )
+
+        for forbidden_path in ("/infra/maintenance", "/infra/materials", "/sale", "/users"):
+            denied = self.client.get(forbidden_path)
+            self.assertEqual(denied.status_code, 302)
+            self.assertTrue(denied.headers["Location"].endswith("/infra/maintenance/new"))
 
     def test_material_crud_with_optimized_photo(self):
         with self.client.session_transaction() as session:

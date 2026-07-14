@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     password_required INTEGER NOT NULL DEFAULT 1,
-    role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra')),
+    role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra','maintenance')),
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -363,7 +363,7 @@ def migrate_user_roles(connection):
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
     ).fetchone()
-    if not row or "'infra'" in (row[0] or ""):
+    if not row or "'maintenance'" in (row[0] or ""):
         return
     connection.commit()
     connection.execute("PRAGMA foreign_keys = OFF")
@@ -375,7 +375,7 @@ def migrate_user_roles(connection):
             name TEXT NOT NULL,
             password_hash TEXT NOT NULL,
             password_required INTEGER NOT NULL DEFAULT 1,
-            role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra')),
+            role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra','maintenance')),
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -539,7 +539,7 @@ def init_postgres(wrapper):
     # Run migration to add password_required if not exists in postgres
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_required INTEGER NOT NULL DEFAULT 1")
     wrapper.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
-    wrapper.execute("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('manager','staff','client','infra'))")
+    wrapper.execute("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('manager','staff','client','infra','maintenance'))")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'approved'")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_order_id TEXT")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_payment_id TEXT")
