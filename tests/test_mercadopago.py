@@ -251,6 +251,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("FCG-1877", listing)
         detail = self.client.get(f"/infra/materials/{material_id}").get_data(as_text=True)
         self.assertIn("Material em bom estado.", detail)
+        self.assertIn("FCG - Código de controle patrimonial", detail)
 
         edited = self.client.post(
             f"/infra/materials/{material_id}/edit",

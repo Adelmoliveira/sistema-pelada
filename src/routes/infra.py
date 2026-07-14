@@ -17,7 +17,7 @@ def material_form_values():
         raise ValueError("A descrição deve ter no máximo 500 caracteres.")
     load_sheet = request.form.get("load_sheet", "").strip()
     if len(load_sheet) > 100:
-        raise ValueError("A Ficha de Carga deve ter no máximo 100 caracteres.")
+        raise ValueError("O código patrimonial FCG deve ter no máximo 100 caracteres.")
     notes = request.form.get("notes", "").strip()
     if len(notes) > 5000:
         raise ValueError("As observações devem ter no máximo 5.000 caracteres.")

@@ -15,7 +15,7 @@
     <div class="col-lg-4 text-center">{% if material.photo_data %}<img class="material-photo" src="{{material.photo_data}}" alt="Foto de {{material.description}}">{% else %}<div class="material-photo-placeholder">Sem foto</div>{% endif %}</div>
     <div class="col-lg-8">
       <small class="text-muted">Descrição</small><h1 class="h4 mt-1 mb-4">{{material.description}}</h1>
-      <div class="row g-3 mb-4"><div class="col-sm-6"><small class="text-muted">Ficha de Carga (FCG)</small><div class="fw-semibold">{{material.load_sheet or 'Não informada'}}</div></div>
+      <div class="row g-3 mb-4"><div class="col-sm-6"><small class="text-muted">FCG - Código de controle patrimonial</small><div class="fw-semibold">{{material.load_sheet or 'Não informado'}}</div></div>
       <div class="col-sm-6"><small class="text-muted">Cadastrado em</small><div>{{material.created_at|brdate}}</div></div></div>
       <small class="text-muted">Observações</small><div class="material-notes mt-1">{{material.notes or 'Nenhuma observação.'}}</div>
     </div>

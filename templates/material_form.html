@@ -11,8 +11,8 @@
       <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
       <label class="form-label fw-semibold" for="description">Descrição <span class="text-danger">*</span></label>
       <textarea class="form-control mb-3" id="description" name="description" rows="3" maxlength="500" required>{{request.form.get('description', material.description if material else '')}}</textarea>
-      <label class="form-label" for="load-sheet">Ficha de Carga (FCG)</label>
-      <input class="form-control mb-3" id="load-sheet" name="load_sheet" maxlength="100" value="{{request.form.get('load_sheet', material.load_sheet if material else '')}}">
+      <label class="form-label" for="load-sheet">FCG - Código de controle patrimonial</label>
+      <input class="form-control mb-3" id="load-sheet" name="load_sheet" maxlength="100" placeholder="Informe o código patrimonial" value="{{request.form.get('load_sheet', material.load_sheet if material else '')}}">
       <label class="form-label" for="notes">Observações</label>
       <textarea class="form-control mb-3" id="notes" name="notes" rows="6" maxlength="5000">{{request.form.get('notes', material.notes if material else '')}}</textarea>
       <label class="form-label" for="photo">Foto</label>
