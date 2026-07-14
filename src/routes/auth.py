@@ -6,6 +6,10 @@ from src.db import get_db
 
 bp = Blueprint("auth", __name__)
 
+def make_password_hash(password):
+    # Compatível com o Python do macOS e com o ambiente de produção.
+    return generate_password_hash(password, method="pbkdf2:sha256", salt_length=16)
+
 def roles_allowed(*roles):
     def decorator(view):
         @wraps(view)
@@ -36,7 +40,7 @@ def setup():
             try:
                 db.execute(
                     "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'manager')",
-                    (username, request.form["name"].strip(), generate_password_hash(password))
+                    (username, request.form["name"].strip(), make_password_hash(password))
                 )
                 db.commit()
                 flash("Gerente criado. Entre com seu usuário e senha.", "success")
@@ -103,7 +107,7 @@ def users():
                 raise ValueError("Perfil inválido.")
             if not passwordless and len(password) < 8:
                 raise ValueError("A senha deve ter ao menos 8 caracteres.")
-            password_hash = generate_password_hash(password if not passwordless else os.urandom(32).hex())
+            password_hash = make_password_hash(password if not passwordless else os.urandom(32).hex())
             db.execute("INSERT INTO users(username,name,password_hash,role,password_required) VALUES(?,?,?,?,?)", (
                 username, request.form["name"].strip(), password_hash, role, 0 if passwordless else 1))
             db.commit()
@@ -137,7 +141,7 @@ def reset_user_password(user_id):
     else:
         try:
             db.execute("UPDATE users SET password_hash=?,password_required=1 WHERE id=?",
-                         (generate_password_hash(password), user_id))
+                         (make_password_hash(password), user_id))
             db.commit()
             flash(f"Senha de {target['name']} alterada.", "success")
         except Exception as exc:
@@ -187,7 +191,7 @@ def toggle_client_passwordless(user_id):
             try:
                 if new_value:
                     db.execute("UPDATE users SET password_required=1,password_hash=? WHERE id=?",
-                                 (generate_password_hash(new_password), user_id))
+                                 (make_password_hash(new_password), user_id))
                 else:
                     db.execute("UPDATE users SET password_required=0 WHERE id=?", (user_id,))
                 db.commit()

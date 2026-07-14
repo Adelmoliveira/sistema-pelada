@@ -11,12 +11,14 @@ from PIL import Image
 
 from app import app
 from src.db import get_db
+from src.routes.auth import make_password_hash
 from src.routes.sales import pix_access_token
 from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
 from src.utils import alphabetical_key, brdate, local_today, month_bounds
+from werkzeug.security import check_password_hash
 
 
 class MercadoPagoFlowTest(unittest.TestCase):
@@ -280,6 +282,11 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("BAR PELADEIROS GPCTA", page)
         self.assertIn("Copyright © 2026 | Grupo de Peladas do CTA - GPCTA", page)
         self.assertNotIn(">Sair</button>", page)
+
+    def test_password_hash_is_compatible_with_local_python(self):
+        password_hash = make_password_hash("senha-segura-123")
+        self.assertTrue(password_hash.startswith("pbkdf2:sha256:"))
+        self.assertTrue(check_password_hash(password_hash, "senha-segura-123"))
 
     def test_manager_can_edit_user_display_name_and_username(self):
         with self.client.session_transaction() as session:
