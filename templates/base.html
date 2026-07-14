@@ -21,7 +21,7 @@
   {% if current_user.role == 'manager' %}<a class="nav-link" href="{{ url_for('finance.reports') }}">Relatórios</a>{% endif %}
   {% if current_user.role in ['manager','staff'] %}<a class="nav-link nav-urgent fw-bold" href="{{ url_for('players.urgent') }}">Urgente</a>{% endif %}
   {% if current_user.role == 'manager' %}<a class="nav-link" href="{{url_for('auth.users')}}">Usuários</a>{% endif %}
-  <a class="nav-link" href="{{ url_for('sales.sale') }}">Venda rápida</a>
+  <a class="nav-link nav-sale fw-bold" href="{{ url_for('sales.sale') }}">Venda rápida</a>
   <span class="navbar-text ms-lg-3 me-2">{{current_user.name}}</span><form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/><button class="btn btn-sm btn-outline-light">Sair</button></form>
  </div></div></div>
 </nav>
