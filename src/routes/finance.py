@@ -41,14 +41,25 @@ def reports():
         COALESCE(SUM(CASE WHEN payment_method='Débito' THEN total_cents END),0) debit,
         COALESCE(SUM(CASE WHEN payment_method='Cortesia' THEN total_cents END),0) courtesy
         FROM sales WHERE paid=1 AND created_at>=? AND created_at<?""", (start, end)).fetchone()
+
+    courtesy_items = db.execute(
+        """SELECT COALESCE(SUM(i.quantity),0)
+           FROM sale_items i JOIN sales s ON s.id=i.sale_id
+           WHERE s.paid=1 AND s.payment_method='Cortesia'
+             AND s.created_at>=? AND s.created_at<?""",
+        (start, end),
+    ).fetchone()[0]
         
     by_product = db.execute("""SELECT p.name, SUM(i.quantity) quantity,
-        SUM(i.quantity*i.unit_price_cents) total, SUM(i.quantity*(i.unit_price_cents-i.unit_cost_cents)) profit
+        SUM(CASE WHEN s.payment_method='Cortesia' THEN i.quantity ELSE 0 END) courtesy_quantity,
+        SUM(CASE WHEN s.payment_method!='Cortesia' THEN i.quantity*i.unit_price_cents ELSE 0 END) total,
+        SUM(CASE WHEN s.payment_method!='Cortesia' THEN i.quantity*(i.unit_price_cents-i.unit_cost_cents) ELSE 0 END) profit
         FROM sale_items i JOIN sales s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id
         WHERE s.paid=1 AND s.created_at>=? AND s.created_at<? GROUP BY p.id, p.name ORDER BY quantity DESC""", (start, end)).fetchall()
         
     by_player = db.execute("""SELECT p.name, COUNT(s.id) purchases, SUM(s.total_cents) total
-        FROM sales s JOIN players p ON p.id=s.player_id WHERE s.paid=1 AND s.created_at>=? AND s.created_at<?
+        FROM sales s JOIN players p ON p.id=s.player_id
+        WHERE s.paid=1 AND s.payment_method!='Cortesia' AND s.created_at>=? AND s.created_at<?
         GROUP BY p.id, p.name ORDER BY total DESC""", (start, end)).fetchall()
         
     sales_rows = db.execute("""SELECT s.*, p.name player_name FROM sales s JOIN players p ON p.id=s.player_id
@@ -86,7 +97,8 @@ def reports():
     }
     
     return render_template("reports.html", month=month, summary=summary, by_product=by_product,
-                           by_player=by_player, sales=sales_rows, profit=profit, membership=membership)
+                           by_player=by_player, sales=sales_rows, profit=profit,
+                           courtesy_items=courtesy_items, membership=membership)
 
 @bp.route("/finance", methods=["GET", "POST"])
 @roles_allowed("manager")
