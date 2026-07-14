@@ -207,6 +207,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('class="nav-item dropdown"', page)
         self.assertLess(page.index(">Estoque</a>"), page.index(">Produtos</a>"))
         self.assertLess(page.index(">Materiais</a>"), page.index(">Relação de Carga</a>"))
+        self.assertIn('alt="Logo GPCTA"', page)
+        self.assertNotIn("<span>BAR PELADEIROS GPCTA</span>", page)
 
     def test_material_crud_with_optimized_photo(self):
         with self.client.session_transaction() as session:
