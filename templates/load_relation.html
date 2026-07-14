@@ -19,7 +19,7 @@
 </div>
 
 <div class="card shadow-sm">
-  <div class="table-responsive">
+  <div class="table-responsive load-table-responsive">
     <table class="table table-hover align-middle mb-0">
       <thead><tr><th>BMP</th><th>Material</th><th>Nº de série</th><th>Localização</th><th>Fotos</th><th>Cadastro</th><th class="text-end">Ações</th></tr></thead>
       <tbody>
@@ -52,3 +52,17 @@
   <li class="page-item {{'disabled' if page == pages}}"><a class="page-link" href="{{url_for('infra.load_relation',q=query,area=area_code,page=page+1)}}">Próxima</a></li>
 </ul></nav>{% endif %}
 {% endblock %}
+{% block scripts %}<script>
+document.querySelectorAll('.load-actions-button').forEach(button=>{
+  bootstrap.Dropdown.getOrCreateInstance(button,{
+    boundary:'viewport',
+    popperConfig(defaultConfig){
+      return {...defaultConfig,strategy:'fixed',modifiers:[
+        ...(defaultConfig.modifiers||[]),
+        {name:'flip',options:{boundary:'viewport',padding:8,fallbackPlacements:['top-end','left-start','bottom-end']}},
+        {name:'preventOverflow',options:{boundary:'viewport',padding:8}}
+      ]};
+    }
+  });
+});
+</script>{% endblock %}
