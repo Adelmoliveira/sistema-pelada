@@ -14,6 +14,7 @@
 {% set infra_active=endpoint.startswith('infra.') or endpoint.startswith('maintenance.') %}
 {% set urgent_active=endpoint == 'players.urgent' %}
 {% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) or endpoint == 'finance.reports' %}
+{% set role_label={'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção'}.get(current_user.role,current_user.role) %}
 <div class="app-shell" id="app-shell">
   <aside class="offcanvas-lg offcanvas-start app-sidebar" tabindex="-1" id="app-sidebar" aria-labelledby="sidebar-title">
     <div class="offcanvas-header sidebar-mobile-header"><span class="fw-semibold">Menu</span><button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" data-bs-target="#app-sidebar" aria-label="Fechar"></button></div>
@@ -46,11 +47,14 @@
           <div class="collapse {{'show' if admin_active}}" id="sidebar-admin"><div class="sidebar-submenu"><a class="{{'active' if endpoint.startswith('players.') and not urgent_active}}" href="{{url_for('players.players')}}">Peladeiros</a><a class="{{'active' if endpoint == 'finance.reports'}}" href="{{url_for('finance.reports')}}">Relatórios</a><a class="{{'active' if endpoint.startswith('auth.user')}}" href="{{url_for('auth.users')}}">Usuários</a></div></div>
         </div>{% endif %}
       </nav>
-      <div class="sidebar-user"><div class="sidebar-user-avatar">{{current_user.name[:1]|upper}}</div><div class="sidebar-user-info"><strong>{{current_user.name}}</strong><small>{{{'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção'}.get(current_user.role,current_user.role)}}</small></div><form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-light">Sair</button></form></div>
     </div>
   </aside>
   <div class="app-main">
-    <header class="app-topbar sticky-top"><button class="sidebar-toggle" id="sidebar-toggle" type="button" data-bs-toggle="offcanvas" data-bs-target="#app-sidebar" aria-controls="app-sidebar" aria-label="Abrir ou recolher menu"><span></span><span></span><span></span></button><div class="topbar-title"><strong>PELADEIROS GPCTA</strong><small>Gestão integrada</small></div><div class="topbar-user">{{current_user.name}}</div></header>
+    <header class="app-topbar sticky-top">
+      <button class="sidebar-toggle" id="sidebar-toggle" type="button" data-bs-toggle="offcanvas" data-bs-target="#app-sidebar" aria-controls="app-sidebar" aria-label="Abrir ou recolher menu"><span></span><span></span><span></span></button>
+      <div class="topbar-title"><strong>PELADEIROS GPCTA</strong><small>Gestão integrada</small></div>
+      <div class="topbar-account"><div class="topbar-avatar">{{current_user.name[:1]|upper}}</div><div class="topbar-account-info"><strong>{{current_user.name}}</strong><small>{{role_label}}</small></div><form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-secondary">Sair</button></form></div>
+    </header>
     <main class="app-page container-fluid">
 {% else %}
 <main class="container py-4">

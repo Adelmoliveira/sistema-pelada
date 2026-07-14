@@ -213,6 +213,11 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('class="offcanvas-lg offcanvas-start app-sidebar"', page)
         self.assertIn('alt="Logo GPCTA"', page)
         self.assertNotIn('class="navbar ', page)
+        self.assertNotIn('class="sidebar-user"', page)
+        self.assertIn('class="topbar-account"', page)
+        self.assertIn('<strong>Teste</strong><small>Gerente</small>', page)
+        self.assertEqual(page.count('<strong>Teste</strong>'), 1)
+        self.assertIn('action="/logout"', page)
 
     def test_urgent_is_visible_and_accessible_to_every_user_role(self):
         with app.app_context():
