@@ -11,5 +11,11 @@
       "src": "/(.*)",
       "dest": "app.py"
     }
+  ],
+  "crons": [
+    {
+      "path": "/cron/payment-reminders",
+      "schedule": "0 12 * * *"
+    }
   ]
 }

@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,7 +12,8 @@ from src.routes.sales import pix_access_token
 from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
-from src.utils import brdate, month_bounds
+from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
+from src.utils import brdate, local_today, month_bounds
 
 
 class MercadoPagoFlowTest(unittest.TestCase):
@@ -27,6 +28,9 @@ class MercadoPagoFlowTest(unittest.TestCase):
             MERCADOPAGO_ACCESS_TOKEN="APP_USR-test",
             MERCADOPAGO_POS_ID="CAIXA_TESTE",
             MERCADOPAGO_WEBHOOK_SECRET="webhook-secret",
+            GMAIL_SMTP_USER="diretoriagpcta@gmail.com",
+            GMAIL_APP_PASSWORD="app-password-test",
+            CRON_SECRET="cron-secret-test",
         )
         with app.app_context():
             db = get_db()
@@ -171,6 +175,55 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             user = get_db().execute("SELECT * FROM users WHERE id=?", (self.user_id,)).fetchone()
             self.assertEqual((user["name"], user["username"], user["role"]), ("Ana", "ana.staff", "manager"))
+
+    def test_reminders_calculate_debt_render_and_prevent_duplicate_email(self):
+        sent_messages = []
+
+        def fake_send(sender, password, recipient, subject, body):
+            sent_messages.append((sender, recipient, subject, body))
+
+        with app.app_context():
+            db = get_db()
+            settings = get_reminder_settings(db)
+            debtors = outstanding_players(db, date(2026, 7, 5))
+            self.assertEqual(debtors[0]["amount_cents"], 10500)
+            first = dispatch_reminders(
+                db, settings, "diretoriagpcta@gmail.com", "test", date(2026, 7, 5), fake_send
+            )
+            second = dispatch_reminders(
+                db, settings, "diretoriagpcta@gmail.com", "test", date(2026, 7, 5), fake_send
+            )
+            self.assertEqual(first, {"sent": 1, "failed": 0, "skipped": 0, "without_email": 0})
+            self.assertEqual(second, {"sent": 0, "failed": 0, "skipped": 1, "without_email": 0})
+            self.assertEqual(len(sent_messages), 1)
+            self.assertIn("Peladeiro", sent_messages[0][3])
+            self.assertIn("R$ 105,00", sent_messages[0][3])
+
+    def test_manager_edits_reminder_and_cron_requires_secret(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/finance/reminders")
+        self.assertEqual(page.status_code, 200)
+        response = self.client.post(
+            "/finance/reminders/settings",
+            data={
+                "enabled": "1",
+                "schedule_day": str(local_today().day),
+                "subject": "Cobrança para {{ nome }}",
+                "body": "Total: {{ total }}",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        unauthorized = self.client.get("/cron/payment-reminders")
+        self.assertEqual(unauthorized.status_code, 401)
+        with patch("src.routes.finance.dispatch_reminders", return_value={
+            "sent": 1, "failed": 0, "skipped": 0, "without_email": 0,
+        }) as dispatch_mock:
+            authorized = self.client.get(
+                "/cron/payment-reminders", headers={"Authorization": "Bearer cron-secret-test"}
+            )
+        self.assertEqual(authorized.status_code, 200)
+        dispatch_mock.assert_called_once()
 
     def test_legacy_pix_remains_available_until_credentials_are_configured(self):
         app.config.update(

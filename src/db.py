@@ -101,6 +101,24 @@ CREATE TABLE IF NOT EXISTS membership_months (
     month TEXT NOT NULL,
     UNIQUE(player_id, month)
 );
+CREATE TABLE IF NOT EXISTS reminder_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    schedule_day INTEGER NOT NULL DEFAULT 5 CHECK(schedule_day BETWEEN 1 AND 28),
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS reminder_dispatches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id),
+    period TEXT NOT NULL,
+    recipient_email TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('sent','failed')),
+    error_message TEXT DEFAULT '',
+    sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(player_id, period)
+);
 CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_items_sale ON sale_items(sale_id);
 """

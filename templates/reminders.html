@@ -1,0 +1,103 @@
+{% extends 'base.html' %}{% block content %}
+<div class="d-flex flex-wrap gap-3 justify-content-between align-items-start mb-4">
+    <div>
+        <a href="{{url_for('finance.finance')}}" class="text-decoration-none">← Voltar ao Financeiro</a>
+        <h1 class="h3 mt-2 mb-1">Lembretes de mensalidade</h1>
+        <p class="text-muted mb-0">Cobrança automática e individual dos peladeiros com mensalidades pendentes.</p>
+    </div>
+    <span class="badge {{'bg-success' if settings.enabled else 'bg-secondary'}} fs-6">
+        {{'Agendamento ativo' if settings.enabled else 'Agendamento desativado'}}
+    </span>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card shadow-sm">
+            <div class="card-header"><strong>Mensagem e programação</strong></div>
+            <div class="card-body">
+                <form method="post" action="{{url_for('finance.save_reminder_settings')}}">
+                    <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" role="switch" id="enabled" name="enabled"
+                            value="1" {{'checked' if settings.enabled}}>
+                        <label class="form-check-label fw-semibold" for="enabled">Ativar envio automático mensal</label>
+                    </div>
+                    <label class="form-label" for="schedule-day">Dia do mês</label>
+                    <input id="schedule-day" class="form-control mb-3" type="number" name="schedule_day"
+                        min="1" max="28" value="{{settings.schedule_day}}" required>
+                    <label class="form-label" for="subject">Assunto</label>
+                    <input id="subject" class="form-control mb-3" name="subject" value="{{settings.subject}}" required>
+                    <label class="form-label" for="body">Mensagem</label>
+                    <textarea id="body" class="form-control font-monospace" name="body" rows="18"
+                        required>{{settings.body}}</textarea>
+                    <div class="form-text mb-3">
+                        Campos disponíveis: <code>{% raw %}{{ nome }}{% endraw %}</code>,
+                        <code>{% raw %}{{ ano }}{% endraw %}</code>, <code>{% raw %}{{ mes }}{% endraw %}</code>,
+                        <code>{% raw %}{{ meses }}{% endraw %}</code>, <code>{% raw %}{{ debito }}{% endraw %}</code> e
+                        <code>{% raw %}{{ total }}{% endraw %}</code>. Use <code>**texto**</code> para negrito.
+                    </div>
+                    <button class="btn btn-primary">Salvar configuração</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="card shadow-sm mb-4">
+            <div class="card-header"><strong>Envio pelo Gmail</strong></div>
+            <div class="card-body">
+                <p class="mb-2"><strong>Remetente:</strong> {{sender}}</p>
+                {% if smtp_ready %}
+                <div class="alert alert-success py-2">Credenciais configuradas.</div>
+                {% else %}
+                <div class="alert alert-warning py-2">Credenciais ainda não configuradas na Vercel.</div>
+                {% endif %}
+                <p class="small text-muted">O envio manual respeita o controle mensal: uma cobrança já enviada com
+                    sucesso não será duplicada.</p>
+                <form method="post" action="{{url_for('finance.send_reminders_now')}}"
+                    onsubmit="return confirm('Enviar agora para todos os peladeiros pendentes que ainda não receberam neste mês?')">
+                    <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+                    <button class="btn btn-success w-100" {{'disabled' if not smtp_ready}}>Enviar lembretes agora</button>
+                </form>
+            </div>
+        </div>
+        <div class="card shadow-sm">
+            <div class="card-header d-flex justify-content-between">
+                <strong>Pendentes até {{today.strftime('%m/%Y')}}</strong>
+                <span>{{debtors|length}}</span>
+            </div>
+            <div class="list-group list-group-flush">
+                {% for debtor in debtors %}
+                <div class="list-group-item">
+                    <div class="d-flex justify-content-between gap-2">
+                        <strong>{{debtor.name}}</strong><strong class="text-danger">{{debtor.amount_cents|money}}</strong>
+                    </div>
+                    <div class="small text-muted">{{debtor.missing_month_names}}</div>
+                    {% if debtor.email %}<div class="small">{{debtor.email}}</div>
+                    {% else %}<div class="small text-danger fw-semibold">Sem e-mail cadastrado</div>{% endif %}
+                </div>
+                {% else %}
+                <div class="list-group-item text-muted">Não há mensalidades pendentes.</div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card shadow-sm mt-4">
+    <div class="card-header"><strong>Histórico de envios</strong></div>
+    <div class="table-responsive">
+        <table class="table align-middle mb-0">
+            <thead><tr><th>Data</th><th>Peladeiro</th><th>Período</th><th>E-mail</th><th>Status</th><th>Detalhe</th></tr></thead>
+            <tbody>
+                {% for item in history %}<tr>
+                    <td class="text-nowrap">{{item.sent_at|brdate}}</td>
+                    <td>{{item.player_name}}</td><td>{{item.period}}</td><td>{{item.recipient_email}}</td>
+                    <td><span class="badge {{'bg-success' if item.status=='sent' else 'bg-danger'}}">
+                        {{'Enviado' if item.status=='sent' else 'Falhou'}}</span></td>
+                    <td class="small text-danger">{{item.error_message}}</td>
+                </tr>{% else %}<tr><td colspan="6" class="text-muted">Nenhum lembrete enviado.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

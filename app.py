@@ -39,6 +39,9 @@ app.config.update(
     MERCADOPAGO_ACCESS_TOKEN=os.environ.get("MERCADOPAGO_ACCESS_TOKEN"),
     MERCADOPAGO_POS_ID=os.environ.get("MERCADOPAGO_POS_ID"),
     MERCADOPAGO_WEBHOOK_SECRET=os.environ.get("MERCADOPAGO_WEBHOOK_SECRET"),
+    GMAIL_SMTP_USER=os.environ.get("GMAIL_SMTP_USER"),
+    GMAIL_APP_PASSWORD=os.environ.get("GMAIL_APP_PASSWORD"),
+    CRON_SECRET=os.environ.get("CRON_SECRET"),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=is_vercel,
@@ -109,6 +112,7 @@ def load_user_and_protect_routes():
         "sales.mercadopago_create_order",
         "sales.mercadopago_order_status",
         "sales.mercadopago_webhook",
+        "finance.payment_reminders_cron",
     }:
         return None
 

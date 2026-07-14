@@ -1,7 +1,9 @@
-from datetime import datetime
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
+import hmac
+
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify
 from src.db import get_db
 from src.routes.auth import roles_allowed
+from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
 from src.utils import money, brdate, month_bounds, add_months, local_today
 
 bp = Blueprint("finance", __name__)
@@ -182,3 +184,96 @@ def delete_membership_payment(payment_id):
         current_app.logger.error(f"Erro ao deletar recebimento {payment_id}: {exc}")
         flash("Erro interno ao apagar o recebimento.", "danger")
     return redirect(request.referrer or url_for("finance.finance"))
+
+
+def smtp_configuration():
+    return (
+        current_app.config.get("GMAIL_SMTP_USER"),
+        current_app.config.get("GMAIL_APP_PASSWORD"),
+    )
+
+
+@bp.get("/finance/reminders")
+@roles_allowed("manager")
+def reminders():
+    db = get_db()
+    settings = get_reminder_settings(db)
+    today = local_today()
+    debtors = outstanding_players(db, today)
+    history = db.execute(
+        """SELECT rd.*,p.name player_name FROM reminder_dispatches rd
+           JOIN players p ON p.id=rd.player_id ORDER BY rd.id DESC LIMIT 50"""
+    ).fetchall()
+    sender, password = smtp_configuration()
+    return render_template(
+        "reminders.html", settings=settings, debtors=debtors, history=history,
+        smtp_ready=bool(sender and password), sender=sender or "diretoriagpcta@gmail.com",
+        today=today,
+    )
+
+
+@bp.post("/finance/reminders/settings")
+@roles_allowed("manager")
+def save_reminder_settings():
+    db = get_db()
+    settings = get_reminder_settings(db)
+    subject = request.form.get("subject", "").strip()
+    body = request.form.get("body", "").strip()
+    try:
+        day = int(request.form.get("schedule_day", "5"))
+        if not 1 <= day <= 28:
+            raise ValueError
+    except ValueError:
+        flash("O dia do envio deve estar entre 1 e 28.", "danger")
+        return redirect(url_for("finance.reminders"))
+    if not subject or not body:
+        flash("Assunto e mensagem são obrigatórios.", "danger")
+        return redirect(url_for("finance.reminders"))
+    db.execute(
+        """UPDATE reminder_settings SET enabled=?,schedule_day=?,subject=?,body=?,
+           updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+        (1 if request.form.get("enabled") == "1" else 0, day, subject, body, settings["id"]),
+    )
+    db.commit()
+    flash("Configuração dos lembretes salva.", "success")
+    return redirect(url_for("finance.reminders"))
+
+
+@bp.post("/finance/reminders/send-now")
+@roles_allowed("manager")
+def send_reminders_now():
+    sender, password = smtp_configuration()
+    if not sender or not password:
+        flash("Configure GMAIL_SMTP_USER e GMAIL_APP_PASSWORD na Vercel antes de enviar.", "danger")
+        return redirect(url_for("finance.reminders"))
+    result = dispatch_reminders(get_db(), get_reminder_settings(get_db()), sender, password, local_today())
+    category = "warning" if result["failed"] else "success"
+    flash(
+        f"Envio concluído: {result['sent']} enviado(s), {result['skipped']} já enviado(s), "
+        f"{result['without_email']} sem e-mail e {result['failed']} falha(s).",
+        category,
+    )
+    return redirect(url_for("finance.reminders"))
+
+
+@bp.get("/cron/payment-reminders")
+def payment_reminders_cron():
+    secret = current_app.config.get("CRON_SECRET") or ""
+    authorization = request.headers.get("Authorization", "")
+    expected = f"Bearer {secret}"
+    if not secret or not hmac.compare_digest(authorization, expected):
+        return jsonify(error="Não autorizado."), 401
+
+    db = get_db()
+    settings = get_reminder_settings(db)
+    today = local_today()
+    if not settings["enabled"]:
+        return jsonify(ok=True, sent=0, reason="Lembretes desativados.")
+    if today.day != settings["schedule_day"]:
+        return jsonify(ok=True, sent=0, reason="Fora do dia programado.")
+    sender, password = smtp_configuration()
+    if not sender or not password:
+        current_app.logger.error("Lembretes habilitados sem configuração SMTP completa.")
+        return jsonify(error="Configuração de e-mail incompleta."), 503
+    result = dispatch_reminders(db, settings, sender, password, today)
+    return jsonify(ok=result["failed"] == 0, **result), 200 if result["failed"] == 0 else 502
