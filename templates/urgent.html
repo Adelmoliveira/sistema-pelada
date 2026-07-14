@@ -1,0 +1,42 @@
+{% extends 'base.html' %}
+{% block title %}Urgente · BAR PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex align-items-center gap-3 mb-3">
+  <div class="fs-1" aria-hidden="true">🚨</div>
+  <div>
+    <h1 class="h2 text-danger mb-1">Urgente</h1>
+    <p class="text-muted mb-0">Contatos de emergência dos peladeiros ativos.</p>
+  </div>
+</div>
+
+<div class="card shadow-sm border border-danger">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-danger">
+        <tr>
+          <th>Nome completo</th>
+          <th>Nome de Guerra</th>
+          <th>Telefone de Emergência</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for player in players %}
+        <tr>
+          <td>{{ player.name }}</td>
+          <td><strong>{{ player.war_name or '—' }}</strong></td>
+          <td>
+            {% if player.emergency_phone %}
+            <a class="btn btn-danger fw-bold" href="tel:{{ player.emergency_phone }}">☎ {{ player.emergency_phone }}</a>
+            {% else %}
+            <span class="text-muted">Não cadastrado</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="text-center text-muted py-4">Nenhum peladeiro ativo cadastrado.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

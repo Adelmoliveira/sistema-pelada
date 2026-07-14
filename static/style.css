@@ -12,3 +12,4 @@ body{background:#f2f6f9;color:#152d3d}
 .form-control:focus,.form-select:focus{border-color:#65a3cb;box-shadow:0 0 0 .25rem rgba(7,85,140,.18)}
 .chart-box{position:relative;height:260px}.border-orange{border-color:#fd7e14!important}.indicator-card{min-width:115px}
 .emergency-field{background:#fff1f2;border:1px solid #f1aeb5}
+.navbar-dark .navbar-nav .nav-urgent{color:#ffb4b4}.navbar-dark .navbar-nav .nav-urgent:hover,.navbar-dark .navbar-nav .nav-urgent:focus{color:#fff;background:#dc3545;border-radius:.5rem}

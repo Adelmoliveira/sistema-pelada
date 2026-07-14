@@ -5,6 +5,18 @@ from src.utils import normalize_cpf, spreadsheet_rows
 
 bp = Blueprint("players", __name__)
 
+@bp.get("/urgent")
+@roles_allowed("manager", "staff")
+def urgent():
+    db = get_db()
+    items = db.execute(
+        """SELECT name,war_name,emergency_phone
+           FROM players
+           WHERE active=1
+           ORDER BY COALESCE(NULLIF(war_name, ''), name), name"""
+    ).fetchall()
+    return render_template("urgent.html", players=items)
+
 @bp.route("/players", methods=["GET", "POST"])
 @roles_allowed("manager")
 def players():
