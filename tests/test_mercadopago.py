@@ -194,11 +194,13 @@ class MercadoPagoFlowTest(unittest.TestCase):
             session["user_id"] = self.user_id
         page = self.client.get("/players").get_data(as_text=True)
         labels = [
-            "Conferir Pix", "Estoque", "Financeiro", "Pedidos", "Peladeiros",
-            "Produtos", "Relatórios", "Urgente", "Usuários", "Venda rápida",
+            "Conferir Pix", "Estoque e Produtos", "Financeiro", "Pedidos", "Peladeiros",
+            "Relatórios", "Urgente", "Usuários", "Venda rápida",
         ]
         positions = [page.index(f">{label}</a>") for label in labels]
         self.assertEqual(positions, sorted(positions))
+        self.assertIn('class="nav-item dropdown"', page)
+        self.assertLess(page.index(">Estoque</a>"), page.index(">Produtos</a>"))
 
     def test_login_shows_public_brand_bar_and_copyright(self):
         page = self.client.get("/login").get_data(as_text=True)
