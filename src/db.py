@@ -94,6 +94,25 @@ CREATE TABLE IF NOT EXISTS materials (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS load_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    material_id INTEGER NOT NULL REFERENCES materials(id),
+    bmp TEXT NOT NULL UNIQUE,
+    serial_number TEXT DEFAULT '',
+    location TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS load_entry_photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    load_entry_id INTEGER NOT NULL REFERENCES load_entries(id) ON DELETE CASCADE,
+    photo_data TEXT NOT NULL,
+    thumbnail_data TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_load_entries_material ON load_entries(material_id);
+CREATE INDEX IF NOT EXISTS idx_load_photos_entry ON load_entry_photos(load_entry_id);
 CREATE TABLE IF NOT EXISTS membership_payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL REFERENCES players(id),

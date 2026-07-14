@@ -278,6 +278,98 @@ class MercadoPagoFlowTest(unittest.TestCase):
 
         self.assertEqual(self.client.get("/infra/load-relation").status_code, 200)
 
+    def test_load_relation_crud_generates_bmp_photos_and_pdf(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            cursor = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES(?,?)",
+                ("Cadeira giratória", "FCG-1317918"),
+            )
+            material_id = cursor.lastrowid
+            db.commit()
+
+        missing_material = self.client.post("/infra/load-relation/new", data={"material_id": ""})
+        self.assertEqual(missing_material.status_code, 200)
+        self.assertIn("Selecione um material", missing_material.get_data(as_text=True))
+
+        photos = []
+        for index, color in enumerate(((25, 90, 150), (180, 110, 30)), start=1):
+            photo = BytesIO()
+            Image.new("RGB", (800, 600), color=color).save(photo, format="JPEG")
+            photo.seek(0)
+            photos.append((photo, f"foto-{index}.jpg"))
+        created = self.client.post(
+            "/infra/load-relation/new",
+            data={
+                "material_id": str(material_id),
+                "serial_number": "SERIE-001",
+                "location": "Sala G-7",
+                "notes": "Carga em bom estado.",
+                "photos": photos,
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            entry = db.execute("SELECT * FROM load_entries").fetchone()
+            entry_id = entry["id"]
+            self.assertEqual(entry["bmp"], f"BMP-{entry_id:06d}")
+            stored_photos = db.execute(
+                "SELECT * FROM load_entry_photos WHERE load_entry_id=? ORDER BY id", (entry_id,)
+            ).fetchall()
+            self.assertEqual(len(stored_photos), 2)
+            self.assertTrue(stored_photos[0]["thumbnail_data"].startswith("data:image/jpeg;base64,"))
+            first_photo_id = stored_photos[0]["id"]
+
+        listing = self.client.get("/infra/load-relation?q=cadeira").get_data(as_text=True)
+        self.assertIn("Cadeira giratória", listing)
+        self.assertIn(f"BMP-{entry_id:06d}", listing)
+        detail = self.client.get(f"/infra/load-relation/{entry_id}").get_data(as_text=True)
+        self.assertIn("Carga em bom estado.", detail)
+        self.assertIn("SERIE-001", detail)
+
+        blocked_material_delete = self.client.post(f"/infra/materials/{material_id}/delete")
+        self.assertEqual(blocked_material_delete.status_code, 302)
+        with app.app_context():
+            self.assertIsNotNone(
+                get_db().execute("SELECT id FROM materials WHERE id=?", (material_id,)).fetchone()
+            )
+
+        edited = self.client.post(
+            f"/infra/load-relation/{entry_id}/edit",
+            data={
+                "material_id": str(material_id),
+                "serial_number": "SERIE-002",
+                "location": "Armário H-14",
+                "notes": "Inventariado.",
+                "remove_photo_ids": str(first_photo_id),
+            },
+        )
+        self.assertEqual(edited.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            entry = db.execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+            photo_count = db.execute(
+                "SELECT COUNT(*) FROM load_entry_photos WHERE load_entry_id=?", (entry_id,)
+            ).fetchone()[0]
+            self.assertEqual((entry["serial_number"], entry["location"], photo_count), ("SERIE-002", "Armário H-14", 1))
+
+        report = self.client.get("/infra/load-relation/report.pdf?q=cadeira")
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(report.mimetype, "application/pdf")
+        self.assertTrue(report.data.startswith(b"%PDF-"))
+        self.assertIn("attachment", report.headers["Content-Disposition"])
+
+        deleted = self.client.post(f"/infra/load-relation/{entry_id}/delete")
+        self.assertEqual(deleted.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entries").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entry_photos").fetchone()[0], 0)
+
     def test_login_shows_centered_logo_without_navigation_bar_and_copyright(self):
         page = self.client.get("/login").get_data(as_text=True)
         self.assertIn('class="login-logo mb-3"', page)

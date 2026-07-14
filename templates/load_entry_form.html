@@ -1,0 +1,54 @@
+{% extends 'base.html' %}
+{% block title %}{{form_title}} · BAR PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="row justify-content-center"><div class="col-xl-9">
+  <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
+    <a class="btn btn-outline-secondary" href="{{url_for('infra.load_relation')}}">← Voltar para Relação de Carga</a>
+    <h1 class="h3 mb-0">{{form_title}}</h1>
+  </div>
+  <div class="card shadow-sm"><div class="card-body p-4">
+    {% if not materials %}<div class="alert alert-warning">Cadastre um material antes de criar uma carga. <a href="{{url_for('infra.new_material')}}">Cadastrar material</a></div>{% endif %}
+    <form method="post" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+      <div class="row g-3">
+        <div class="col-md-8">
+          <label class="form-label fw-semibold" for="material-id">Material <span class="text-danger">*</span></label>
+          {% set selected_material = request.form.get('material_id', entry.material_id if entry else '')|string %}
+          <select class="form-select" id="material-id" name="material_id" required {{'disabled' if not materials}}>
+            <option value="">Selecione o material</option>
+            {% for material in materials %}<option value="{{material.id}}" {{'selected' if material.id|string == selected_material}}>{{material.description}}{{' · FCG ' ~ material.load_sheet if material.load_sheet else ''}}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="bmp">BMP</label>
+          <input class="form-control" id="bmp" value="{{entry.bmp if entry else 'Gerado automaticamente ao salvar'}}" readonly>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="serial-number">Nº de série</label>
+          <input class="form-control" id="serial-number" name="serial_number" maxlength="150" value="{{request.form.get('serial_number', entry.serial_number if entry else '')}}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="location">Localização</label>
+          <input class="form-control" id="location" name="location" maxlength="200" placeholder="Ex.: Sala 2, armário A" value="{{request.form.get('location', entry.location if entry else '')}}">
+        </div>
+        <div class="col-12">
+          <label class="form-label" for="notes">Observações</label>
+          <textarea class="form-control" id="notes" name="notes" rows="5" maxlength="5000">{{request.form.get('notes', entry.notes if entry else '')}}</textarea>
+        </div>
+        <div class="col-12">
+          <label class="form-label" for="photos">Fotos</label>
+          <input class="form-control" id="photos" type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple>
+          <div class="form-text">Até {{max_photos}} fotos JPG, PNG ou WebP por carga. As imagens serão otimizadas automaticamente.</div>
+        </div>
+      </div>
+      {% if photos %}<fieldset class="mt-4"><legend class="h6">Fotos atuais</legend><div class="load-photo-grid">
+        {% for photo in photos %}<label class="load-photo-option"><img src="{{photo.thumbnail_data}}" alt="Foto {{loop.index}} de {{entry.bmp}}"><span class="form-check"><input class="form-check-input" type="checkbox" name="remove_photo_ids" value="{{photo.id}}"> Remover</span></label>{% endfor %}
+      </div></fieldset>{% endif %}
+      <div class="d-flex flex-wrap gap-2 justify-content-end mt-4">
+        <a class="btn btn-outline-secondary" href="{{url_for('infra.load_relation')}}">Cancelar</a>
+        <button class="btn btn-primary" {{'disabled' if not materials}}>{{'Salvar alterações' if entry else 'Cadastrar carga'}}</button>
+      </div>
+    </form>
+  </div></div>
+</div></div>
+{% endblock %}
