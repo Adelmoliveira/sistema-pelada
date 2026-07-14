@@ -157,6 +157,7 @@ def import_players():
             "phone": ("telefone", "phone", "celular"),
             "emergency_phone": (
                 "temergencia",
+                "t.emergencia",
                 "telefoneemergencia",
                 "telefonedeemergencia",
                 "contatoemergencia",
