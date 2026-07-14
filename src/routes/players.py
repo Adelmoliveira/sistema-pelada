@@ -149,35 +149,81 @@ def import_players():
         
         from src.utils import normalized_header
         headers = {normalized_header(value): index for index, value in enumerate(rows[0])}
-        name_index = next((headers[key] for key in ("nome", "name", "peladeiro") if key in headers), None)
-        email_index = next((headers[key] for key in ("email", "emailaddress") if key in headers), None)
-        if name_index is None or email_index is None:
-            raise ValueError("A primeira linha precisa ter as colunas Nome e E-mail.")
+        expected_headers = {
+            "name": ("nomecompleto", "nome", "name", "peladeiro"),
+            "war_name": ("nomedeguerra", "nomeguerra", "apelido"),
+            "cpf": ("cpf",),
+            "email": ("email", "emailaddress"),
+            "phone": ("telefone", "phone", "celular"),
+            "emergency_phone": (
+                "temergencia",
+                "telefoneemergencia",
+                "telefonedeemergencia",
+                "contatoemergencia",
+            ),
+        }
+        indexes = {
+            field: next((headers[key] for key in aliases if key in headers), None)
+            for field, aliases in expected_headers.items()
+        }
+        if any(index is None for index in indexes.values()):
+            raise ValueError(
+                "A primeira linha precisa ter as colunas Nome Completo, Nome de Guerra, "
+                "CPF, e-mail, Telefone e T. Emergência."
+            )
         
         imported = updated = skipped = 0
         db = get_db()
         with db:
             for row in rows[1:]:
-                name = str(row[name_index] or "").strip() if name_index < len(row) else ""
-                email = str(row[email_index] or "").strip().lower() if email_index < len(row) else ""
-                if not name or not email or "@" not in email:
+                def cell(field):
+                    index = indexes[field]
+                    value = row[index] if index < len(row) else ""
+                    if value is None:
+                        return ""
+                    # O Excel pode devolver campos numéricos como 123.0.
+                    return str(int(value) if isinstance(value, float) and value.is_integer() else value).strip()
+
+                name = cell("name")
+                war_name = cell("war_name")
+                email = cell("email").lower()
+                phone = cell("phone")
+                emergency_phone = cell("emergency_phone")
+                try:
+                    cpf = normalize_cpf(cell("cpf"))
+                except ValueError:
                     skipped += 1
                     continue
-                
-                # Case insensitive name/email query
+
+                if not name or (email and "@" not in email):
+                    skipped += 1
+                    continue
+
                 existing = db.execute(
-                    "SELECT * FROM players WHERE LOWER(name)=LOWER(?) OR LOWER(email)=LOWER(?) LIMIT 1",
-                    (name, email),
+                    """SELECT * FROM players
+                       WHERE LOWER(name)=LOWER(?)
+                          OR (?<>'' AND LOWER(email)=LOWER(?))
+                          OR (?<>'' AND cpf=?)
+                       ORDER BY CASE WHEN ?<>'' AND cpf=? THEN 0
+                                     WHEN ?<>'' AND LOWER(email)=LOWER(?) THEN 1 ELSE 2 END
+                       LIMIT 1""",
+                    (name, email, email, cpf, cpf, cpf, cpf, email, email),
                 ).fetchone()
                 if existing:
-                    if not existing["email"] and existing["name"].lower() == name.lower():
-                        db.execute("UPDATE players SET email=? WHERE id=?", (email, existing["id"]))
-                        updated += 1
-                    else:
-                        skipped += 1
+                    db.execute(
+                        """UPDATE players
+                           SET name=?,war_name=?,cpf=?,email=?,phone=?,emergency_phone=?
+                           WHERE id=?""",
+                        (name, war_name, cpf, email, phone, emergency_phone, existing["id"]),
+                    )
+                    updated += 1
                     continue
-                
-                db.execute("INSERT INTO players(name,email) VALUES(?,?)", (name, email))
+
+                db.execute(
+                    """INSERT INTO players(name,war_name,cpf,email,phone,emergency_phone)
+                       VALUES(?,?,?,?,?,?)""",
+                    (name, war_name, cpf, email, phone, emergency_phone),
+                )
                 imported += 1
         
         flash(f"Importação concluída: {imported} novos, {updated} atualizados e {skipped} ignorados.", "success")
