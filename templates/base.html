@@ -24,6 +24,7 @@
   {% if current_user.role in ['manager','staff','infra'] %}<div class="nav-item dropdown">
    <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">Infra</a>
    <ul class="dropdown-menu dropdown-menu-end">
+    {% if current_user.role in ['manager','infra'] %}<li><a class="dropdown-item" href="{{url_for('maintenance.requests_list')}}">Manutenção</a></li>{% endif %}
     <li><a class="dropdown-item" href="{{ url_for('infra.materials') }}">Materiais</a></li>
     <li><a class="dropdown-item" href="{{ url_for('infra.load_relation') }}">Relação de Carga</a></li>
    </ul>

@@ -117,6 +117,38 @@ CREATE TABLE IF NOT EXISTS load_entry_photos (
 );
 CREATE INDEX IF NOT EXISTS idx_load_entries_material ON load_entries(material_id);
 CREATE INDEX IF NOT EXISTS idx_load_photos_entry ON load_entry_photos(load_entry_id);
+CREATE TABLE IF NOT EXISTS maintenance_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    area_code TEXT NOT NULL CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN')),
+    location TEXT DEFAULT '',
+    category TEXT NOT NULL CHECK(category IN ('electrical','plumbing','civil','painting','equipment','cleaning','other')),
+    priority TEXT NOT NULL CHECK(priority IN ('low','medium','high','urgent')),
+    description TEXT NOT NULL,
+    responsible TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','analysis','in_progress','waiting_material','completed')),
+    occurred_on TEXT NOT NULL,
+    due_on TEXT,
+    resolution TEXT DEFAULT '',
+    completed_on TEXT,
+    cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents >= 0),
+    notes TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS maintenance_photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES maintenance_requests(id) ON DELETE CASCADE,
+    phase TEXT NOT NULL CHECK(phase IN ('problem','resolution')),
+    photo_data TEXT NOT NULL,
+    thumbnail_data TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_status ON maintenance_requests(status);
+CREATE INDEX IF NOT EXISTS idx_maintenance_area ON maintenance_requests(area_code);
+CREATE INDEX IF NOT EXISTS idx_maintenance_photos_request ON maintenance_photos(request_id);
 CREATE TABLE IF NOT EXISTS membership_payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL REFERENCES players(id),

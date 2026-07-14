@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}Manutenção · Infra{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+  <div><h1 class="h3 mb-1">Manutenção</h1><p class="text-muted mb-0">{{total}} {{'chamado encontrado' if total == 1 else 'chamados encontrados'}}</p></div>
+  <div class="d-flex flex-wrap gap-2"><a class="btn btn-outline-secondary" href="{{url_for('maintenance.dashboard')}}">Painel</a><a class="btn btn-outline-primary" href="{{url_for('maintenance.report',q=query,area=selected.area,category=selected.category,priority=selected.priority,status=selected.status)}}">Relatório PDF</a><a class="btn btn-primary" href="{{url_for('maintenance.new_request')}}">Novo chamado</a></div>
+</div>
+<form method="get" class="card shadow-sm mb-4"><div class="card-body"><div class="row g-2">
+  <div class="col-lg-3"><input class="form-control" name="q" value="{{query}}" placeholder="Código, título, local ou responsável"></div>
+  <div class="col-6 col-lg"><select class="form-select" name="area"><option value="">Todas as áreas</option>{% for code,name in areas.items() %}<option value="{{code}}" {{'selected' if selected.area == code}}>{{code}} - {{name}}</option>{% endfor %}</select></div>
+  <div class="col-6 col-lg"><select class="form-select" name="category"><option value="">Todos os tipos</option>{% for code,name in categories.items() %}<option value="{{code}}" {{'selected' if selected.category == code}}>{{name}}</option>{% endfor %}</select></div>
+  <div class="col-6 col-lg"><select class="form-select" name="priority"><option value="">Todas as prioridades</option>{% for code,name in priorities.items() %}<option value="{{code}}" {{'selected' if selected.priority == code}}>{{name}}</option>{% endfor %}</select></div>
+  <div class="col-6 col-lg"><select class="form-select" name="status"><option value="">Todos os status</option>{% for code,name in statuses.items() %}<option value="{{code}}" {{'selected' if selected.status == code}}>{{name}}</option>{% endfor %}</select></div>
+  <div class="col-auto"><button class="btn btn-outline-secondary">Filtrar</button></div>
+</div></div></form>
+<div class="card shadow-sm"><div class="table-responsive"><table class="table table-hover align-middle mb-0">
+  <thead><tr><th>Código</th><th>Problema</th><th>Área/local</th><th>Prioridade</th><th>Status</th><th>Responsável</th><th>Previsão</th><th class="text-end">Ações</th></tr></thead>
+  <tbody>{% for item in requests %}<tr class="{{'table-danger' if item.priority == 'urgent' and item.status != 'completed'}}">
+    <td><strong class="text-nowrap">{{item.code}}</strong><div class="small text-muted">{{item.occurred_on}}</div></td>
+    <td class="maintenance-title"><strong>{{item.title}}</strong><div class="small text-muted">{{categories[item.category]}} · {{item.problem_photo_count}} foto(s)</div></td>
+    <td><strong>{{item.area_code}}</strong><div class="small text-muted">{{item.location or '—'}}</div></td>
+    <td><span class="badge maintenance-priority-{{item.priority}}">{{priorities[item.priority]}}</span></td>
+    <td><span class="badge maintenance-status-{{item.status}}">{{statuses[item.status]}}</span></td>
+    <td>{{item.responsible or '—'}}</td>
+    <td class="text-nowrap">{{item.due_on or '—'}}{% if item.due_on and item.due_on < today and item.status != 'completed' %}<div class="small text-danger fw-semibold">Atrasado</div>{% endif %}</td>
+    <td><div class="d-flex gap-1 justify-content-end"><a class="btn btn-sm btn-outline-secondary" href="{{url_for('maintenance.request_detail',request_id=item.id)}}">Detalhes</a><a class="btn btn-sm btn-outline-primary" href="{{url_for('maintenance.edit_request',request_id=item.id)}}">Editar</a></div></td>
+  </tr>{% else %}<tr><td colspan="8" class="text-center text-muted py-5">Nenhum chamado encontrado.</td></tr>{% endfor %}</tbody>
+</table></div></div>
+{% if pages > 1 %}<nav class="mt-3"><ul class="pagination justify-content-end"><li class="page-item {{'disabled' if page == 1}}"><a class="page-link" href="{{url_for('maintenance.requests_list',q=query,area=selected.area,category=selected.category,priority=selected.priority,status=selected.status,page=page-1)}}">Anterior</a></li>{% for number in range(1,pages+1) %}<li class="page-item {{'active' if number == page}}"><a class="page-link" href="{{url_for('maintenance.requests_list',q=query,area=selected.area,category=selected.category,priority=selected.priority,status=selected.status,page=number)}}">{{number}}</a></li>{% endfor %}<li class="page-item {{'disabled' if page == pages}}"><a class="page-link" href="{{url_for('maintenance.requests_list',q=query,area=selected.area,category=selected.category,priority=selected.priority,status=selected.status,page=page+1)}}">Próxima</a></li></ul></nav>{% endif %}
+{% endblock %}

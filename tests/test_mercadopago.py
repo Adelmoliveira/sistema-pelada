@@ -404,6 +404,94 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entries").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entry_photos").fetchone()[0], 0)
 
+    def test_maintenance_crud_dashboard_photos_and_report(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        invalid = self.client.post("/infra/maintenance/new", data={"title": ""})
+        self.assertEqual(invalid.status_code, 200)
+        self.assertIn("título do problema é obrigatório", invalid.get_data(as_text=True))
+
+        problem_photo = BytesIO()
+        Image.new("RGB", (900, 700), color=(180, 60, 40)).save(problem_photo, format="JPEG")
+        problem_photo.seek(0)
+        created = self.client.post(
+            "/infra/maintenance/new",
+            data={
+                "title": "Vazamento no banheiro",
+                "area_code": "BAN",
+                "location": "Banheiro masculino",
+                "category": "plumbing",
+                "priority": "urgent",
+                "description": "Vazamento próximo ao lavatório.",
+                "responsible": "Equipe hidráulica",
+                "status": "open",
+                "occurred_on": "2026-07-14",
+                "due_on": "2026-07-15",
+                "cost": "0,00",
+                "problem_photos": (problem_photo, "problema.jpg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            maintenance = db.execute("SELECT * FROM maintenance_requests").fetchone()
+            request_id = maintenance["id"]
+            self.assertEqual((maintenance["code"], maintenance["area_code"]), (f"MAN-{request_id:06d}", "BAN"))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM maintenance_photos").fetchone()[0], 1)
+
+        listing = self.client.get("/infra/maintenance?area=BAN&priority=urgent")
+        self.assertEqual(listing.status_code, 200)
+        self.assertIn("Vazamento no banheiro", listing.get_data(as_text=True))
+        dashboard = self.client.get("/infra/maintenance/dashboard")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn("Painel de manutenção", dashboard.get_data(as_text=True))
+        detail = self.client.get(f"/infra/maintenance/{request_id}")
+        self.assertIn("Vazamento próximo", detail.get_data(as_text=True))
+
+        resolution_photo = BytesIO()
+        Image.new("RGB", (900, 700), color=(40, 150, 80)).save(resolution_photo, format="JPEG")
+        resolution_photo.seek(0)
+        completed = self.client.post(
+            f"/infra/maintenance/{request_id}/edit",
+            data={
+                "title": "Vazamento no banheiro",
+                "area_code": "BAN",
+                "location": "Banheiro masculino",
+                "category": "plumbing",
+                "priority": "urgent",
+                "description": "Vazamento próximo ao lavatório.",
+                "responsible": "Equipe hidráulica",
+                "status": "completed",
+                "occurred_on": "2026-07-14",
+                "due_on": "2026-07-15",
+                "completed_on": "2026-07-14",
+                "resolution": "Sifão substituído e instalação testada.",
+                "cost": "125,50",
+                "notes": "Serviço conferido.",
+                "resolution_photos": (resolution_photo, "resolucao.jpg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(completed.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            maintenance = db.execute("SELECT * FROM maintenance_requests WHERE id=?", (request_id,)).fetchone()
+            self.assertEqual((maintenance["status"], maintenance["cost_cents"]), ("completed", 12550))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM maintenance_photos").fetchone()[0], 2)
+
+        report = self.client.get("/infra/maintenance/report.pdf?area=BAN")
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(report.mimetype, "application/pdf")
+        self.assertTrue(report.data.startswith(b"%PDF-"))
+
+        deleted = self.client.post(f"/infra/maintenance/{request_id}/delete")
+        self.assertEqual(deleted.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM maintenance_requests").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM maintenance_photos").fetchone()[0], 0)
+
     def test_login_shows_centered_logo_without_navigation_bar_and_copyright(self):
         page = self.client.get("/login").get_data(as_text=True)
         self.assertIn('class="login-logo mb-3"', page)
@@ -459,12 +547,14 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         html = page.get_data(as_text=True)
         self.assertIn(">Infra</a>", html)
+        self.assertIn(">Manutenção</a>", html)
         for hidden_menu in (
             "Conferir Pix", "Estoque e Produtos", "Financeiro", "Pedidos", "Peladeiros",
             "Relatórios", "Urgente", "Usuários", "Venda rápida",
         ):
             self.assertNotIn(f">{hidden_menu}</a>", html)
         self.assertEqual(self.client.get("/infra/materials").status_code, 200)
+        self.assertEqual(self.client.get("/infra/maintenance").status_code, 200)
 
         for forbidden_path in ("/", "/sale", "/stock", "/players", "/users"):
             denied = self.client.get(forbidden_path)

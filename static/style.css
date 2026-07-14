@@ -20,3 +20,4 @@ body{background:#f2f6f9;color:#152d3d}
 .load-actions-button{font-weight:800;letter-spacing:2px;line-height:1}.load-qr-image{display:block;width:min(100%,360px);height:auto;margin:auto;image-rendering:pixelated}.load-qr-url{word-break:break-all}
 .load-qr-selection{max-height:520px;overflow:auto}
 @media (min-width:992px){.load-table-responsive{overflow:visible}}
+.maintenance-title{min-width:260px}.maintenance-text{white-space:pre-wrap}.maintenance-details dd{margin-bottom:1rem}.maintenance-photo-empty{min-height:130px}.maintenance-priority-low{background:#6c757d}.maintenance-priority-medium{background:#0d6efd}.maintenance-priority-high{background:#fd7e14}.maintenance-priority-urgent{background:#dc3545}.maintenance-status-open{background:#6c757d}.maintenance-status-analysis{background:#6f42c1}.maintenance-status-in_progress{background:#0d6efd}.maintenance-status-waiting_material{background:#ffc107;color:#212529}.maintenance-status-completed{background:#198754}
