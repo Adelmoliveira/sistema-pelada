@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{% block title %}BAR PELADEIROS GPCTA{% endblock %}</title>
+  <title>{% block title %}PELADEIROS GPCTA{% endblock %}</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="{{url_for('static',filename='style.css')}}">
 </head>
@@ -19,7 +19,7 @@
     <div class="offcanvas-header sidebar-mobile-header"><span class="fw-semibold">Menu</span><button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" data-bs-target="#app-sidebar" aria-label="Fechar"></button></div>
     <div class="offcanvas-body sidebar-body">
       <a class="sidebar-brand" href="{{url_for('infra.load_relation') if current_user.role == 'infra' else (url_for('sales.sale') if current_user.role == 'client' else url_for('finance.dashboard'))}}" id="sidebar-title">
-        <img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" alt="Logo GPCTA"><span><small>Grupo de Peladas do CTA</small><strong>Sistema Pelada</strong></span>
+        <img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" alt="Logo GPCTA"><span><small>Grupo de Peladas do CTA</small><strong>PELADEIROS GPCTA</strong></span>
       </a>
       <nav class="sidebar-nav" aria-label="Menu principal">
         {% if current_user.role in ['manager','staff','client'] %}<div class="sidebar-group">
@@ -49,7 +49,7 @@
     </div>
   </aside>
   <div class="app-main">
-    <header class="app-topbar sticky-top"><button class="sidebar-toggle" id="sidebar-toggle" type="button" data-bs-toggle="offcanvas" data-bs-target="#app-sidebar" aria-controls="app-sidebar" aria-label="Abrir ou recolher menu"><span></span><span></span><span></span></button><div class="topbar-title"><strong>BAR PELADEIROS GPCTA</strong><small>Gestão integrada</small></div><div class="topbar-user">{{current_user.name}}</div></header>
+    <header class="app-topbar sticky-top"><button class="sidebar-toggle" id="sidebar-toggle" type="button" data-bs-toggle="offcanvas" data-bs-target="#app-sidebar" aria-controls="app-sidebar" aria-label="Abrir ou recolher menu"><span></span><span></span><span></span></button><div class="topbar-title"><strong>PELADEIROS GPCTA</strong><small>Gestão integrada</small></div><div class="topbar-user">{{current_user.name}}</div></header>
     <main class="app-page container-fluid">
 {% else %}
 <main class="container py-4">

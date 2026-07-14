@@ -28,7 +28,7 @@ def build_load_relation_pdf(entries, today, query=""):
         topMargin=16 * mm,
         bottomMargin=17 * mm,
         title=f"Relação de Carga - {today.strftime('%d/%m/%Y')}",
-        author="BAR PELADEIROS GPCTA",
+        author="PELADEIROS GPCTA",
     )
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(
@@ -57,7 +57,7 @@ def build_load_relation_pdf(entries, today, query=""):
 
     total_photos = sum(int(entry["photo_count"] or 0) for entry in entries)
     story = [
-        Paragraph("BAR PELADEIROS GPCTA", styles["LoadTitle"]),
+        Paragraph("PELADEIROS GPCTA", styles["LoadTitle"]),
         Paragraph("Relação de Carga", styles["LoadHeading"]),
         Paragraph(
             f"Emitido em {today.strftime('%d/%m/%Y')}" + (f" - Filtro: {escape(query)}" if query else ""),
@@ -118,7 +118,7 @@ def build_load_relation_pdf(entries, today, query=""):
         canvas.line(15 * mm, 12 * mm, landscape(A4)[0] - 15 * mm, 12 * mm)
         canvas.setFont("Helvetica", 7.5)
         canvas.setFillColor(colors.HexColor("#6C757D"))
-        canvas.drawString(15 * mm, 8 * mm, "Documento gerado pelo Sistema Pelada")
+        canvas.drawString(15 * mm, 8 * mm, "Documento gerado pelo PELADEIROS GPCTA")
         canvas.drawRightString(landscape(A4)[0] - 15 * mm, 8 * mm, f"Página {doc.page}")
         canvas.restoreState()
 

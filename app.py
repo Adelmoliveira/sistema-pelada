@@ -36,7 +36,7 @@ app.config.update(
     DATABASE=database_path,
     MAX_CONTENT_LENGTH=5 * 1024 * 1024,
     PIX_KEY=os.environ.get("PIX_KEY", "adelmoliveira@gmail.com"),
-    PIX_MERCHANT_NAME=os.environ.get("PIX_MERCHANT_NAME", "BAR PELADEIROS GPCTA"),
+    PIX_MERCHANT_NAME=os.environ.get("PIX_MERCHANT_NAME", "PELADEIROS GPCTA"),
     PIX_MERCHANT_CITY=os.environ.get("PIX_MERCHANT_CITY", "SAO PAULO"),
     MERCADOPAGO_ACCESS_TOKEN=os.environ.get("MERCADOPAGO_ACCESS_TOKEN"),
     MERCADOPAGO_POS_ID=os.environ.get("MERCADOPAGO_POS_ID"),

@@ -52,7 +52,7 @@ def build_load_qr_labels_pdf(entries, base_url, size="standard"):
     output = BytesIO()
     pdf = canvas.Canvas(output, pagesize=A4)
     pdf.setTitle("Etiquetas QR - Relação de Carga")
-    pdf.setAuthor("BAR PELADEIROS GPCTA")
+    pdf.setAuthor("PELADEIROS GPCTA")
 
     for index, entry in enumerate(entries):
         position = index % per_page

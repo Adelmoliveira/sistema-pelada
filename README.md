@@ -1,4 +1,4 @@
-# BAR PELADEIROS GPCTA
+# PELADEIROS GPCTA
 
 MVP local para cadastrar peladeiros e produtos, registrar vendas, baixar estoque, controlar reposições, Pix, débito e relatórios.
 

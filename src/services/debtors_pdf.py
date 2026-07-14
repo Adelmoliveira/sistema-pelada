@@ -28,7 +28,7 @@ def build_debtors_pdf(debtors, today, monthly_fee=1500):
         topMargin=16 * mm,
         bottomMargin=17 * mm,
         title=f"Relatório de devedores - {today.strftime('%m/%Y')}",
-        author="BAR PELADEIROS GPCTA",
+        author="PELADEIROS GPCTA",
     )
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(
@@ -64,7 +64,7 @@ def build_debtors_pdf(debtors, today, monthly_fee=1500):
     total_due = sum(debtor["amount_cents"] for debtor in debtors)
     without_email = sum(not debtor["email"] for debtor in debtors)
     story = [
-        Paragraph("BAR PELADEIROS GPCTA", styles["ReportTitle"]),
+        Paragraph("PELADEIROS GPCTA", styles["ReportTitle"]),
         Paragraph("Relatório de mensalidades pendentes", styles["ReportHeading"]),
         Paragraph(
             f"Posição em {today.strftime('%d/%m/%Y')} - mensalidade de {money(monthly_fee)}",
@@ -129,7 +129,7 @@ def build_debtors_pdf(debtors, today, monthly_fee=1500):
         canvas.line(15 * mm, 12 * mm, landscape(A4)[0] - 15 * mm, 12 * mm)
         canvas.setFont("Helvetica", 7.5)
         canvas.setFillColor(colors.HexColor("#6C757D"))
-        canvas.drawString(15 * mm, 8 * mm, "Documento gerado pelo Sistema Pelada")
+        canvas.drawString(15 * mm, 8 * mm, "Documento gerado pelo PELADEIROS GPCTA")
         canvas.drawRightString(landscape(A4)[0] - 15 * mm, 8 * mm, f"Página {doc.page}")
         canvas.restoreState()
 

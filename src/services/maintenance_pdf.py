@@ -31,7 +31,7 @@ def build_maintenance_pdf(entries, today, filters, categories, priorities, statu
         output, pagesize=landscape(A4), leftMargin=15 * mm, rightMargin=15 * mm,
         topMargin=15 * mm, bottomMargin=17 * mm,
         title=f"Relatório de Manutenção - {today.strftime('%d/%m/%Y')}",
-        author="BAR PELADEIROS GPCTA",
+        author="PELADEIROS GPCTA",
     )
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="MaintTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=19, leading=22, textColor=NAVY, alignment=TA_CENTER, spaceAfter=4))
@@ -45,7 +45,7 @@ def build_maintenance_pdf(entries, today, filters, categories, priorities, statu
     urgent_count = sum(entry["priority"] == "urgent" and entry["status"] != "completed" for entry in entries)
     total_cost = sum(int(entry["cost_cents"] or 0) for entry in entries)
     story = [
-        Paragraph("BAR PELADEIROS GPCTA", styles["MaintTitle"]),
+        Paragraph("PELADEIROS GPCTA", styles["MaintTitle"]),
         Paragraph("Relatório de Manutenção Predial", styles["MaintHeading"]),
         Paragraph(
             f"Emitido em {today.strftime('%d/%m/%Y')}" + (f" - Filtros: {escape(filters)}" if filters else ""),
@@ -99,7 +99,7 @@ def build_maintenance_pdf(entries, today, filters, categories, priorities, statu
         canvas.line(15 * mm, 12 * mm, landscape(A4)[0] - 15 * mm, 12 * mm)
         canvas.setFont("Helvetica", 7.5)
         canvas.setFillColor(colors.HexColor("#6C757D"))
-        canvas.drawString(15 * mm, 8 * mm, "Sistema Pelada - Manutenção Predial")
+        canvas.drawString(15 * mm, 8 * mm, "PELADEIROS GPCTA - Manutenção Predial")
         canvas.drawRightString(landscape(A4)[0] - 15 * mm, 8 * mm, f"Página {doc.page}")
         canvas.restoreState()
 

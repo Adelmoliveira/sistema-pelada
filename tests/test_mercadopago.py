@@ -500,7 +500,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         page = self.client.get("/login").get_data(as_text=True)
         self.assertIn('class="login-logo mb-3"', page)
         self.assertNotIn('class="navbar ', page)
-        self.assertIn("BAR PELADEIROS GPCTA", page)
+        self.assertIn("PELADEIROS GPCTA", page)
+        self.assertNotIn("BAR PELADEIROS GPCTA", page)
         self.assertIn("Copyright © 2026 | Grupo de Peladas do CTA - GPCTA", page)
         self.assertNotIn(">Sair</button>", page)
 
