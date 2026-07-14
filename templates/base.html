@@ -9,7 +9,7 @@
 <body>
 {% if current_user %}
 <nav class="navbar navbar-expand-lg navbar-dark bg-success sticky-top shadow-sm">
- <div class="container"><a class="navbar-brand d-flex align-items-center" href="{{ url_for('finance.dashboard') }}" aria-label="Página inicial"><img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" class="brand-logo" alt="Logo GPCTA"></a>
+ <div class="container"><a class="navbar-brand d-flex align-items-center" href="{{url_for('infra.load_relation') if current_user.role == 'infra' else (url_for('sales.sale') if current_user.role == 'client' else url_for('finance.dashboard'))}}" aria-label="Página inicial"><img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" class="brand-logo" alt="Logo GPCTA"></a>
  <button class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#nav"><span class="navbar-toggler-icon"></span></button>
  <div id="nav" class="collapse navbar-collapse"><div class="navbar-nav ms-auto">
   {% if current_user.role in ['manager','staff'] %}<a class="nav-link" href="{{ url_for('sales.pix') }}">Conferir Pix</a>
@@ -21,7 +21,7 @@
    </ul>
   </div>{% endif %}
   {% if current_user.role == 'manager' %}<a class="nav-link" href="{{url_for('finance.finance')}}">Financeiro</a>{% endif %}
-  {% if current_user.role in ['manager','staff'] %}<div class="nav-item dropdown">
+  {% if current_user.role in ['manager','staff','infra'] %}<div class="nav-item dropdown">
    <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">Infra</a>
    <ul class="dropdown-menu dropdown-menu-end">
     <li><a class="dropdown-item" href="{{ url_for('infra.materials') }}">Materiais</a></li>
@@ -33,7 +33,7 @@
   {% if current_user.role == 'manager' %}<a class="nav-link" href="{{ url_for('finance.reports') }}">Relatórios</a>{% endif %}
   {% if current_user.role in ['manager','staff'] %}<a class="nav-link nav-urgent fw-bold" href="{{ url_for('players.urgent') }}">Urgente</a>{% endif %}
   {% if current_user.role == 'manager' %}<a class="nav-link" href="{{url_for('auth.users')}}">Usuários</a>{% endif %}
-  <a class="nav-link nav-sale fw-bold" href="{{ url_for('sales.sale') }}">Venda rápida</a>
+  {% if current_user.role in ['manager','staff','client'] %}<a class="nav-link nav-sale fw-bold" href="{{ url_for('sales.sale') }}">Venda rápida</a>{% endif %}
   <span class="navbar-text ms-lg-3 me-2">{{current_user.name}}</span><form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/><button class="btn btn-sm btn-outline-light">Sair</button></form>
  </div></div>
 </div>

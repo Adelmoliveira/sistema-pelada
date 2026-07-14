@@ -6,6 +6,13 @@ from src.db import get_db
 
 bp = Blueprint("auth", __name__)
 
+def home_endpoint(role):
+    if role == "client":
+        return "sales.sale"
+    if role == "infra":
+        return "infra.load_relation"
+    return "finance.dashboard"
+
 def make_password_hash(password):
     # Compatível com o Python do macOS e com o ambiente de produção.
     return generate_password_hash(password, method="pbkdf2:sha256", salt_length=16)
@@ -19,7 +26,7 @@ def roles_allowed(*roles):
                     message = "Sua sessão expirou ou seu usuário não possui acesso a esta funcionalidade."
                     return jsonify(error=message), 401 if not g.user else 403
                 flash("Seu usuário não possui acesso a essa funcionalidade.", "danger")
-                return redirect(url_for("sales.sale") if g.user and g.user["role"] == "client" else url_for("finance.dashboard"))
+                return redirect(url_for(home_endpoint(g.user["role"])))
             return view(*args, **kwargs)
         return wrapped
     return decorator
@@ -53,7 +60,7 @@ def setup():
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if g.user:
-        return redirect(url_for("sales.sale") if g.user["role"] == "client" else url_for("finance.dashboard"))
+        return redirect(url_for(home_endpoint(g.user["role"])))
     if request.method == "POST":
         db = get_db()
         # Case insensitive query for username
@@ -65,7 +72,7 @@ def login():
         if user and (passwordless_client or check_password_hash(user["password_hash"], request.form.get("password", ""))):
             session.clear()
             session["user_id"] = user["id"]
-            return redirect(url_for("sales.sale") if user["role"] == "client" else url_for("finance.dashboard"))
+            return redirect(url_for(home_endpoint(user["role"])))
         flash("Usuário ou senha inválidos.", "danger")
     return render_template("login.html")
 
@@ -103,7 +110,7 @@ def users():
             passwordless = role == "client" and request.form.get("passwordless") == "1"
             if len(username) < 3:
                 raise ValueError("O usuário deve ter ao menos 3 caracteres.")
-            if role not in ("manager", "staff", "client"):
+            if role not in ("manager", "staff", "client", "infra"):
                 raise ValueError("Perfil inválido.")
             if not passwordless and len(password) < 8:
                 raise ValueError("A senha deve ter ao menos 8 caracteres.")
@@ -134,8 +141,8 @@ def reset_user_password(user_id):
     password = request.form.get("new_password", "")
     if not target:
         flash("Usuário não encontrado.", "warning")
-    elif target["role"] not in ("manager", "staff"):
-        flash("Esta troca de senha é destinada a Gerente e Staff.", "danger")
+    elif target["role"] not in ("manager", "staff", "infra"):
+        flash("Esta troca de senha é destinada a Gerente, Staff e Infra.", "danger")
     elif len(password) < 8:
         flash("A nova senha deve ter ao menos 8 caracteres.", "danger")
     else:

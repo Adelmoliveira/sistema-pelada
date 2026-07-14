@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     password_required INTEGER NOT NULL DEFAULT 1,
-    role TEXT NOT NULL CHECK(role IN ('manager','staff','client')),
+    role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra')),
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -326,6 +326,34 @@ def migrate_payment_method(connection):
     """)
     connection.execute("PRAGMA foreign_keys = ON")
 
+def migrate_user_roles(connection):
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+    ).fetchone()
+    if not row or "'infra'" in (row[0] or ""):
+        return
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.executescript("""
+        BEGIN;
+        CREATE TABLE users_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            password_required INTEGER NOT NULL DEFAULT 1,
+            role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra')),
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO users_new(id,username,name,password_hash,password_required,role,active,created_at)
+        SELECT id,username,name,password_hash,password_required,role,active,created_at FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_new RENAME TO users;
+        COMMIT;
+    """)
+    connection.execute("PRAGMA foreign_keys = ON")
+
 def migrate_product_categories(connection):
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='products'"
@@ -382,6 +410,7 @@ def migrate_product_categories(connection):
 
 def init_sqlite(wrapper):
     conn = wrapper.conn
+    migrate_user_roles(conn)
     migrate_payment_method(conn)
     conn.executescript(SCHEMA)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(players)")}
@@ -474,6 +503,8 @@ def init_postgres(wrapper):
     
     # Run migration to add password_required if not exists in postgres
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_required INTEGER NOT NULL DEFAULT 1")
+    wrapper.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
+    wrapper.execute("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('manager','staff','client','infra'))")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'approved'")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_order_id TEXT")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_payment_id TEXT")

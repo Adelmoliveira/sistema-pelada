@@ -410,6 +410,48 @@ class MercadoPagoFlowTest(unittest.TestCase):
             user = get_db().execute("SELECT * FROM users WHERE id=?", (self.user_id,)).fetchone()
             self.assertEqual((user["name"], user["username"], user["role"]), ("Ana", "ana.staff", "manager"))
 
+    def test_infra_user_sees_and_accesses_only_infra(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        created = self.client.post(
+            "/users",
+            data={
+                "name": "Equipe Infra",
+                "username": "infra.teste",
+                "role": "infra",
+                "password": "senha-infra-123",
+            },
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            infra_user = get_db().execute(
+                "SELECT * FROM users WHERE username=?", ("infra.teste",)
+            ).fetchone()
+            self.assertEqual(infra_user["role"], "infra")
+
+        self.client.post("/logout")
+        login = self.client.post(
+            "/login", data={"username": "infra.teste", "password": "senha-infra-123"}
+        )
+        self.assertEqual(login.status_code, 302)
+        self.assertTrue(login.headers["Location"].endswith("/infra/load-relation"))
+
+        page = self.client.get("/infra/load-relation")
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        self.assertIn(">Infra</a>", html)
+        for hidden_menu in (
+            "Conferir Pix", "Estoque e Produtos", "Financeiro", "Pedidos", "Peladeiros",
+            "Relatórios", "Urgente", "Usuários", "Venda rápida",
+        ):
+            self.assertNotIn(f">{hidden_menu}</a>", html)
+        self.assertEqual(self.client.get("/infra/materials").status_code, 200)
+
+        for forbidden_path in ("/", "/sale", "/stock", "/players", "/users"):
+            denied = self.client.get(forbidden_path)
+            self.assertEqual(denied.status_code, 302)
+            self.assertTrue(denied.headers["Location"].endswith("/infra/load-relation"))
+
     def test_reminders_calculate_debt_render_and_prevent_duplicate_email(self):
         sent_messages = []
 
