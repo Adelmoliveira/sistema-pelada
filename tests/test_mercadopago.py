@@ -189,6 +189,17 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertLess(urgent_page.index("<td>Ana</td>"), urgent_page.index("<td>Peladeiro</td>"))
         self.assertLess(urgent_page.index("<td>Peladeiro</td>"), urgent_page.index("<td>Zeca</td>"))
 
+    def test_manager_navigation_tabs_are_alphabetical(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/players").get_data(as_text=True)
+        labels = [
+            "Conferir Pix", "Estoque", "Financeiro", "Pedidos", "Peladeiros",
+            "Produtos", "Relatórios", "Urgente", "Usuários", "Venda rápida",
+        ]
+        positions = [page.index(f">{label}</a>") for label in labels]
+        self.assertEqual(positions, sorted(positions))
+
     def test_manager_can_edit_user_display_name_and_username(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
