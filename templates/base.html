@@ -21,6 +21,13 @@
    </ul>
   </div>{% endif %}
   {% if current_user.role == 'manager' %}<a class="nav-link" href="{{url_for('finance.finance')}}">Financeiro</a>{% endif %}
+  {% if current_user.role in ['manager','staff'] %}<div class="nav-item dropdown">
+   <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">Infra</a>
+   <ul class="dropdown-menu dropdown-menu-end">
+    <li><a class="dropdown-item" href="{{ url_for('infra.materials') }}">Materiais</a></li>
+    <li><a class="dropdown-item" href="{{ url_for('infra.load_relation') }}">Relação de Carga</a></li>
+   </ul>
+  </div>{% endif %}
   {% if current_user.role in ['manager','staff'] %}<a class="nav-link" href="{{ url_for('sales.orders') }}">Pedidos</a>{% endif %}
   {% if current_user.role == 'manager' %}<a class="nav-link" href="{{ url_for('players.players') }}">Peladeiros</a>{% endif %}
   {% if current_user.role == 'manager' %}<a class="nav-link" href="{{ url_for('finance.reports') }}">Relatórios</a>{% endif %}

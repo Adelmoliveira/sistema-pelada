@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block title %}{{form_title}} · BAR PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="row justify-content-center"><div class="col-lg-8">
+  <div class="d-flex align-items-center gap-3 mb-3">
+    <a class="btn btn-outline-secondary" href="{{url_for('infra.materials')}}">← Voltar para Materiais</a>
+    <h1 class="h3 mb-0">{{form_title}}</h1>
+  </div>
+  <div class="card shadow-sm"><div class="card-body p-4">
+    <form method="post" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+      <label class="form-label fw-semibold" for="description">Descrição <span class="text-danger">*</span></label>
+      <textarea class="form-control mb-3" id="description" name="description" rows="3" maxlength="500" required>{{request.form.get('description', material.description if material else '')}}</textarea>
+      <label class="form-label" for="load-sheet">Ficha de Carga (FCG)</label>
+      <input class="form-control mb-3" id="load-sheet" name="load_sheet" maxlength="100" value="{{request.form.get('load_sheet', material.load_sheet if material else '')}}">
+      <label class="form-label" for="notes">Observações</label>
+      <textarea class="form-control mb-3" id="notes" name="notes" rows="6" maxlength="5000">{{request.form.get('notes', material.notes if material else '')}}</textarea>
+      <label class="form-label" for="photo">Foto</label>
+      <input class="form-control" id="photo" type="file" name="photo" accept="image/jpeg,image/png,image/webp">
+      <div class="form-text mb-3">Formatos JPG, PNG ou WebP, com até 4 MB. A imagem será otimizada automaticamente.</div>
+      {% if material and material.thumbnail_data %}<div class="d-flex align-items-center gap-3 mb-3">
+        <img class="material-thumb material-thumb-lg" src="{{material.thumbnail_data}}" alt="Foto atual">
+        <div class="form-check"><input class="form-check-input" type="checkbox" name="remove_photo" value="1" id="remove-photo"><label class="form-check-label" for="remove-photo">Remover foto atual</label></div>
+      </div>{% endif %}
+      <div class="d-flex flex-wrap gap-2 justify-content-end">
+        <a class="btn btn-outline-secondary" href="{{url_for('infra.materials')}}">Cancelar</a>
+        <button class="btn btn-primary">{{'Salvar alterações' if material else 'Cadastrar material'}}</button>
+      </div>
+    </form>
+  </div></div>
+</div></div>
+{% endblock %}

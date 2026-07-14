@@ -3,8 +3,11 @@ import hmac
 import tempfile
 import unittest
 from datetime import date, datetime
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+
+from PIL import Image
 
 from app import app
 from src.db import get_db
@@ -194,13 +197,81 @@ class MercadoPagoFlowTest(unittest.TestCase):
             session["user_id"] = self.user_id
         page = self.client.get("/players").get_data(as_text=True)
         labels = [
-            "Conferir Pix", "Estoque e Produtos", "Financeiro", "Pedidos", "Peladeiros",
+            "Conferir Pix", "Estoque e Produtos", "Financeiro", "Infra", "Pedidos", "Peladeiros",
             "Relatórios", "Urgente", "Usuários", "Venda rápida",
         ]
         positions = [page.index(f">{label}</a>") for label in labels]
         self.assertEqual(positions, sorted(positions))
         self.assertIn('class="nav-item dropdown"', page)
         self.assertLess(page.index(">Estoque</a>"), page.index(">Produtos</a>"))
+        self.assertLess(page.index(">Materiais</a>"), page.index(">Relação de Carga</a>"))
+
+    def test_material_crud_with_optimized_photo(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        invalid = self.client.post("/infra/materials/new", data={"description": ""})
+        self.assertEqual(invalid.status_code, 200)
+        self.assertIn("descrição é obrigatória", invalid.get_data(as_text=True))
+        invalid_photo = self.client.post(
+            "/infra/materials/new",
+            data={"description": "Teste", "photo": (BytesIO(b"nao-e-imagem"), "foto.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(invalid_photo.status_code, 200)
+        self.assertIn("foto enviada é inválida", invalid_photo.get_data(as_text=True))
+
+        photo = BytesIO()
+        Image.new("RGB", (1400, 900), color=(20, 110, 180)).save(photo, format="PNG")
+        photo.seek(0)
+        created = self.client.post(
+            "/infra/materials/new",
+            data={
+                "description": "Analisador de espectro",
+                "load_sheet": "FCG-1877",
+                "notes": "Material em bom estado.",
+                "photo": (photo, "analisador.png"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            material = get_db().execute("SELECT * FROM materials").fetchone()
+            material_id = material["id"]
+            original_photo = material["photo_data"]
+            self.assertTrue(original_photo.startswith("data:image/jpeg;base64,"))
+            self.assertTrue(material["thumbnail_data"].startswith("data:image/jpeg;base64,"))
+
+        listing = self.client.get("/infra/materials?q=espectro").get_data(as_text=True)
+        self.assertIn("Analisador de espectro", listing)
+        self.assertIn("FCG-1877", listing)
+        detail = self.client.get(f"/infra/materials/{material_id}").get_data(as_text=True)
+        self.assertIn("Material em bom estado.", detail)
+
+        edited = self.client.post(
+            f"/infra/materials/{material_id}/edit",
+            data={"description": "Analisador atualizado", "load_sheet": "FCG-2000", "notes": "Revisado."},
+        )
+        self.assertEqual(edited.status_code, 302)
+        with app.app_context():
+            material = get_db().execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
+            self.assertEqual((material["description"], material["photo_data"]), ("Analisador atualizado", original_photo))
+
+        removed = self.client.post(
+            f"/infra/materials/{material_id}/edit",
+            data={"description": "Analisador atualizado", "load_sheet": "", "notes": "", "remove_photo": "1"},
+        )
+        self.assertEqual(removed.status_code, 302)
+        with app.app_context():
+            material = get_db().execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
+            self.assertEqual((material["photo_data"], material["thumbnail_data"]), ("", ""))
+
+        deleted = self.client.post(f"/infra/materials/{material_id}/delete")
+        self.assertEqual(deleted.status_code, 302)
+        with app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM materials").fetchone()[0], 0)
+
+        self.assertEqual(self.client.get("/infra/load-relation").status_code, 200)
 
     def test_login_shows_centered_logo_without_navigation_bar_and_copyright(self):
         page = self.client.get("/login").get_data(as_text=True)
