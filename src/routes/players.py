@@ -1,7 +1,7 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
 from src.db import get_db
 from src.routes.auth import roles_allowed
-from src.utils import normalize_cpf, spreadsheet_rows
+from src.utils import alphabetical_key, normalize_cpf, spreadsheet_rows
 
 bp = Blueprint("players", __name__)
 
@@ -12,9 +12,9 @@ def urgent():
     items = db.execute(
         """SELECT name,war_name,emergency_phone
            FROM players
-           WHERE active=1
-           ORDER BY COALESCE(NULLIF(war_name, ''), name), name"""
+           WHERE active=1"""
     ).fetchall()
+    items = sorted(items, key=lambda player: alphabetical_key(player["name"]))
     return render_template("urgent.html", players=items)
 
 @bp.route("/players", methods=["GET", "POST"])
@@ -65,7 +65,8 @@ def players():
     if player_filter not in filters:
         player_filter = "active"
     where, params = filters[player_filter]
-    items = db.execute(f"SELECT * FROM players WHERE {where} ORDER BY active DESC, name", params).fetchall()
+    items = db.execute(f"SELECT * FROM players WHERE {where}", params).fetchall()
+    items = sorted(items, key=lambda player: alphabetical_key(player["war_name"] or player["name"]))
     return render_template(
         "players.html",
         players=items,

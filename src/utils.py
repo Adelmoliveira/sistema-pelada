@@ -41,6 +41,13 @@ def normalized_header(value):
     value = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode()
     return value.strip().lower().replace("-", "").replace("_", "").replace(" ", "")
 
+def alphabetical_key(value):
+    """Chave estável para ordenar nomes sem diferenciar acentos ou maiúsculas."""
+    text = str(value or "").strip()
+    normalized = unicodedata.normalize("NFKD", text)
+    without_accents = normalized.encode("ascii", "ignore").decode().casefold()
+    return without_accents, text.casefold()
+
 def spreadsheet_rows(upload):
     extension = os.path.splitext(upload.filename or "")[1].lower()
     raw = upload.read()

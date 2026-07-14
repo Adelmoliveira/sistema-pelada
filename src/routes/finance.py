@@ -5,7 +5,7 @@ from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.services.debtors_pdf import build_debtors_pdf
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
-from src.utils import money, brdate, month_bounds, add_months, local_today
+from src.utils import alphabetical_key, money, brdate, month_bounds, add_months, local_today
 
 bp = Blueprint("finance", __name__)
 
@@ -139,7 +139,8 @@ def finance():
     except ValueError:
         year = local_today().year
         
-    players_rows = db.execute("SELECT * FROM players WHERE active=1 AND membership_type='regular' ORDER BY name").fetchall()
+    players_rows = db.execute("SELECT * FROM players WHERE active=1 AND membership_type='regular'").fetchall()
+    players_rows = sorted(players_rows, key=lambda player: alphabetical_key(player["name"]))
     exempt_count = db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board','veteran')").fetchone()[0]
     paid_rows = db.execute("SELECT player_id, month FROM membership_months WHERE month LIKE ?", (f"{year}-%",)).fetchall()
     

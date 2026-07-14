@@ -13,7 +13,7 @@ from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
-from src.utils import brdate, local_today, month_bounds
+from src.utils import alphabetical_key, brdate, local_today, month_bounds
 
 
 class MercadoPagoFlowTest(unittest.TestCase):
@@ -163,6 +163,31 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             local_day = get_db().execute("SELECT date(?)", ("2026-07-14 00:30:00",)).fetchone()[0]
         self.assertEqual(local_day, "2026-07-13")
+
+    def test_player_names_sort_ignoring_case_and_accents(self):
+        names = ["Zeca", "áureo", "Ana", "Álvaro", "bruno"]
+        self.assertEqual(
+            sorted(names, key=alphabetical_key),
+            ["Álvaro", "Ana", "áureo", "bruno", "Zeca"],
+        )
+
+    def test_players_page_sorts_by_displayed_name_after_import(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO players(name,war_name,email) VALUES(?,?,?)", ("Zeca", "", "zeca@example.com"))
+            db.execute("INSERT INTO players(name,war_name,email) VALUES(?,?,?)", ("Ana", "Bia", "bia@example.com"))
+            db.execute("INSERT INTO players(name,war_name,email) VALUES(?,?,?)", ("Álvaro", "", "alvaro@example.com"))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/players").get_data(as_text=True)
+        self.assertLess(page.index("<strong>Álvaro</strong>"), page.index("<strong>Bia</strong>"))
+        self.assertLess(page.index("<strong>Bia</strong>"), page.index("<strong>Peladeiro</strong>"))
+        self.assertLess(page.index("<strong>Peladeiro</strong>"), page.index("<strong>Zeca</strong>"))
+        urgent_page = self.client.get("/urgent").get_data(as_text=True)
+        self.assertLess(urgent_page.index("<td>Álvaro</td>"), urgent_page.index("<td>Ana</td>"))
+        self.assertLess(urgent_page.index("<td>Ana</td>"), urgent_page.index("<td>Peladeiro</td>"))
+        self.assertLess(urgent_page.index("<td>Peladeiro</td>"), urgent_page.index("<td>Zeca</td>"))
 
     def test_manager_can_edit_user_display_name_and_username(self):
         with self.client.session_transaction() as session:

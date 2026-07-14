@@ -4,7 +4,7 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 
-from src.utils import money
+from src.utils import alphabetical_key, money
 
 
 MONTH_NAMES = (
@@ -46,8 +46,9 @@ def get_reminder_settings(db):
 def outstanding_players(db, today, monthly_fee=1500):
     players = db.execute(
         "SELECT id,name,email FROM players "
-        "WHERE active=1 AND membership_type='regular' ORDER BY name"
+        "WHERE active=1 AND membership_type='regular'"
     ).fetchall()
+    players = sorted(players, key=lambda player: alphabetical_key(player["name"]))
     paid_rows = db.execute(
         "SELECT player_id,month FROM membership_months WHERE month>=? AND month<=?",
         (f"{today.year}-01", f"{today.year}-{today.month:02d}"),

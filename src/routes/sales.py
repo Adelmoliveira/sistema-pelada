@@ -3,7 +3,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from itsdangerous import BadData, URLSafeTimedSerializer
 from src.db import get_db
 from src.routes.auth import roles_allowed
-from src.utils import money, datetime_iso, local_today
+from src.utils import alphabetical_key, money, datetime_iso, local_today
 from src.services.pix import pix_payload, generate_qrcode_base64
 from src.services.mercadopago import (
     MercadoPagoError,
@@ -155,7 +155,11 @@ def sale():
             current_app.logger.error(f"Erro ao processar venda: {exc}")
             flash("Erro interno ao processar a venda. Tente novamente.", "danger")
 
-    player_rows = db.execute("SELECT * FROM players WHERE active=1 ORDER BY name").fetchall()
+    player_rows = db.execute("SELECT * FROM players WHERE active=1").fetchall()
+    player_rows = sorted(
+        player_rows,
+        key=lambda player: alphabetical_key(player["war_name"] or player["name"]),
+    )
     product_rows = db.execute("SELECT * FROM products WHERE active=1 AND stock>0 ORDER BY category, name").fetchall()
     return render_template(
         "sale.html",
