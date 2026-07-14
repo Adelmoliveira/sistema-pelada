@@ -194,21 +194,25 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertLess(urgent_page.index("<td>Ana</td>"), urgent_page.index("<td>Peladeiro</td>"))
         self.assertLess(urgent_page.index("<td>Peladeiro</td>"), urgent_page.index("<td>Zeca</td>"))
 
-    def test_manager_navigation_tabs_are_alphabetical(self):
+    def test_manager_sidebar_groups_modules_and_links(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
         page = self.client.get("/players").get_data(as_text=True)
-        labels = [
-            "Conferir Pix", "Estoque e Produtos", "Financeiro", "Infra", "Pedidos", "Peladeiros",
-            "Relatórios", "Urgente", "Usuários", "Venda rápida",
-        ]
-        positions = [page.index(f">{label}</a>") for label in labels]
+        self.assertIn('id="app-sidebar"', page)
+        modules = ["Bar", "Financeiro", "Infra-Estrutura", "Urgente", "Administração"]
+        positions = [page.index(f"<span>{label}</span>") for label in modules]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn('class="nav-item dropdown"', page)
-        self.assertLess(page.index(">Estoque</a>"), page.index(">Produtos</a>"))
-        self.assertLess(page.index(">Materiais</a>"), page.index(">Relação de Carga</a>"))
+        for links in (
+            ["Conferir Pix", "Estoque", "Produtos", "Pedidos", "Venda rápida"],
+            ["Manutenção", "Materiais", "Relação de Carga"],
+            ["Peladeiros", "Relatórios", "Usuários"],
+        ):
+            link_positions = [page.index(f">{label}</a>") for label in links]
+            self.assertEqual(link_positions, sorted(link_positions))
+        self.assertIn('data-bs-target="#sidebar-bar"', page)
+        self.assertIn('class="offcanvas-lg offcanvas-start app-sidebar"', page)
         self.assertIn('alt="Logo GPCTA"', page)
-        self.assertNotIn("<span>BAR PELADEIROS GPCTA</span>", page)
+        self.assertNotIn('class="navbar ', page)
 
     def test_material_crud_with_optimized_photo(self):
         with self.client.session_transaction() as session:
@@ -546,13 +550,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
         page = self.client.get("/infra/load-relation")
         self.assertEqual(page.status_code, 200)
         html = page.get_data(as_text=True)
-        self.assertIn(">Infra</a>", html)
+        self.assertIn("<span>Infra-Estrutura</span>", html)
         self.assertIn(">Manutenção</a>", html)
-        for hidden_menu in (
-            "Conferir Pix", "Estoque e Produtos", "Financeiro", "Pedidos", "Peladeiros",
-            "Relatórios", "Urgente", "Usuários", "Venda rápida",
-        ):
-            self.assertNotIn(f">{hidden_menu}</a>", html)
+        for hidden_module in ("Bar", "Financeiro", "Urgente", "Administração"):
+            self.assertNotIn(f"<span>{hidden_module}</span>", html)
+        for hidden_link in ("Conferir Pix", "Estoque", "Produtos", "Pedidos", "Peladeiros", "Relatórios", "Usuários", "Venda rápida"):
+            self.assertNotIn(f">{hidden_link}</a>", html)
         self.assertEqual(self.client.get("/infra/materials").status_code, 200)
         self.assertEqual(self.client.get("/infra/maintenance").status_code, 200)
 
