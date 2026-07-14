@@ -29,13 +29,16 @@ if not database_path:
 
 app.config.update(
     # `or` também cobre variável criada com valor vazio na hospedagem.
-    SECRET_KEY=os.environ.get("SECRET_KEY") or "troque-esta-chave-em-producao",
-    DATABASE_URL=os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL"),
+    SECRET_KEY=os.environ.get("SECRET_KEY") or os.getenv("SECRET_KEY", "troque-esta-chave-em-producao"),
+    DATABASE_URL=os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL") or os.getenv("DATABASE_URL"),
     DATABASE=database_path,
     MAX_CONTENT_LENGTH=5 * 1024 * 1024,
     PIX_KEY=os.environ.get("PIX_KEY", "adelmoliveira@gmail.com"),
     PIX_MERCHANT_NAME=os.environ.get("PIX_MERCHANT_NAME", "BAR PELADEIROS GPCTA"),
     PIX_MERCHANT_CITY=os.environ.get("PIX_MERCHANT_CITY", "SAO PAULO"),
+    MERCADOPAGO_ACCESS_TOKEN=os.environ.get("MERCADOPAGO_ACCESS_TOKEN"),
+    MERCADOPAGO_WEBHOOK_SECRET=os.environ.get("MERCADOPAGO_WEBHOOK_SECRET"),
+    APP_BASE_URL=(os.environ.get("APP_BASE_URL") or "").rstrip("/"),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=is_vercel,
@@ -72,10 +75,12 @@ app.register_blueprint(finance_bp)
 
 # Exempt public/authentication routes from CSRF to avoid login issues in local/dev deployments
 from src.routes.auth import setup, login, client_access, logout
+from src.routes.sales import mercadopago_webhook
 csrf.exempt(setup)
 csrf.exempt(login)
 csrf.exempt(client_access)
 csrf.exempt(logout)
+csrf.exempt(mercadopago_webhook)
 
 # Register Template Filters
 app.template_filter("money")(money)
@@ -120,7 +125,7 @@ def load_user_and_protect_routes():
             return None
         return redirect(url_for("auth.setup"))
 
-    public_endpoints = {"auth.login", "auth.client_access"}
+    public_endpoints = {"auth.login", "auth.client_access", "sales.mercadopago_webhook"}
     if request.endpoint in public_endpoints or request.endpoint is None:
         return None
 

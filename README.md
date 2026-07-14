@@ -10,6 +10,11 @@ Produtos podem ser editados, excluídos dos cadastros ativos e restaurados sem p
 
 Na venda rápida, pagamentos Pix podem gerar QR Code e código Copia e Cola com o valor total preenchido automaticamente.
 
+Com `MERCADOPAGO_ACCESS_TOKEN`, `MERCADOPAGO_WEBHOOK_SECRET` e `APP_BASE_URL` configurados,
+o QR Code é criado pelo Mercado Pago. O estoque fica reservado enquanto a cobrança está
+pendente e a venda é registrada automaticamente somente após a confirmação do pagamento.
+O peladeiro precisa ter e-mail e CPF cadastrados para usar esse fluxo.
+
 Vendas lançadas incorretamente podem ser apagadas na conferência de Pix ou no relatório mensal. A exclusão devolve automaticamente os itens ao estoque.
 
 No primeiro acesso, o sistema solicita a criação de um gerente. O gerente pode criar usuários Cliente (somente venda rápida), Staff (operações sem peladeiros e relatórios) e outros Gerentes (acesso completo).
