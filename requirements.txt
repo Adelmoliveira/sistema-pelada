@@ -4,4 +4,4 @@ qrcode[pil]==8.2
 psycopg2-binary==2.9.9
 Flask-WTF==1.2.1
 python-dotenv==1.0.0
-
+reportlab==5.0.0

@@ -225,6 +225,15 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(authorized.status_code, 200)
         dispatch_mock.assert_called_once()
 
+    def test_manager_downloads_debtors_pdf(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        response = self.client.get("/finance/reminders/debtors.pdf")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertTrue(response.data.startswith(b"%PDF-"))
+        self.assertIn("attachment", response.headers["Content-Disposition"])
+
     def test_legacy_pix_remains_available_until_credentials_are_configured(self):
         app.config.update(
             MERCADOPAGO_ACCESS_TOKEN=None,

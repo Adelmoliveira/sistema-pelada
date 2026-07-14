@@ -5,9 +5,12 @@
         <h1 class="h3 mt-2 mb-1">Lembretes de mensalidade</h1>
         <p class="text-muted mb-0">Cobrança automática e individual dos peladeiros com mensalidades pendentes.</p>
     </div>
-    <span class="badge {{'bg-success' if settings.enabled else 'bg-secondary'}} fs-6">
-        {{'Agendamento ativo' if settings.enabled else 'Agendamento desativado'}}
-    </span>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+        <a href="{{url_for('finance.debtors_pdf')}}" class="btn btn-outline-danger">Gerar PDF dos devedores</a>
+        <span class="badge {{'bg-success' if settings.enabled else 'bg-secondary'}} fs-6">
+            {{'Agendamento ativo' if settings.enabled else 'Agendamento desativado'}}
+        </span>
+    </div>
 </div>
 
 <div class="row g-4">

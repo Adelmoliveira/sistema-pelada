@@ -1,8 +1,9 @@
 import hmac
 
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify, send_file
 from src.db import get_db
 from src.routes.auth import roles_allowed
+from src.services.debtors_pdf import build_debtors_pdf
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
 from src.utils import money, brdate, month_bounds, add_months, local_today
 
@@ -209,6 +210,19 @@ def reminders():
         "reminders.html", settings=settings, debtors=debtors, history=history,
         smtp_ready=bool(sender and password), sender=sender or "diretoriagpcta@gmail.com",
         today=today,
+    )
+
+
+@bp.get("/finance/reminders/debtors.pdf")
+@roles_allowed("manager")
+def debtors_pdf():
+    today = local_today()
+    report = build_debtors_pdf(outstanding_players(get_db(), today), today)
+    return send_file(
+        report,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"devedores-{today.isoformat()}.pdf",
     )
 
 
