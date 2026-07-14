@@ -5,6 +5,7 @@ from flask import Blueprint, current_app, flash, g, redirect, render_template, r
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.services.load_relation_pdf import build_load_relation_pdf
+from src.services.load_qr_labels_pdf import build_load_qr_labels_pdf
 from src.services.material_photos import process_material_photo
 from src.services.pix import generate_qrcode_base64
 from src.utils import alphabetical_key, local_today
@@ -12,6 +13,18 @@ from src.utils import alphabetical_key, local_today
 
 bp = Blueprint("infra", __name__, url_prefix="/infra")
 MAX_LOAD_PHOTOS = 6
+LOAD_AREAS = {
+    "BAR": "Bar",
+    "COZ": "Cozinha",
+    "SAL": "Salão",
+    "HIS": "Sala Histórica",
+    "VES": "Vestiário",
+    "BAN": "Banheiros",
+}
+
+
+def bmp_code(entry_id, area_code):
+    return f"BMP-{entry_id:06d} | {area_code}"
 
 
 def material_form_values():
@@ -41,6 +54,9 @@ def load_form_values(db):
         raise ValueError("Selecione um material.")
     if not db.execute("SELECT 1 FROM materials WHERE id=?", (material_id,)).fetchone():
         raise ValueError("O material selecionado não existe.")
+    area_code = request.form.get("area_code", "").strip().upper()
+    if area_code not in LOAD_AREAS:
+        raise ValueError("Selecione uma área válida.")
     serial_number = request.form.get("serial_number", "").strip()
     location = request.form.get("location", "").strip()
     notes = request.form.get("notes", "").strip()
@@ -50,7 +66,7 @@ def load_form_values(db):
         raise ValueError("A localização deve ter no máximo 200 caracteres.")
     if len(notes) > 5000:
         raise ValueError("As observações devem ter no máximo 5.000 caracteres.")
-    return material_id, serial_number, location, notes
+    return material_id, area_code, serial_number, location, notes
 
 
 def process_load_photos(uploads):
@@ -60,20 +76,25 @@ def process_load_photos(uploads):
     return [process_material_photo(upload) for upload in uploads]
 
 
-def load_entry_rows(db, query=""):
+def load_entry_rows(db, query="", area_code=""):
     sql = """SELECT le.*,m.description material_description,m.load_sheet material_fcg,
                     (SELECT COUNT(*) FROM load_entry_photos lp WHERE lp.load_entry_id=le.id) photo_count,
                     (SELECT thumbnail_data FROM load_entry_photos lp
                      WHERE lp.load_entry_id=le.id ORDER BY lp.id LIMIT 1) thumbnail_data
              FROM load_entries le JOIN materials m ON m.id=le.material_id"""
-    params = ()
+    conditions = []
+    params = []
     if query:
         term = f"%{query.lower()}%"
-        sql += """ WHERE LOWER(le.bmp) LIKE ? OR LOWER(m.description) LIKE ?
-                   OR LOWER(le.serial_number) LIKE ? OR LOWER(le.location) LIKE ?"""
-        params = (term, term, term, term)
+        conditions.append("(LOWER(le.bmp) LIKE ? OR LOWER(m.description) LIKE ? OR LOWER(le.serial_number) LIKE ? OR LOWER(le.location) LIKE ?)")
+        params.extend((term, term, term, term))
+    if area_code in LOAD_AREAS:
+        conditions.append("le.area_code=?")
+        params.append(area_code)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY le.id DESC"
-    return db.execute(sql, params).fetchall()
+    return db.execute(sql, tuple(params)).fetchall()
 
 
 @bp.get("/materials")
@@ -205,7 +226,8 @@ def delete_material(material_id):
 def load_relation():
     db = get_db()
     query = request.args.get("q", "").strip()
-    rows = load_entry_rows(db, query)
+    area_code = request.args.get("area", "").strip().upper()
+    rows = load_entry_rows(db, query, area_code)
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
@@ -216,7 +238,49 @@ def load_relation():
     visible = rows[(page - 1) * per_page:page * per_page]
     return render_template(
         "load_relation.html", entries=visible, total=len(rows), query=query,
-        page=page, pages=pages,
+        page=page, pages=pages, area_code=area_code, load_areas=LOAD_AREAS,
+    )
+
+
+@bp.get("/load-relation/qr-codes")
+@roles_allowed("manager", "staff", "infra")
+def load_qr_codes():
+    area_code = request.args.get("area", "").strip().upper()
+    entries = load_entry_rows(get_db(), area_code=area_code)
+    return render_template(
+        "load_qr_codes.html", entries=entries, area_code=area_code,
+        load_areas=LOAD_AREAS,
+    )
+
+
+@bp.post("/load-relation/qr-codes.pdf")
+@roles_allowed("manager", "staff", "infra")
+def load_qr_codes_pdf():
+    raw_ids = request.form.getlist("entry_ids")
+    try:
+        entry_ids = list(dict.fromkeys(int(value) for value in raw_ids))
+    except ValueError:
+        entry_ids = []
+    if not entry_ids:
+        flash("Selecione ao menos um BMP para gerar os códigos QR.", "danger")
+        return redirect(url_for("infra.load_qr_codes", area=request.form.get("area_code", "")))
+    if len(entry_ids) > 200:
+        flash("Selecione no máximo 200 BMPs por impressão.", "danger")
+        return redirect(url_for("infra.load_qr_codes", area=request.form.get("area_code", "")))
+    placeholders = ",".join("?" for _ in entry_ids)
+    entries = get_db().execute(
+        f"""SELECT le.id,le.bmp,le.location,m.description material_description
+            FROM load_entries le JOIN materials m ON m.id=le.material_id
+            WHERE le.id IN ({placeholders}) ORDER BY le.area_code,le.id""",
+        tuple(entry_ids),
+    ).fetchall()
+    size = request.form.get("size", "standard")
+    if size not in ("small", "standard", "large"):
+        size = "standard"
+    report = build_load_qr_labels_pdf(entries, request.url_root, size)
+    return send_file(
+        report, mimetype="application/pdf", as_attachment=True,
+        download_name=f"etiquetas-qr-bmp-{local_today().isoformat()}.pdf",
     )
 
 
@@ -227,7 +291,7 @@ def new_load_entry():
     materials = material_options(db)
     if request.method == "POST":
         try:
-            material_id, serial_number, location, notes = load_form_values(db)
+            material_id, area_code, serial_number, location, notes = load_form_values(db)
             photos = process_load_photos(request.files.getlist("photos"))
             with db:
                 pending_bmp = f"pending-{uuid.uuid4().hex}"
@@ -237,8 +301,8 @@ def new_load_entry():
                     (material_id, pending_bmp, serial_number, location, notes),
                 )
                 entry_id = cursor.lastrowid
-                bmp = f"BMP-{entry_id:06d}"
-                db.execute("UPDATE load_entries SET bmp=? WHERE id=?", (bmp, entry_id))
+                bmp = bmp_code(entry_id, area_code)
+                db.execute("UPDATE load_entries SET bmp=?,area_code=? WHERE id=?", (bmp, area_code, entry_id))
                 for photo, thumbnail in photos:
                     db.execute(
                         """INSERT INTO load_entry_photos(load_entry_id,photo_data,thumbnail_data)
@@ -254,7 +318,7 @@ def new_load_entry():
             flash("Erro interno ao cadastrar a carga.", "danger")
     return render_template(
         "load_entry_form.html", entry=None, materials=materials,
-        photos=[], form_title="Nova carga", max_photos=MAX_LOAD_PHOTOS,
+        photos=[], form_title="Nova carga", max_photos=MAX_LOAD_PHOTOS, load_areas=LOAD_AREAS,
     )
 
 
@@ -282,7 +346,7 @@ def load_entry_detail(entry_id):
 @roles_allowed("manager", "staff", "infra")
 def load_entry_qr_code(entry_id):
     entry = get_db().execute(
-        """SELECT le.id,le.bmp,le.status,m.description material_description
+        """SELECT le.id,le.bmp,le.area_code,le.status,m.description material_description
            FROM load_entries le JOIN materials m ON m.id=le.material_id WHERE le.id=?""",
         (entry_id,),
     ).fetchone()
@@ -329,7 +393,7 @@ def edit_load_entry(entry_id):
     ).fetchall()
     if request.method == "POST":
         try:
-            material_id, serial_number, location, notes = load_form_values(db)
+            material_id, area_code, serial_number, location, notes = load_form_values(db)
             remove_ids = set()
             for value in request.form.getlist("remove_photo_ids"):
                 try:
@@ -343,9 +407,9 @@ def edit_load_entry(entry_id):
                 raise ValueError(f"Cada carga pode possuir no máximo {MAX_LOAD_PHOTOS} fotos.")
             with db:
                 db.execute(
-                    """UPDATE load_entries SET material_id=?,serial_number=?,location=?,notes=?,
+                    """UPDATE load_entries SET material_id=?,area_code=?,bmp=?,serial_number=?,location=?,notes=?,
                        updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                    (material_id, serial_number, location, notes, entry_id),
+                    (material_id, area_code, bmp_code(entry_id, area_code), serial_number, location, notes, entry_id),
                 )
                 for photo_id in remove_ids:
                     db.execute(
@@ -372,6 +436,7 @@ def edit_load_entry(entry_id):
     return render_template(
         "load_entry_form.html", entry=entry, materials=material_options(db),
         photos=photos, form_title="Editar carga", max_photos=MAX_LOAD_PHOTOS,
+        load_areas=LOAD_AREAS,
     )
 
 
@@ -397,7 +462,11 @@ def delete_load_entry(entry_id):
 @roles_allowed("manager", "staff", "infra")
 def load_relation_report():
     query = request.args.get("q", "").strip()
-    report = build_load_relation_pdf(load_entry_rows(get_db(), query), local_today(), query)
+    area_code = request.args.get("area", "").strip().upper()
+    report_filter = " · ".join(value for value in (query, area_code) if value)
+    report = build_load_relation_pdf(
+        load_entry_rows(get_db(), query, area_code), local_today(), report_filter,
+    )
     return send_file(
         report,
         mimetype="application/pdf",

@@ -94,7 +94,7 @@ def build_load_relation_pdf(entries, today, query=""):
 
     table = Table(
         rows,
-        colWidths=[27 * mm, 85 * mm, 35 * mm, 34 * mm, 48 * mm, 26 * mm],
+        colWidths=[33 * mm, 79 * mm, 35 * mm, 34 * mm, 48 * mm, 26 * mm],
         repeatRows=1,
     )
     table_style = [

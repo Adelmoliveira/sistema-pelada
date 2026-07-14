@@ -304,6 +304,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             "/infra/load-relation/new",
             data={
                 "material_id": str(material_id),
+                "area_code": "COZ",
                 "serial_number": "SERIE-001",
                 "location": "Sala G-7",
                 "notes": "Carga em bom estado.",
@@ -316,7 +317,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             db = get_db()
             entry = db.execute("SELECT * FROM load_entries").fetchone()
             entry_id = entry["id"]
-            self.assertEqual(entry["bmp"], f"BMP-{entry_id:06d}")
+            self.assertEqual((entry["bmp"], entry["area_code"]), (f"BMP-{entry_id:06d} | COZ", "COZ"))
             stored_photos = db.execute(
                 "SELECT * FROM load_entry_photos WHERE load_entry_id=? ORDER BY id", (entry_id,)
             ).fetchall()
@@ -327,6 +328,9 @@ class MercadoPagoFlowTest(unittest.TestCase):
         listing = self.client.get("/infra/load-relation?q=cadeira").get_data(as_text=True)
         self.assertIn("Cadeira giratória", listing)
         self.assertIn(f"BMP-{entry_id:06d}", listing)
+        self.assertIn("| COZ", listing)
+        filtered_listing = self.client.get("/infra/load-relation?area=BAR").get_data(as_text=True)
+        self.assertNotIn("Cadeira giratória", filtered_listing)
         detail = self.client.get(f"/infra/load-relation/{entry_id}").get_data(as_text=True)
         self.assertIn("Carga em bom estado.", detail)
         self.assertIn("SERIE-001", detail)
@@ -335,6 +339,17 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(qr_page.status_code, 200)
         self.assertIn("data:image/png;base64,", qr_page.get_data(as_text=True))
         self.assertIn(f"/infra/load-relation/{entry_id}", qr_page.get_data(as_text=True))
+
+        qr_selection = self.client.get("/infra/load-relation/qr-codes?area=COZ")
+        self.assertEqual(qr_selection.status_code, 200)
+        self.assertIn(f"BMP-{entry_id:06d} | COZ", qr_selection.get_data(as_text=True))
+        labels = self.client.post(
+            "/infra/load-relation/qr-codes.pdf",
+            data={"entry_ids": str(entry_id), "size": "standard", "area_code": "COZ"},
+        )
+        self.assertEqual(labels.status_code, 200)
+        self.assertEqual(labels.mimetype, "application/pdf")
+        self.assertTrue(labels.data.startswith(b"%PDF-"))
 
         blocked_material_delete = self.client.post(f"/infra/materials/{material_id}/delete")
         self.assertEqual(blocked_material_delete.status_code, 302)
@@ -347,6 +362,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             f"/infra/load-relation/{entry_id}/edit",
             data={
                 "material_id": str(material_id),
+                "area_code": "SAL",
                 "serial_number": "SERIE-002",
                 "location": "Armário H-14",
                 "notes": "Inventariado.",
@@ -360,7 +376,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
             photo_count = db.execute(
                 "SELECT COUNT(*) FROM load_entry_photos WHERE load_entry_id=?", (entry_id,)
             ).fetchone()[0]
-            self.assertEqual((entry["serial_number"], entry["location"], photo_count), ("SERIE-002", "Armário H-14", 1))
+            self.assertEqual(
+                (entry["bmp"], entry["area_code"], entry["serial_number"], entry["location"], photo_count),
+                (f"BMP-{entry_id:06d} | SAL", "SAL", "SERIE-002", "Armário H-14", 1),
+            )
 
         report = self.client.get("/infra/load-relation/report.pdf?q=cadeira")
         self.assertEqual(report.status_code, 200)
@@ -451,6 +470,19 @@ class MercadoPagoFlowTest(unittest.TestCase):
             denied = self.client.get(forbidden_path)
             self.assertEqual(denied.status_code, 302)
             self.assertTrue(denied.headers["Location"].endswith("/infra/load-relation"))
+
+        self.client.post("/logout")
+        protected = self.client.get("/infra/materials")
+        self.assertEqual(protected.status_code, 302)
+        self.assertIn("next=/infra/materials", protected.headers["Location"])
+        resumed = self.client.post(
+            "/login",
+            data={
+                "username": "infra.teste", "password": "senha-infra-123",
+                "next": "/infra/materials",
+            },
+        )
+        self.assertTrue(resumed.headers["Location"].endswith("/infra/materials"))
 
     def test_reminders_calculate_debt_render_and_prevent_duplicate_email(self):
         sent_messages = []

@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS load_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     material_id INTEGER NOT NULL REFERENCES materials(id),
     bmp TEXT NOT NULL UNIQUE,
+    area_code TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN')),
     serial_number TEXT DEFAULT '',
     location TEXT DEFAULT '',
     notes TEXT DEFAULT '',
@@ -463,6 +464,7 @@ def init_sqlite(wrapper):
 
     load_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entries)")}
     load_migrations = {
+        "area_code": "TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN'))",
         "status": "TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged'))",
         "discharged_at": "TEXT",
         "discharged_by": "INTEGER REFERENCES users(id)",
@@ -470,6 +472,7 @@ def init_sqlite(wrapper):
     for column, definition in load_migrations.items():
         if column not in load_columns:
             conn.execute(f"ALTER TABLE load_entries ADD COLUMN {column} {definition}")
+    conn.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
     conn.commit()
 
 def init_postgres(wrapper):
@@ -515,8 +518,10 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS area_code TEXT NOT NULL DEFAULT 'BAR'")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_at TIMESTAMP")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_by INTEGER REFERENCES users(id)")
+    wrapper.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
     wrapper.commit()

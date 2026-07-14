@@ -13,6 +13,9 @@ def home_endpoint(role):
         return "infra.load_relation"
     return "finance.dashboard"
 
+def safe_next_url(value):
+    return value if value and value.startswith("/") and not value.startswith("//") else None
+
 def make_password_hash(password):
     # Compatível com o Python do macOS e com o ambiente de produção.
     return generate_password_hash(password, method="pbkdf2:sha256", salt_length=16)
@@ -60,7 +63,7 @@ def setup():
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if g.user:
-        return redirect(url_for(home_endpoint(g.user["role"])))
+        return redirect(safe_next_url(request.args.get("next")) or url_for(home_endpoint(g.user["role"])))
     if request.method == "POST":
         db = get_db()
         # Case insensitive query for username
@@ -72,7 +75,7 @@ def login():
         if user and (passwordless_client or check_password_hash(user["password_hash"], request.form.get("password", ""))):
             session.clear()
             session["user_id"] = user["id"]
-            return redirect(url_for(home_endpoint(user["role"])))
+            return redirect(safe_next_url(request.form.get("next")) or url_for(home_endpoint(user["role"])))
         flash("Usuário ou senha inválidos.", "danger")
     return render_template("login.html")
 

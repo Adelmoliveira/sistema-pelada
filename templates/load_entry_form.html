@@ -11,7 +11,7 @@
     <form method="post" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
       <div class="row g-3">
-        <div class="col-md-8">
+        <div class="col-md-6">
           <label class="form-label fw-semibold" for="material-id">Material <span class="text-danger">*</span></label>
           {% set selected_material = request.form.get('material_id', entry.material_id if entry else '')|string %}
           <select class="form-select" id="material-id" name="material_id" required {{'disabled' if not materials}}>
@@ -19,7 +19,12 @@
             {% for material in materials %}<option value="{{material.id}}" {{'selected' if material.id|string == selected_material}}>{{material.description}}{{' · FCG ' ~ material.load_sheet if material.load_sheet else ''}}</option>{% endfor %}
           </select>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
+          <label class="form-label fw-semibold" for="area-code">Área <span class="text-danger">*</span></label>
+          {% set selected_area = request.form.get('area_code', entry.area_code if entry else '') %}
+          <select class="form-select" id="area-code" name="area_code" required><option value="">Selecione</option>{% for code,name in load_areas.items() %}<option value="{{code}}" {{'selected' if code == selected_area}}>{{code}} - {{name}}</option>{% endfor %}</select>
+        </div>
+        <div class="col-md-3">
           <label class="form-label" for="bmp">BMP</label>
           <input class="form-control" id="bmp" value="{{entry.bmp if entry else 'Gerado automaticamente ao salvar'}}" readonly>
         </div>
