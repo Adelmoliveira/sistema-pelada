@@ -1,10 +1,9 @@
-from datetime import date
 import uuid
 from flask import Blueprint, render_template, request, redirect, url_for, flash, g, jsonify, current_app
 from itsdangerous import BadData, URLSafeTimedSerializer
 from src.db import get_db
 from src.routes.auth import roles_allowed
-from src.utils import money
+from src.utils import money, datetime_iso, local_today
 from src.services.pix import pix_payload, generate_qrcode_base64
 from src.services.mercadopago import (
     MercadoPagoError,
@@ -197,7 +196,7 @@ def delete_sale(sale_id):
 @roles_allowed("manager", "staff")
 def pix():
     db = get_db()
-    day = request.args.get("day", date.today().isoformat())
+    day = request.args.get("day", local_today().isoformat())
     rows = db.execute(
         """SELECT s.*, p.name player_name FROM sales s JOIN players p ON p.id=s.player_id
         WHERE date(s.created_at)=? AND s.payment_method='Pix' AND s.paid=1 ORDER BY s.id DESC""",
@@ -221,8 +220,8 @@ def delivery_order_data(db, sale):
         "id": sale["id"],
         "player_name": sale["war_name"] or sale["player_name"],
         "total_cents": sale["total_cents"],
-        "paid_at": str(sale["paid_at"] or sale["created_at"]),
-        "delivered_at": str(sale["delivered_at"] or ""),
+        "paid_at": datetime_iso(sale["paid_at"] or sale["created_at"]),
+        "delivered_at": datetime_iso(sale["delivered_at"]),
         "delivered_by_name": sale["delivered_by_name"] or "",
         "items": [{"name": item["name"], "quantity": item["quantity"]} for item in items],
     }

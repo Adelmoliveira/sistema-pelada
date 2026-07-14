@@ -1,8 +1,8 @@
-from datetime import date, datetime
+from datetime import datetime
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
 from src.db import get_db
 from src.routes.auth import roles_allowed
-from src.utils import money, brdate, month_bounds, add_months
+from src.utils import money, brdate, month_bounds, add_months, local_today
 
 bp = Blueprint("finance", __name__)
 
@@ -10,7 +10,7 @@ bp = Blueprint("finance", __name__)
 @roles_allowed("manager", "staff")
 def dashboard():
     db = get_db()
-    today = date.today().isoformat()
+    today = local_today().isoformat()
     month, start, end = month_bounds()
     metrics = db.execute("""
         SELECT
@@ -117,12 +117,12 @@ def finance():
                 flash("Não foi possível registrar: Um ou mais meses selecionados já foram pagos por este peladeiro.", "danger")
             else:
                 flash("Erro interno ao registrar mensalidade.", "danger")
-        return redirect(url_for("finance.finance", year=request.args.get("year", date.today().year)))
+        return redirect(url_for("finance.finance", year=request.args.get("year", local_today().year)))
 
     try:
-        year = int(request.args.get("year", date.today().year))
+        year = int(request.args.get("year", local_today().year))
     except ValueError:
-        year = date.today().year
+        year = local_today().year
         
     players_rows = db.execute("SELECT * FROM players WHERE active=1 AND membership_type='regular' ORDER BY name").fetchall()
     exempt_count = db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board')").fetchone()[0]
@@ -156,14 +156,15 @@ def finance():
         
     collected = db.execute("SELECT COALESCE(SUM(amount_cents),0) FROM membership_payments WHERE created_at>=? AND created_at<?",
                              (f"{year}-01-01", f"{year + 1}-01-01")).fetchone()[0]
-    due_month = 12 if year < date.today().year else (date.today().month if year == date.today().year else 0)
+    today = local_today()
+    due_month = 12 if year < today.year else (today.month if year == today.year else 0)
     expected_to_date = len(players_rows) * due_month * monthly_fee
     covered_to_date = sum(sum(1 for month in row["months"] if month <= due_month) for row in all_status_rows) * monthly_fee
     
     return render_template("finance.html", players=players_rows, statuses=status_rows, history=history,
                            year=year, monthly_fee=monthly_fee, collected=collected,
                            expected=expected_to_date, outstanding=max(0, expected_to_date-covered_to_date),
-                           current_month=date.today().strftime("%Y-%m"), history_page=history_page,
+                           current_month=local_today().strftime("%Y-%m"), history_page=history_page,
                            history_pages=history_pages, history_total=history_total,
                            members_page=members_page, members_pages=members_pages,
                            members_total=len(all_status_rows), exempt_count=exempt_count)

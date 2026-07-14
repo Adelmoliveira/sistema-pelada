@@ -1,5 +1,7 @@
 import os
 import sqlite3
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from flask import g, current_app
 
 SCHEMA = """
@@ -203,6 +205,16 @@ def connect_db(app):
         conn = sqlite3.connect(database_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        sao_paulo = ZoneInfo("America/Sao_Paulo")
+        def local_date(value):
+            try:
+                parsed = datetime.fromisoformat(str(value))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(sao_paulo).date().isoformat()
+            except (TypeError, ValueError):
+                return None
+        conn.create_function("date", 1, local_date)
         wrapper = DbWrapper(conn, is_postgres=False)
         init_sqlite(wrapper)
         return wrapper
@@ -218,6 +230,8 @@ def connect_db(app):
         connect_timeout=10,
         cursor_factory=psycopg2.extras.DictCursor
     )
+    with conn.cursor() as cursor:
+        cursor.execute("SET TIME ZONE 'UTC'")
     wrapper = DbWrapper(conn, is_postgres=True)
     init_postgres(wrapper)
     return wrapper
@@ -371,17 +385,17 @@ def init_sqlite(wrapper):
 def init_postgres(wrapper):
     wrapper.execute("""
     CREATE OR REPLACE FUNCTION date(t timestamp with time zone) RETURNS date AS $$
-        SELECT t::date;
+        SELECT timezone('America/Sao_Paulo', t)::date;
     $$ LANGUAGE SQL IMMUTABLE;
     """)
     wrapper.execute("""
     CREATE OR REPLACE FUNCTION date(t timestamp without time zone) RETURNS date AS $$
-        SELECT t::date;
+        SELECT timezone('America/Sao_Paulo', t AT TIME ZONE 'UTC')::date;
     $$ LANGUAGE SQL IMMUTABLE;
     """)
     wrapper.execute("""
     CREATE OR REPLACE FUNCTION date(t text) RETURNS date AS $$
-        SELECT t::date;
+        SELECT timezone('America/Sao_Paulo', t::timestamp AT TIME ZONE 'UTC')::date;
     $$ LANGUAGE SQL IMMUTABLE;
     """)
     

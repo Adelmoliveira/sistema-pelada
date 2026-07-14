@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ from src.routes.sales import pix_access_token
 from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
+from src.utils import brdate, month_bounds
 
 
 class MercadoPagoFlowTest(unittest.TestCase):
@@ -149,6 +151,26 @@ class MercadoPagoFlowTest(unittest.TestCase):
             db = get_db()
             self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 5)
             self.assertEqual(db.execute("SELECT COUNT(*) AS total FROM sales").fetchone()["total"], 0)
+
+    def test_dates_use_sao_paulo_business_timezone(self):
+        self.assertEqual(brdate(datetime(2026, 7, 14, 0, 30)), "13/07/2026 21:30")
+        month, start, end = month_bounds("2026-07")
+        self.assertEqual((month, start, end), ("2026-07", "2026-07-01 03:00:00", "2026-08-01 03:00:00"))
+        with app.app_context():
+            local_day = get_db().execute("SELECT date(?)", ("2026-07-14 00:30:00",)).fetchone()[0]
+        self.assertEqual(local_day, "2026-07-13")
+
+    def test_manager_can_edit_user_display_name_and_username(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        response = self.client.post(
+            f"/users/{self.user_id}/edit",
+            data={"name": "Ana", "username": "ana.staff"},
+        )
+        self.assertEqual(response.status_code, 302)
+        with app.app_context():
+            user = get_db().execute("SELECT * FROM users WHERE id=?", (self.user_id,)).fetchone()
+            self.assertEqual((user["name"], user["username"], user["role"]), ("Ana", "ana.staff", "manager"))
 
     def test_legacy_pix_remains_available_until_credentials_are_configured(self):
         app.config.update(

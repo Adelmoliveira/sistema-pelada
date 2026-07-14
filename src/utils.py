@@ -2,9 +2,27 @@ import os
 import io
 import csv
 import unicodedata
-from datetime import date, datetime
+from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 from openpyxl import load_workbook
+
+SAO_PAULO = ZoneInfo("America/Sao_Paulo")
+
+def local_today():
+    return datetime.now(SAO_PAULO).date()
+
+def local_datetime(value):
+    if not value:
+        return None
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(SAO_PAULO)
+
+def datetime_iso(value):
+    parsed = local_datetime(value)
+    return parsed.isoformat() if parsed else ""
 
 def cents(value: str) -> int:
     try:
@@ -45,9 +63,7 @@ def money(value):
 
 def brdate(value):
     try:
-        if isinstance(value, datetime):
-            return value.strftime("%d/%m/%Y %H:%M")
-        return datetime.fromisoformat(value).strftime("%d/%m/%Y %H:%M")
+        return local_datetime(value).strftime("%d/%m/%Y %H:%M")
     except (ValueError, TypeError):
         return value
 
@@ -55,17 +71,19 @@ def cpfmask(value):
     return f"***.***.***-{value[-2:]}" if value else "—"
 
 def month_bounds(month=None):
-    month = month or date.today().strftime("%Y-%m")
+    month = month or local_today().strftime("%Y-%m")
     try:
         start = datetime.strptime(month, "%Y-%m").date().replace(day=1)
     except ValueError:
-        start = date.today().replace(day=1)
+        start = local_today().replace(day=1)
         month = start.strftime("%Y-%m")
     if start.month == 12:
         end = start.replace(year=start.year + 1, month=1)
     else:
         end = start.replace(month=start.month + 1)
-    return month, start.isoformat(), end.isoformat()
+    start_utc = datetime.combine(start, time.min, SAO_PAULO).astimezone(timezone.utc).replace(tzinfo=None)
+    end_utc = datetime.combine(end, time.min, SAO_PAULO).astimezone(timezone.utc).replace(tzinfo=None)
+    return month, start_utc.isoformat(sep=" "), end_utc.isoformat(sep=" ")
 
 def add_months(month, count):
     current = datetime.strptime(month, "%Y-%m").date()

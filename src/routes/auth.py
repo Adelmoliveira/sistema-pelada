@@ -146,6 +146,31 @@ def reset_user_password(user_id):
             flash("Erro interno ao alterar a senha.", "danger")
     return redirect(url_for("auth.users"))
 
+@bp.post("/users/<int:user_id>/edit")
+@roles_allowed("manager")
+def edit_user(user_id):
+    db = get_db()
+    target = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    name = request.form.get("name", "").strip()
+    username = request.form.get("username", "").strip()
+    if not target:
+        flash("Usuário não encontrado.", "warning")
+    elif not name:
+        flash("Informe o nome do usuário.", "danger")
+    elif len(username) < 3:
+        flash("O usuário deve ter ao menos 3 caracteres.", "danger")
+    else:
+        try:
+            db.execute("UPDATE users SET name=?,username=? WHERE id=?", (name, username, user_id))
+            db.commit()
+            flash("Usuário atualizado.", "success")
+        except Exception as exc:
+            db.rollback()
+            current_app.logger.error(f"Erro ao editar usuário {user_id}: {exc}")
+            flash("Já existe um usuário com esse nome de acesso." if "unique" in str(exc).lower()
+                  else "Erro interno ao editar usuário.", "danger")
+    return redirect(url_for("auth.users"))
+
 @bp.post("/users/<int:user_id>/passwordless")
 @roles_allowed("manager")
 def toggle_client_passwordless(user_id):

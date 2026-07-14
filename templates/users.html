@@ -57,6 +57,7 @@
                             </td>
                             <td>
                                 <div class="d-flex flex-wrap gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-success edit-user" data-bs-toggle="modal" data-bs-target="#edit-user-modal" data-id="{{u.id}}" data-name="{{u.name|e}}" data-username="{{u.username|e}}">Editar</button>
                                     {% if u.role in ['manager','staff'] %}
                                     <form method="post" action="{{url_for('auth.reset_user_password',user_id=u.id)}}" class="d-flex gap-1">
                                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
@@ -89,6 +90,20 @@
         </div>
     </div>
 </div>
+<div class="modal fade" id="edit-user-modal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+        <form method="post" id="edit-user-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            <div class="modal-header"><h2 class="modal-title h5">Editar usuário</h2><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <label class="form-label">Nome exibido</label><input name="name" id="edit-name" class="form-control mb-3" required>
+                <label class="form-label">Usuário de acesso</label><input name="username" id="edit-username" class="form-control" minlength="3" required>
+                <div class="form-text">A senha e o perfil de acesso não serão alterados.</div>
+            </div>
+            <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button><button class="btn btn-success">Salvar alterações</button></div>
+        </form>
+    </div></div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -109,5 +124,10 @@
     role.addEventListener('change', accessMode);
     check.addEventListener('change', accessMode);
     accessMode();
+    document.querySelectorAll('.edit-user').forEach(button=>button.addEventListener('click',()=>{
+        document.querySelector('#edit-user-form').action={{ url_for('auth.edit_user',user_id=0)|tojson }}.replace('/0/','/'+button.dataset.id+'/');
+        document.querySelector('#edit-name').value=button.dataset.name;
+        document.querySelector('#edit-username').value=button.dataset.username;
+    }));
 </script>
 {% endblock %}
