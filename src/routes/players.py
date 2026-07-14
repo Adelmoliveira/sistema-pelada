@@ -66,7 +66,12 @@ def players():
         player_filter = "active"
     where, params = filters[player_filter]
     items = db.execute(f"SELECT * FROM players WHERE {where} ORDER BY active DESC, name", params).fetchall()
-    return render_template("players.html", players=items, player_filter=player_filter)
+    return render_template(
+        "players.html",
+        players=items,
+        player_filter=player_filter,
+        players_count=len(items),
+    )
 
 @bp.post("/players/<int:player_id>/membership-type")
 @roles_allowed("manager")
