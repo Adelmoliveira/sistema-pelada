@@ -1,4 +1,5 @@
 import uuid
+from datetime import date
 from flask import Blueprint, render_template, request, redirect, url_for, flash, g, jsonify, current_app
 from itsdangerous import BadData, URLSafeTimedSerializer
 from src.db import get_db
@@ -212,9 +213,17 @@ def delete_sale(sale_id):
 def pix():
     db = get_db()
     day = request.args.get("day", local_today().isoformat())
+    try:
+        date.fromisoformat(day)
+    except ValueError:
+        day = local_today().isoformat()
+        flash("A data informada era inválida; exibimos os pagamentos de hoje.", "warning")
     rows = db.execute(
-        """SELECT s.*, p.name player_name FROM sales s JOIN players p ON p.id=s.player_id
-        WHERE date(s.created_at)=? AND s.payment_method='Pix' AND s.paid=1 ORDER BY s.id DESC""",
+        """SELECT s.*,p.name player_name,COALESCE(s.paid_at,s.created_at) payment_time
+        FROM sales s JOIN players p ON p.id=s.player_id
+        WHERE date(COALESCE(s.paid_at,s.created_at))=?
+          AND s.payment_method='Pix' AND s.paid=1
+        ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC""",
         (day,)
     ).fetchall()
     total = sum(r["total_cents"] for r in rows)

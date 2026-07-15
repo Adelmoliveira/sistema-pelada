@@ -169,6 +169,30 @@ class MercadoPagoFlowTest(unittest.TestCase):
             local_day = get_db().execute("SELECT date(?)", ("2026-07-14 00:30:00",)).fetchone()[0]
         self.assertEqual(local_day, "2026-07-13")
 
+    def test_pix_reconciliation_uses_payment_confirmation_date(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        today = local_today().isoformat()
+        with app.app_context():
+            db = get_db()
+            included = db.execute(
+                """INSERT INTO sales(player_id,payment_method,total_cents,paid,created_at,paid_at)
+                VALUES(?,'Pix',700,1,'2026-01-01 12:00:00',?)""",
+                (self.player_id, f"{today} 15:00:00"),
+            ).lastrowid
+            excluded = db.execute(
+                """INSERT INTO sales(player_id,payment_method,total_cents,paid,created_at,paid_at)
+                VALUES(?,'Pix',900,1,?,'2026-01-02 12:00:00')""",
+                (self.player_id, f"{today} 15:01:00"),
+            ).lastrowid
+            db.commit()
+        page = self.client.get(f"/pix?day={today}").get_data(as_text=True)
+        self.assertIn(f"#{included}", page)
+        self.assertNotIn(f"#{excluded}", page)
+        self.assertIn("Pix confirmados", page)
+        invalid = self.client.get("/pix?day=data-invalida").get_data(as_text=True)
+        self.assertIn("data informada era inválida", invalid)
+
     def test_player_names_sort_ignoring_case_and_accents(self):
         names = ["Zeca", "áureo", "Ana", "Álvaro", "bruno"]
         self.assertEqual(
