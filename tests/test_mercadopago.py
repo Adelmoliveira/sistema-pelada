@@ -912,6 +912,92 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(feed["pending"], [])
         self.assertEqual(feed["delivered"][0]["delivered_by_name"], "Teste")
 
+    def test_cash_order_waits_for_staff_payment_delivery_or_cancel(self):
+        with app.app_context():
+            db = get_db()
+            cursor = db.execute(
+                "INSERT INTO users(username,name,password_hash,role,password_required) VALUES(?,?,?,'client',0)",
+                ("peladeiro.caixa", "Peladeiro Caixa", "hash"),
+            )
+            client_id = cursor.lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+
+        created = self.client.post(
+            "/sale",
+            data={
+                "player_id": str(self.player_id),
+                "product_id": [str(self.product_id)],
+                "quantity": ["2"],
+                "payment_method": "Dinheiro",
+                "notes": "Precisa de troco.",
+            },
+        )
+        self.assertEqual(created.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            cash_sale = db.execute(
+                "SELECT * FROM sales WHERE payment_method='Dinheiro' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            sale_id = cash_sale["id"]
+            self.assertEqual(
+                (cash_sale["paid"], cash_sale["payment_status"], cash_sale["ready_for_delivery"]),
+                (0, "pending_cash", 1),
+            )
+            self.assertEqual(
+                db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"],
+                3,
+            )
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        orders_page = self.client.get("/orders").get_data(as_text=True)
+        self.assertIn("Confirmar pagamento e entregar", orders_page)
+        self.assertIn("Cancelar", orders_page)
+        feed = self.client.get("/orders/feed", headers={"Accept": "application/json"}).get_json()
+        self.assertEqual(len(feed["pending"]), 1)
+        self.assertEqual(
+            (feed["pending"][0]["id"], feed["pending"][0]["waiting_cash"], feed["pending"][0]["notes"]),
+            (sale_id, True, "Precisa de troco."),
+        )
+
+        delivered = self.client.post(f"/orders/{sale_id}/deliver", headers={"Accept": "application/json"})
+        self.assertEqual(delivered.status_code, 200)
+        with app.app_context():
+            sale = get_db().execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+            self.assertEqual((sale["paid"], sale["payment_status"]), (1, "approved"))
+            self.assertIsNotNone(sale["paid_at"])
+            self.assertIsNotNone(sale["delivered_at"])
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+        self.client.post(
+            "/sale",
+            data={
+                "player_id": str(self.player_id),
+                "product_id": [str(self.product_id)],
+                "quantity": ["1"],
+                "payment_method": "Dinheiro",
+                "notes": "Pedido a cancelar.",
+            },
+        )
+        with app.app_context():
+            db = get_db()
+            canceled_id = db.execute("SELECT MAX(id) FROM sales").fetchone()[0]
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 2)
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        canceled = self.client.post(f"/orders/{canceled_id}/cancel", headers={"Accept": "application/json"})
+        self.assertEqual(canceled.status_code, 200)
+        repeated = self.client.post(f"/orders/{canceled_id}/cancel", headers={"Accept": "application/json"})
+        self.assertEqual(repeated.status_code, 409)
+        with app.app_context():
+            db = get_db()
+            sale = db.execute("SELECT * FROM sales WHERE id=?", (canceled_id,)).fetchone()
+            self.assertEqual((sale["paid"], sale["payment_status"], sale["ready_for_delivery"]), (0, "canceled", 0))
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

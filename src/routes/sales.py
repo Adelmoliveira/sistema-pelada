@@ -128,11 +128,16 @@ def sale():
             if g.user["role"] == "client" and method not in ("Pix", "Dinheiro"):
                 raise ValueError("Clientes podem registrar pagamentos somente em Pix ou Dinheiro.")
             
-            paid = 1
+            cash_pending = method == "Dinheiro"
+            paid = 0 if cash_pending else 1
+            payment_status = "pending_cash" if cash_pending else "approved"
             with db:
                 cur = db.execute(
-                    "INSERT INTO sales(player_id,payment_method,total_cents,paid,notes) VALUES(?,?,?,?,?)",
-                    (player_id, method, total, paid, request.form.get("notes", "").strip())
+                    """INSERT INTO sales
+                       (player_id,payment_method,total_cents,paid,payment_status,paid_at,ready_for_delivery,notes)
+                       VALUES(?,?,?,?,?,CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE NULL END,1,?)""",
+                    (player_id, method, total, paid, payment_status, paid,
+                     request.form.get("notes", "").strip())
                 )
                 for pid, qty in requested.items():
                     product = products_by_id[pid]
@@ -147,8 +152,14 @@ def sale():
                     if updated.rowcount != 1:
                         raise ValueError("O estoque mudou durante a venda. Tente novamente.")
             
-            flash(f"Venda #{cur.lastrowid} registrada: {money(total)}.", "success")
-            return redirect(url_for("sales.sale"))
+            if cash_pending:
+                flash(
+                    f"Pedido #{cur.lastrowid} enviado. Pague {money(total)} em dinheiro para a atendente retirar os produtos.",
+                    "success",
+                )
+            else:
+                flash(f"Venda #{cur.lastrowid} registrada: {money(total)}.", "success")
+            return redirect(url_for("sales.sale"), code=303)
         except ValueError as exc:
             flash(str(exc), "danger")
         except Exception as exc:
@@ -224,6 +235,11 @@ def delivery_order_data(db, sale):
         "id": sale["id"],
         "player_name": sale["war_name"] or sale["player_name"],
         "total_cents": sale["total_cents"],
+        "payment_method": sale["payment_method"],
+        "payment_status": sale["payment_status"],
+        "paid": bool(sale["paid"]),
+        "waiting_cash": sale["payment_status"] == "pending_cash" and not sale["paid"],
+        "notes": sale["notes"] or "",
         "paid_at": datetime_iso(sale["paid_at"] or sale["created_at"]),
         "delivered_at": datetime_iso(sale["delivered_at"]),
         "delivered_by_name": sale["delivered_by_name"] or "",
@@ -238,7 +254,9 @@ def orders_feed():
                 FROM sales s JOIN players p ON p.id=s.player_id
                 LEFT JOIN users u ON u.id=s.delivered_by"""
     pending = db.execute(
-        f"{select} WHERE s.ready_for_delivery=1 AND s.paid=1 AND s.delivered_at IS NULL ORDER BY s.paid_at,s.id"
+        f"""{select} WHERE s.ready_for_delivery=1 AND s.delivered_at IS NULL
+             AND (s.paid=1 OR s.payment_status='pending_cash')
+             ORDER BY COALESCE(s.paid_at,s.created_at),s.id"""
     ).fetchall()
     delivered = db.execute(
         f"{select} WHERE s.ready_for_delivery=1 AND s.delivered_at IS NOT NULL ORDER BY s.delivered_at DESC LIMIT 20"
@@ -253,13 +271,36 @@ def orders_feed():
 def deliver_order(sale_id):
     db = get_db()
     updated = db.execute(
-        """UPDATE sales SET delivered_at=CURRENT_TIMESTAMP,delivered_by=?
-           WHERE id=? AND ready_for_delivery=1 AND paid=1 AND delivered_at IS NULL""",
+        """UPDATE sales SET paid=1,payment_status='approved',
+           paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP),
+           delivered_at=CURRENT_TIMESTAMP,delivered_by=?
+           WHERE id=? AND ready_for_delivery=1 AND delivered_at IS NULL
+           AND (paid=1 OR payment_status='pending_cash')""",
         (g.user["id"], sale_id),
     )
     db.commit()
     if updated.rowcount != 1:
         return jsonify(error="Pedido não encontrado ou já entregue."), 409
+    return jsonify(ok=True, sale_id=sale_id)
+
+@bp.post("/orders/<int:sale_id>/cancel")
+@roles_allowed("manager", "staff")
+def cancel_cash_order(sale_id):
+    db = get_db()
+    try:
+        with db:
+            updated = db.execute(
+                """UPDATE sales SET payment_status='canceled',ready_for_delivery=0
+                   WHERE id=? AND payment_method='Dinheiro' AND paid=0
+                   AND payment_status='pending_cash' AND delivered_at IS NULL""",
+                (sale_id,),
+            )
+            if updated.rowcount != 1:
+                return jsonify(error="Pedido em dinheiro não encontrado ou já finalizado."), 409
+            restore_reserved_stock(db, sale_id)
+    except Exception as exc:
+        current_app.logger.error(f"Erro ao cancelar pedido em dinheiro {sale_id}: {exc}")
+        return jsonify(error="Não foi possível cancelar o pedido."), 500
     return jsonify(ok=True, sale_id=sale_id)
 
 @bp.get("/pix/qrcode")
