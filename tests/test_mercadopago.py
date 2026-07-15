@@ -255,8 +255,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
             maintenance_user_id = user["id"]
 
         self.client.post("/logout")
-        login = self.client.post("/login", data={"username": "manutencao", "password": ""})
-        self.assertEqual(login.status_code, 302)
+        login = self.client.post(
+            "/login", data={"username": "manutencao", "password": "", "next": "/logout"}
+        )
+        self.assertEqual(login.status_code, 303)
         self.assertTrue(login.headers["Location"].endswith("/infra/maintenance/new"))
 
         form = self.client.get("/infra/maintenance/new")
@@ -300,6 +302,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
             denied = self.client.get(forbidden_path)
             self.assertEqual(denied.status_code, 302)
             self.assertTrue(denied.headers["Location"].endswith("/infra/maintenance/new"))
+
+        stale_post = self.client.post("/", headers={"Accept": "text/html"})
+        self.assertEqual(stale_post.status_code, 303)
+        self.assertTrue(stale_post.headers["Location"].endswith("/infra/maintenance/new"))
 
     def test_material_crud_with_optimized_photo(self):
         with self.client.session_transaction() as session:
@@ -632,7 +638,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         login = self.client.post(
             "/login", data={"username": "infra.teste", "password": "senha-infra-123"}
         )
-        self.assertEqual(login.status_code, 302)
+        self.assertEqual(login.status_code, 303)
         self.assertTrue(login.headers["Location"].endswith("/infra/load-relation"))
 
         page = self.client.get("/infra/load-relation")

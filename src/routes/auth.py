@@ -1,6 +1,8 @@
 import os
 from functools import wraps
+from urllib.parse import urlsplit
 from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app, jsonify
+from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 from src.db import get_db
 
@@ -16,7 +18,17 @@ def home_endpoint(role):
     return "finance.dashboard"
 
 def safe_next_url(value):
-    return value if value and value.startswith("/") and not value.startswith("//") else None
+    if not value or not value.startswith("/") or value.startswith("//"):
+        return None
+    try:
+        endpoint, _values = current_app.url_map.bind_to_environ(request.environ).match(
+            urlsplit(value).path, method="GET"
+        )
+    except HTTPException:
+        return None
+    if endpoint in {"auth.login", "auth.logout"}:
+        return None
+    return value
 
 def make_password_hash(password):
     # Compatível com o Python do macOS e com o ambiente de produção.
@@ -65,7 +77,10 @@ def setup():
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if g.user:
-        return redirect(safe_next_url(request.args.get("next")) or url_for(home_endpoint(g.user["role"])))
+        return redirect(
+            safe_next_url(request.args.get("next")) or url_for(home_endpoint(g.user["role"])),
+            code=303 if request.method == "POST" else 302,
+        )
     if request.method == "POST":
         db = get_db()
         # Case insensitive query for username
@@ -77,7 +92,10 @@ def login():
         if user and (passwordless_user or check_password_hash(user["password_hash"], request.form.get("password", ""))):
             session.clear()
             session["user_id"] = user["id"]
-            return redirect(safe_next_url(request.form.get("next")) or url_for(home_endpoint(user["role"])))
+            return redirect(
+                safe_next_url(request.form.get("next")) or url_for(home_endpoint(user["role"])),
+                code=303,
+            )
         flash("Usuário ou senha inválidos.", "danger")
     return render_template("login.html")
 
@@ -94,14 +112,14 @@ def client_access():
         if user:
             session.clear()
             session["user_id"] = user["id"]
-            return redirect(url_for("sales.sale"))
+            return redirect(url_for("sales.sale"), code=303)
         flash("Cliente não encontrado ou acesso sem senha não habilitado.", "danger")
     return render_template("client_access.html")
 
 @bp.post("/logout")
 def logout():
     session.clear()
-    return redirect(url_for("auth.login"))
+    return redirect(url_for("auth.login"), code=303)
 
 @bp.route("/users", methods=["GET", "POST"])
 @roles_allowed("manager")

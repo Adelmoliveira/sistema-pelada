@@ -14,7 +14,7 @@ except ImportError:
 
 from src.db import get_db
 from src.utils import money, brdate, cpfmask
-from src.routes.auth import bp as auth_bp
+from src.routes.auth import bp as auth_bp, home_endpoint
 from src.routes.players import bp as players_bp
 from src.routes.products import bp as products_bp
 from src.routes.sales import bp as sales_bp
@@ -59,7 +59,14 @@ csrf = CSRFProtect(app)
 @app.errorhandler(CSRFError)
 def handle_csrf_error(error):
     flash("Sessão expirada ou token inválido. Recarregue a página e tente novamente.", "danger")
-    return redirect(request.referrer or url_for("auth.login"))
+    return redirect(request.referrer or url_for("auth.login"), code=303)
+
+@app.errorhandler(405)
+def handle_method_not_allowed(error):
+    if g.get("user") and request.method == "POST" and request.accept_mimetypes.accept_html:
+        flash("A página anterior estava desatualizada e foi recarregada com segurança.", "warning")
+        return redirect(url_for(home_endpoint(g.user["role"])), code=303)
+    return error
 
 @app.errorhandler(500)
 def handle_internal_error(error):
