@@ -1133,6 +1133,60 @@ class MercadoPagoFlowTest(unittest.TestCase):
             summary = session_summary(db, get_session(db))
             self.assertEqual(summary["expected_bank"], 9400)
 
+    def test_cash_transfer_history_filters_and_pdf(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        self.client.post("/cash/open", data={"opening_cash": "100,00", "opening_bank": "50,00"})
+
+        transferred = self.client.post(
+            "/cash/transfers",
+            data={
+                "from_account": "cash",
+                "to_account": "bank",
+                "amount": "30,00",
+                "description": "Depósito do dinheiro das vendas",
+            },
+        )
+        self.assertEqual(transferred.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            cash_session = get_session(db)
+            summary = session_summary(db, cash_session)
+            self.assertEqual((summary["expected_cash"], summary["expected_bank"]), (7000, 8000))
+            transfer = db.execute("SELECT * FROM cash_transfers").fetchone()
+            transfer_id = transfer["id"]
+            legs = db.execute(
+                "SELECT account,direction,amount_cents FROM cash_movements ORDER BY id"
+            ).fetchall()
+            self.assertEqual(
+                [(row["account"], row["direction"], row["amount_cents"]) for row in legs],
+                [("cash", "out", 3000), ("bank", "in", 3000)],
+            )
+
+        history = self.client.get(
+            "/cash/history?account=cash&category=transfer&q=dep%C3%B3sito"
+        )
+        self.assertEqual(history.status_code, 200)
+        history_html = history.get_data(as_text=True)
+        self.assertIn("Histórico avançado do Caixa", history_html)
+        self.assertIn("Depósito do dinheiro das vendas", history_html)
+        self.assertIn("Movimentações e transferências (1)", history_html)
+
+        pdf = self.client.get("/cash/history.pdf?category=transfer")
+        self.assertEqual(pdf.status_code, 200)
+        self.assertTrue(pdf.data.startswith(b"%PDF-"))
+        self.assertIn("caixa-", pdf.headers["Content-Disposition"])
+
+        reversed_transfer = self.client.post(f"/cash/transfers/{transfer_id}/reverse")
+        self.assertEqual(reversed_transfer.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            summary = session_summary(db, get_session(db))
+            self.assertEqual((summary["expected_cash"], summary["expected_bank"]), (10000, 5000))
+            transfer = db.execute("SELECT * FROM cash_transfers WHERE id=?", (transfer_id,)).fetchone()
+            self.assertIsNotNone(transfer["reversed_at"])
+            self.assertEqual(db.execute("SELECT COUNT(*) total FROM cash_movements").fetchone()["total"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

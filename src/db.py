@@ -107,8 +107,22 @@ CREATE TABLE IF NOT EXISTS cash_movements (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(source,source_id)
 );
+CREATE TABLE IF NOT EXISTS cash_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES cash_sessions(id),
+    from_account TEXT NOT NULL CHECK(from_account IN ('cash','bank')),
+    to_account TEXT NOT NULL CHECK(to_account IN ('cash','bank')),
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    description TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id),
+    reversed_at TEXT,
+    reversed_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK(from_account <> to_account)
+);
 CREATE INDEX IF NOT EXISTS idx_cash_sessions_date ON cash_sessions(business_date);
 CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(session_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_cash_transfers_session ON cash_transfers(session_id,created_at);
 CREATE TABLE IF NOT EXISTS stock_adjustments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id INTEGER NOT NULL REFERENCES products(id),

@@ -3,7 +3,7 @@
 {% block content %}
 <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
   <div><h1 class="h2 mb-1">Caixa</h1><p class="text-muted mb-0">Entradas, saídas e conferência diária do Bar.</p></div>
-  <button class="btn btn-outline-secondary d-print-none" type="button" onclick="window.print()">Imprimir conferência</button>
+  <div class="d-flex flex-wrap gap-2 d-print-none"><a class="btn btn-outline-primary" href="{{url_for('cash.history')}}">Histórico avançado</a><a class="btn btn-outline-danger" href="{{url_for('cash.history_pdf',start=selected_date,end=selected_date)}}">PDF deste dia</a><button class="btn btn-outline-secondary" type="button" onclick="window.print()">Imprimir conferência</button></div>
 </div>
 
 {% if not cash_session and selected_date == today.isoformat() %}
@@ -61,7 +61,7 @@
       <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
       <div class="col-sm-6"><label class="form-label">Conta</label><select class="form-select" name="account" required><option value="cash">Dinheiro físico</option><option value="bank">Conta / Pix</option></select></div>
       <div class="col-sm-6"><label class="form-label">Movimento</label><select class="form-select" name="direction" required><option value="out">Saída</option><option value="in">Entrada</option></select></div>
-      <div class="col-sm-6"><label class="form-label">Categoria</label><select class="form-select" name="category" required>{% for value,label in category_labels.items() %}<option value="{{value}}">{{label}}</option>{% endfor %}</select></div>
+      <div class="col-sm-6"><label class="form-label">Categoria</label><select class="form-select" name="category" required>{% for value,label in category_labels.items() if value != 'transfer' %}<option value="{{value}}">{{label}}</option>{% endfor %}</select></div>
       <div class="col-sm-6"><label class="form-label">Valor</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="amount" inputmode="decimal" placeholder="0,00" required></div></div>
       <div class="col-12"><label class="form-label">Descrição</label><input class="form-control" name="description" maxlength="180" placeholder="Ex.: compra de gelo" required></div>
       <div class="col-12"><button class="btn btn-primary w-100">Registrar movimentação</button></div>
@@ -77,10 +77,20 @@
     </form>
   </div></div></div>
 </div>
+<div class="card shadow-sm border-0 mb-4 d-print-none"><div class="card-body"><h2 class="h5">Transferir entre contas</h2><p class="text-muted small">Use quando depositar dinheiro físico na conta ou retirar dinheiro da conta para reforçar o caixa.</p>
+  <form method="post" action="{{url_for('cash.add_transfer')}}" class="row g-3 align-items-end">
+    <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+    <div class="col-sm-6 col-lg-3"><label class="form-label">Origem</label><select class="form-select" name="from_account" required><option value="cash">Dinheiro físico</option><option value="bank">Conta / Pix</option></select></div>
+    <div class="col-sm-6 col-lg-3"><label class="form-label">Destino</label><select class="form-select" name="to_account" required><option value="bank">Conta / Pix</option><option value="cash">Dinheiro físico</option></select></div>
+    <div class="col-sm-5 col-lg-2"><label class="form-label">Valor</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="amount" inputmode="decimal" required></div></div>
+    <div class="col-sm-7 col-lg-2"><label class="form-label">Motivo</label><input class="form-control" name="description" maxlength="180" placeholder="Ex.: depósito bancário"></div>
+    <div class="col-lg-2"><button class="btn btn-info w-100">Transferir</button></div>
+  </form>
+</div></div>
 {% endif %}
 
 <div class="card shadow-sm border-0 mb-4"><div class="card-header bg-white py-3"><h2 class="h5 mb-0">Movimentações avulsas e compras</h2></div><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Horário</th><th>Conta</th><th>Categoria</th><th>Descrição</th><th>Responsável</th><th class="text-end">Valor</th><th class="d-print-none"></th></tr></thead><tbody>
-  {% for m in summary.movements %}<tr class="{{'text-decoration-line-through text-muted' if m.reversed}}"><td>{{m.created_at|brdate}}</td><td>{{account_labels[m.account]}}</td><td>{{category_labels[m.category]}}</td><td>{{m.description}}{% if m.reversed %} <span class="badge text-bg-secondary">Estornado</span>{% endif %}</td><td>{{m.user_name or 'Sistema'}}</td><td class="text-end fw-bold {{'text-success' if m.direction == 'in' else 'text-danger'}}">{{'+' if m.direction == 'in' else '−'}} {{m.amount_cents|money}}</td><td class="d-print-none">{% if current_user.role == 'manager' and cash_session.status == 'open' and not m.reversed and m.source != 'reversal' %}<form method="post" action="{{url_for('cash.reverse_movement',movement_id=m.id)}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Estornar esta movimentação? O registro original será mantido.')">Estornar</button></form>{% endif %}</td></tr>
+  {% for m in summary.movements %}<tr class="{{'text-decoration-line-through text-muted' if m.reversed or m.transfer_reversed}}"><td>{{m.created_at|brdate}}</td><td>{{account_labels[m.account]}}</td><td>{{category_labels[m.category]}}</td><td>{{m.description}}{% if m.reversed or m.transfer_reversed %} <span class="badge text-bg-secondary">Estornado</span>{% endif %}</td><td>{{m.user_name or 'Sistema'}}</td><td class="text-end fw-bold {{'text-success' if m.direction == 'in' else 'text-danger'}}">{{'+' if m.direction == 'in' else '−'}} {{m.amount_cents|money}}</td><td class="d-print-none">{% if current_user.role == 'manager' and cash_session.status == 'open' and m.source == 'transfer_out' and not m.transfer_reversed %}<form method="post" action="{{url_for('cash.reverse_transfer',transfer_id=m.source_id)}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Estornar esta transferência completa?')">Estornar</button></form>{% elif current_user.role == 'manager' and cash_session.status == 'open' and not m.reversed and not m.source.startswith('transfer') and m.source != 'reversal' %}<form method="post" action="{{url_for('cash.reverse_movement',movement_id=m.id)}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Estornar esta movimentação? O registro original será mantido.')">Estornar</button></form>{% endif %}</td></tr>
   {% else %}<tr><td colspan="7" class="text-center text-muted py-4">Nenhuma movimentação avulsa neste caixa. As vendas aparecem nos totais acima.</td></tr>{% endfor %}
 </tbody></table></div></div>
 
