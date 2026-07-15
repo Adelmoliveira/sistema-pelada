@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import tempfile
 import unittest
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -173,7 +173,6 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
         today = local_today().isoformat()
-        older_than_24h = (datetime.now().astimezone() - timedelta(hours=25)).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
         with app.app_context():
             db = get_db()
             included = db.execute(
@@ -183,16 +182,16 @@ class MercadoPagoFlowTest(unittest.TestCase):
             ).lastrowid
             excluded = db.execute(
                 """INSERT INTO sales(player_id,payment_method,total_cents,paid,created_at,paid_at)
-                VALUES(?,'Pix',900,1,?,?)""",
-                (self.player_id, f"{today} 15:01:00", older_than_24h),
+                VALUES(?,'Pix',900,1,?,'2026-01-02 12:00:00')""",
+                (self.player_id, f"{today} 15:01:00"),
             ).lastrowid
             db.commit()
-        page = self.client.get("/pix").get_data(as_text=True)
+        page = self.client.get(f"/pix?day={today}").get_data(as_text=True)
         self.assertIn(f"#{included}", page)
         self.assertNotIn(f"#{excluded}", page)
         self.assertIn("Pix confirmados", page)
-        self.assertIn("últimas 24 horas", page)
-        self.assertNotIn("Apagar", page)
+        invalid = self.client.get("/pix?day=data-invalida").get_data(as_text=True)
+        self.assertIn("data informada era inválida", invalid)
 
     def test_player_names_sort_ignoring_case_and_accents(self):
         names = ["Zeca", "áureo", "Ana", "Álvaro", "bruno"]
