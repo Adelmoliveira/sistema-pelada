@@ -41,7 +41,7 @@ def _form_values():
     area_code = request.form.get("area_code", "").strip().upper()
     category = request.form.get("category", "")
     priority = request.form.get("priority", "")
-    limited_access = g.user and g.user["role"] == "maintenance"
+    limited_access = g.user and g.user["role"] in ("maintenance", "staff")
     status = "open" if limited_access else request.form.get("status", "open")
     if not title:
         raise ValueError("O título do problema é obrigatório.")
@@ -174,13 +174,14 @@ def dashboard():
 
 
 @bp.route("/new", methods=["GET", "POST"])
-@roles_allowed("manager", "infra", "maintenance")
+@roles_allowed("manager", "infra", "maintenance", "staff")
 def new_request():
     if request.method == "POST":
         try:
             values = _form_values()
             problem_photos = _process_photos(request.files.getlist("problem_photos"))
-            resolution_photos = [] if g.user["role"] == "maintenance" else _process_photos(request.files.getlist("resolution_photos"))
+            limited_access = g.user["role"] in ("maintenance", "staff")
+            resolution_photos = [] if limited_access else _process_photos(request.files.getlist("resolution_photos"))
             db = get_db()
             with db:
                 cursor = db.execute(
@@ -204,7 +205,7 @@ def new_request():
                         (request_id, photo, thumbnail),
                     )
             flash(f"Chamado {code} criado.", "success")
-            if g.user["role"] == "maintenance":
+            if limited_access:
                 return redirect(url_for("maintenance.new_request"))
             return redirect(url_for("maintenance.request_detail", request_id=request_id))
         except ValueError as exc:

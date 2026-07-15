@@ -307,6 +307,61 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(stale_post.status_code, 303)
         self.assertTrue(stale_post.headers["Location"].endswith("/infra/maintenance/new"))
 
+    def test_staff_sees_bar_and_can_only_open_new_maintenance_requests(self):
+        with app.app_context():
+            db = get_db()
+            cursor = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'staff')",
+                ("atendente", "Atendente", "hash"),
+            )
+            staff_id = cursor.lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+
+        form = self.client.get("/infra/maintenance/new")
+        self.assertEqual(form.status_code, 200)
+        page = form.get_data(as_text=True)
+        self.assertIn("<span>Bar</span>", page)
+        self.assertIn("<span>Infra-Estrutura</span>", page)
+        self.assertIn(">Novo chamado</a>", page)
+        self.assertIn("<span>Urgente</span>", page)
+        self.assertNotIn(">Materiais</a>", page)
+        self.assertNotIn(">Relação de Carga</a>", page)
+        self.assertNotIn(">Manutenção</a>", page)
+        self.assertNotIn("Acompanhamento e resolução", page)
+
+        submitted = self.client.post(
+            "/infra/maintenance/new",
+            data={
+                "title": "Torneira pingando",
+                "area_code": "BAR",
+                "location": "Pia do balcão",
+                "category": "plumbing",
+                "priority": "high",
+                "description": "A torneira não fecha completamente.",
+                "occurred_on": "2026-07-15",
+                "status": "completed",
+                "responsible": "valor indevido",
+                "cost": "500,00",
+            },
+        )
+        self.assertEqual(submitted.status_code, 302)
+        self.assertTrue(submitted.headers["Location"].endswith("/infra/maintenance/new"))
+        with app.app_context():
+            maintenance = get_db().execute(
+                "SELECT * FROM maintenance_requests WHERE created_by=?", (staff_id,)
+            ).fetchone()
+            self.assertEqual(
+                (maintenance["status"], maintenance["responsible"], maintenance["cost_cents"]),
+                ("open", "", 0),
+            )
+
+        for forbidden_path in ("/infra/maintenance", "/infra/materials", "/infra/load-relation"):
+            denied = self.client.get(forbidden_path)
+            self.assertEqual(denied.status_code, 302)
+            self.assertEqual(denied.headers["Location"], "/")
+
     def test_material_crud_with_optimized_photo(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id

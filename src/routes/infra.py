@@ -98,7 +98,7 @@ def load_entry_rows(db, query="", area_code=""):
 
 
 @bp.get("/materials")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def materials():
     db = get_db()
     query = request.args.get("q", "").strip()
@@ -130,7 +130,7 @@ def materials():
 
 
 @bp.route("/materials/new", methods=["GET", "POST"])
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def new_material():
     if request.method == "POST":
         try:
@@ -156,7 +156,7 @@ def new_material():
 
 
 @bp.get("/materials/<int:material_id>")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def material_detail(material_id):
     material = get_db().execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
     if not material:
@@ -166,7 +166,7 @@ def material_detail(material_id):
 
 
 @bp.route("/materials/<int:material_id>/edit", methods=["GET", "POST"])
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def edit_material(material_id):
     db = get_db()
     material = db.execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
@@ -201,7 +201,7 @@ def edit_material(material_id):
 
 
 @bp.post("/materials/<int:material_id>/delete")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def delete_material(material_id):
     db = get_db()
     try:
@@ -222,7 +222,7 @@ def delete_material(material_id):
 
 
 @bp.get("/load-relation")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def load_relation():
     db = get_db()
     query = request.args.get("q", "").strip()
@@ -243,7 +243,7 @@ def load_relation():
 
 
 @bp.get("/load-relation/qr-codes")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def load_qr_codes():
     area_code = request.args.get("area", "").strip().upper()
     entries = load_entry_rows(get_db(), area_code=area_code)
@@ -254,7 +254,7 @@ def load_qr_codes():
 
 
 @bp.post("/load-relation/qr-codes.pdf")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def load_qr_codes_pdf():
     raw_ids = request.form.getlist("entry_ids")
     try:
@@ -285,7 +285,7 @@ def load_qr_codes_pdf():
 
 
 @bp.route("/load-relation/new", methods=["GET", "POST"])
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def new_load_entry():
     db = get_db()
     materials = material_options(db)
@@ -323,7 +323,7 @@ def new_load_entry():
 
 
 @bp.get("/load-relation/<int:entry_id>")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def load_entry_detail(entry_id):
     db = get_db()
     entry = db.execute(
@@ -343,7 +343,7 @@ def load_entry_detail(entry_id):
 
 
 @bp.get("/load-relation/<int:entry_id>/qr-code")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def load_entry_qr_code(entry_id):
     entry = get_db().execute(
         """SELECT le.id,le.bmp,le.area_code,le.status,m.description material_description
@@ -361,7 +361,7 @@ def load_entry_qr_code(entry_id):
 
 
 @bp.post("/load-relation/<int:entry_id>/discharge")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def discharge_load_entry(entry_id):
     db = get_db()
     entry = db.execute("SELECT bmp,status FROM load_entries WHERE id=?", (entry_id,)).fetchone()
@@ -381,7 +381,7 @@ def discharge_load_entry(entry_id):
 
 
 @bp.route("/load-relation/<int:entry_id>/edit", methods=["GET", "POST"])
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def edit_load_entry(entry_id):
     db = get_db()
     entry = db.execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
@@ -441,7 +441,7 @@ def edit_load_entry(entry_id):
 
 
 @bp.post("/load-relation/<int:entry_id>/delete")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def delete_load_entry(entry_id):
     db = get_db()
     try:
@@ -459,7 +459,7 @@ def delete_load_entry(entry_id):
 
 
 @bp.get("/load-relation/report.pdf")
-@roles_allowed("manager", "staff", "infra")
+@roles_allowed("manager", "infra")
 def load_relation_report():
     query = request.args.get("q", "").strip()
     area_code = request.args.get("area", "").strip().upper()
