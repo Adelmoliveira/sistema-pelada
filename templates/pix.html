@@ -1,1 +1,11 @@
-{% extends 'base.html' %}{% block content %}<div class="d-flex justify-content-between"><div><h1 class="h3">Conferência de Pix</h1><p class="text-muted">Compare esta lista com o extrato da conta.</p></div><form><input type="date" name="day" value="{{day}}" class="form-control" onchange="this.form.submit()"></form></div><div class="card shadow-sm"><div class="card-header d-flex justify-content-between"><strong>Pix confirmados</strong><strong class="text-success">{{total|money}}</strong></div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Confirmação</th><th>Peladeiro</th><th>Venda</th><th>Valor</th><th></th></tr></thead><tbody>{% for s in rows %}<tr><td>{{s.payment_time|brdate}}</td><td>{{s.player_name}}</td><td>#{{s.id}}</td><td>{{s.total_cents|money}}</td><td class="text-end"><form method="post" action="{{url_for('sales.delete_sale',sale_id=s.id)}}" onsubmit="return confirm('Apagar a venda #{{s.id}}? Os produtos serão devolvidos ao estoque.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/><button class="btn btn-sm btn-outline-danger">Apagar</button></form></td></tr>{% else %}<tr><td colspan="5">Nenhum Pix confirmado neste dia.</td></tr>{% endfor %}</tbody></table></div></div>{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+  <div><h1 class="h3">Conferência de Pix</h1><p class="text-muted mb-0">Pagamentos confirmados nas últimas 24 horas. Os registros antigos continuam preservados no histórico.</p></div>
+  <div class="text-end"><span class="text-muted small d-block">Total confirmado</span><strong class="text-success fs-4">{{total|money}}</strong></div>
+</div>
+<div class="card shadow-sm"><div class="card-header"><strong>Pix confirmados</strong></div><div class="table-responsive"><table class="table mb-0 align-middle"><thead><tr><th>Confirmação</th><th>Peladeiro</th><th>Venda</th><th class="text-end">Valor</th></tr></thead><tbody>
+  {% for s in rows %}<tr><td>{{s.payment_time|brdate}}</td><td>{{s.player_name}}</td><td>#{{s.id}}</td><td class="text-end fw-bold">{{s.total_cents|money}}</td></tr>
+  {% else %}<tr><td colspan="4" class="text-center text-muted py-4">Nenhum Pix confirmado nas últimas 24 horas.</td></tr>{% endfor %}
+</tbody></table></div></div>
+{% endblock %}
