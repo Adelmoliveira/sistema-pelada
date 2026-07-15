@@ -74,6 +74,41 @@ CREATE TABLE IF NOT EXISTS restocks (
     notes TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS cash_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_date TEXT NOT NULL UNIQUE,
+    opening_cash_cents INTEGER NOT NULL DEFAULT 0 CHECK(opening_cash_cents >= 0),
+    opening_bank_cents INTEGER NOT NULL DEFAULT 0 CHECK(opening_bank_cents >= 0),
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+    opened_by INTEGER REFERENCES users(id),
+    opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    counted_cash_cents INTEGER,
+    counted_bank_cents INTEGER,
+    expected_cash_cents INTEGER,
+    expected_bank_cents INTEGER,
+    cash_difference_cents INTEGER,
+    bank_difference_cents INTEGER,
+    closing_notes TEXT DEFAULT '',
+    closed_by INTEGER REFERENCES users(id),
+    closed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS cash_movements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES cash_sessions(id),
+    account TEXT NOT NULL CHECK(account IN ('cash','bank')),
+    direction TEXT NOT NULL CHECK(direction IN ('in','out')),
+    category TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    description TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
+    source_id INTEGER,
+    created_by INTEGER REFERENCES users(id),
+    reversed_movement_id INTEGER REFERENCES cash_movements(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source,source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cash_sessions_date ON cash_sessions(business_date);
+CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(session_id,created_at);
 CREATE TABLE IF NOT EXISTS stock_adjustments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id INTEGER NOT NULL REFERENCES products(id),

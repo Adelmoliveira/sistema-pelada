@@ -21,6 +21,7 @@ from src.routes.sales import bp as sales_bp
 from src.routes.finance import bp as finance_bp
 from src.routes.infra import bp as infra_bp
 from src.routes.maintenance import bp as maintenance_bp
+from src.routes.cash import bp as cash_bp
 
 app = Flask(__name__)
 
@@ -86,6 +87,7 @@ app.register_blueprint(sales_bp)
 app.register_blueprint(finance_bp)
 app.register_blueprint(infra_bp)
 app.register_blueprint(maintenance_bp)
+app.register_blueprint(cash_bp)
 
 # Exempt public/authentication routes from CSRF to avoid login issues in local/dev deployments
 from src.routes.auth import setup, login, client_access, logout

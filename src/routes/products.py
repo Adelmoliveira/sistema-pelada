@@ -2,6 +2,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import cents
+from src.services.cash_register import create_movement, get_session
 
 bp = Blueprint("products", __name__)
 
@@ -146,8 +147,18 @@ def stock():
                 raise ValueError("Informe unidades avulsas ou quantidade de caixas.")
             
             cost = cents(request.form.get("unit_cost", "0"))
+            payment_account = request.form.get("payment_account", "unpaid")
+            if payment_account not in {"unpaid", "cash", "bank"}:
+                raise ValueError("Forma de pagamento da compra inválida.")
+            cash_session = None
+            if payment_account != "unpaid":
+                if cost <= 0:
+                    raise ValueError("Informe o custo unitário para registrar o pagamento no caixa.")
+                cash_session = get_session(db)
+                if not cash_session or cash_session["status"] != "open":
+                    raise ValueError("Abra o caixa de hoje antes de registrar uma compra paga.")
             with db:
-                db.execute(
+                restock = db.execute(
                     "INSERT INTO restocks(product_id,quantity,unit_cost_cents,notes) VALUES(?,?,?,?)",
                     (pid, qty, cost, (f"{cases} caixa(s). " if cases else "") + request.form.get("notes", "").strip())
                 )
@@ -155,6 +166,19 @@ def stock():
                     "UPDATE products SET stock=stock+?, cost_cents=CASE WHEN ?>0 THEN ? ELSE cost_cents END WHERE id=?",
                     (qty, cost, cost, pid)
                 )
+                if payment_account != "unpaid":
+                    create_movement(
+                        db,
+                        cash_session["id"],
+                        payment_account,
+                        "out",
+                        "purchase",
+                        qty * cost,
+                        f"Compra de estoque: {product['name']} ({qty} un.)",
+                        g.user["id"],
+                        source="restock",
+                        source_id=restock.lastrowid,
+                    )
             flash("Reposição registrada e estoque atualizado.", "success")
         except ValueError as exc:
             flash(str(exc), "danger")
@@ -165,7 +189,9 @@ def stock():
 
     product_rows = db.execute("SELECT * FROM products WHERE active=1 ORDER BY stock, name").fetchall()
     history = db.execute(
-        """SELECT r.*, p.name product_name FROM restocks r JOIN products p ON p.id=r.product_id
+        """SELECT r.*, p.name product_name,m.account payment_account,m.amount_cents paid_amount_cents
+        FROM restocks r JOIN products p ON p.id=r.product_id
+        LEFT JOIN cash_movements m ON m.source='restock' AND m.source_id=r.id
         ORDER BY r.id DESC LIMIT 30"""
     ).fetchall()
     adjustments = db.execute(

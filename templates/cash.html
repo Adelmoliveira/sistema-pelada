@@ -1,0 +1,97 @@
+{% extends 'base.html' %}
+{% block title %}Caixa · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
+  <div><h1 class="h2 mb-1">Caixa</h1><p class="text-muted mb-0">Entradas, saídas e conferência diária do Bar.</p></div>
+  <button class="btn btn-outline-secondary d-print-none" type="button" onclick="window.print()">Imprimir conferência</button>
+</div>
+
+{% if not cash_session and selected_date == today.isoformat() %}
+<div class="row justify-content-center"><div class="col-xl-7"><div class="card shadow-sm border-0"><div class="card-body p-4">
+  <span class="badge text-bg-warning mb-3">Caixa ainda não aberto</span>
+  <h2 class="h4">Abertura de {{today.strftime('%d/%m/%Y')}}</h2>
+  <p class="text-muted">Informe quanto existe agora em dinheiro físico e na conta bancária. Esses valores serão a base da conferência.</p>
+  <form method="post" action="{{url_for('cash.open_register')}}" class="row g-3">
+    <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+    <div class="col-md-6"><label class="form-label">Dinheiro físico inicial</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="opening_cash" value="{{'%.2f'|format((previous_session.counted_cash_cents or 0)/100)|replace('.', ',') if previous_session else '0,00'}}" inputmode="decimal" required></div></div>
+    <div class="col-md-6"><label class="form-label">Saldo inicial em conta / Pix</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="opening_bank" value="{{'%.2f'|format((previous_session.counted_bank_cents or 0)/100)|replace('.', ',') if previous_session else '0,00'}}" inputmode="decimal" required></div></div>
+    {% if previous_session %}<div class="col-12"><div class="form-text">Valores sugeridos com base no último fechamento, de {{previous_session.business_date[8:10]}}/{{previous_session.business_date[5:7]}}/{{previous_session.business_date[0:4]}}. Você pode corrigi-los antes de abrir.</div></div>{% endif %}
+    <div class="col-12"><button class="btn btn-primary w-100">Abrir caixa de hoje</button></div>
+  </form>
+</div></div></div></div>
+{% elif not cash_session %}
+<div class="alert alert-light border">Não houve abertura de caixa em {{selected_date[8:10]}}/{{selected_date[5:7]}}/{{selected_date[0:4]}}.</div>
+{% else %}
+<div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+  <span class="badge {{'text-bg-success' if cash_session.status == 'open' else 'text-bg-secondary'}} fs-6">{{'Aberto' if cash_session.status == 'open' else 'Fechado'}}</span>
+  <strong>{{cash_session.business_date[8:10]}}/{{cash_session.business_date[5:7]}}/{{cash_session.business_date[0:4]}}</strong>
+  <span class="text-muted">Aberto por {{cash_session.opened_by_name if cash_session.opened_by_name is defined else 'usuário autorizado'}}</span>
+</div>
+{% if summary.changed_after_close %}<div class="alert alert-warning"><strong>Atenção:</strong> houve venda contabilizada depois deste fechamento. Reabra o caixa de hoje para fazer uma nova conferência.</div>{% endif %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-6"><div class="card shadow-sm border-0 h-100 cash-balance-card"><div class="card-body">
+    <div class="d-flex justify-content-between"><span class="text-muted">Dinheiro físico esperado</span><span class="cash-account-icon">R$</span></div>
+    <strong class="cash-total">{{summary.expected_cash|money}}</strong>
+    <div class="cash-breakdown"><span>Inicial <b>{{cash_session.opening_cash_cents|money}}</b></span><span>Vendas <b class="text-success">+ {{summary.cash_sales|money}}</b></span><span>Outras entradas <b class="text-success">+ {{summary.cash_in|money}}</b></span><span>Saídas <b class="text-danger">− {{summary.cash_out|money}}</b></span></div>
+  </div></div></div>
+  <div class="col-md-6"><div class="card shadow-sm border-0 h-100 cash-balance-card"><div class="card-body">
+    <div class="d-flex justify-content-between"><span class="text-muted">Conta bancária / Pix esperada</span><span class="cash-account-icon">↗</span></div>
+    <strong class="cash-total">{{summary.expected_bank|money}}</strong>
+    <div class="cash-breakdown"><span>Inicial <b>{{cash_session.opening_bank_cents|money}}</b></span><span>Pix e débito <b class="text-success">+ {{summary.bank_sales|money}}</b></span><span>Outras entradas <b class="text-success">+ {{summary.bank_in|money}}</b></span><span>Saídas <b class="text-danger">− {{summary.bank_out|money}}</b></span></div>
+  </div></div></div>
+</div>
+
+{% if cash_session.status == 'closed' %}
+<div class="card shadow-sm border-0 mb-4"><div class="card-body">
+  <div class="d-flex flex-wrap justify-content-between gap-3"><div><h2 class="h5">Conferência do fechamento</h2><p class="text-muted mb-0">Fechado em {{cash_session.closed_at|brdate}}{% if cash_session.closed_by_name is defined and cash_session.closed_by_name %} por {{cash_session.closed_by_name}}{% endif %}.</p></div>
+  {% if current_user.role == 'manager' and cash_session.business_date == today.isoformat() %}<form method="post" action="{{url_for('cash.reopen_register',session_id=cash_session.id)}}" class="d-print-none"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-outline-warning" onclick="return confirm('Reabrir o caixa de hoje para correção?')">Reabrir caixa</button></form>{% endif %}</div>
+  <div class="table-responsive mt-3"><table class="table align-middle"><thead><tr><th>Conta</th><th>Esperado</th><th>Conferido</th><th>Diferença</th></tr></thead><tbody>
+    <tr><td>Dinheiro físico</td><td>{{cash_session.expected_cash_cents|money}}</td><td>{{cash_session.counted_cash_cents|money}}</td><td class="fw-bold {{'text-success' if cash_session.cash_difference_cents == 0 else 'text-danger'}}">{{cash_session.cash_difference_cents|money}}</td></tr>
+    <tr><td>Conta / Pix</td><td>{{cash_session.expected_bank_cents|money}}</td><td>{{cash_session.counted_bank_cents|money}}</td><td class="fw-bold {{'text-success' if cash_session.bank_difference_cents == 0 else 'text-danger'}}">{{cash_session.bank_difference_cents|money}}</td></tr>
+  </tbody></table></div>
+  {% if cash_session.closing_notes %}<p class="mb-0"><strong>Observação:</strong> {{cash_session.closing_notes}}</p>{% endif %}
+</div></div>
+{% endif %}
+
+{% if cash_session.status == 'open' and cash_session.business_date == today.isoformat() %}
+<div class="row g-4 mb-4 d-print-none">
+  <div class="col-lg-7"><div class="card shadow-sm border-0 h-100"><div class="card-body"><h2 class="h5">Nova entrada ou saída</h2>
+    <form method="post" action="{{url_for('cash.add_movement')}}" class="row g-3">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+      <div class="col-sm-6"><label class="form-label">Conta</label><select class="form-select" name="account" required><option value="cash">Dinheiro físico</option><option value="bank">Conta / Pix</option></select></div>
+      <div class="col-sm-6"><label class="form-label">Movimento</label><select class="form-select" name="direction" required><option value="out">Saída</option><option value="in">Entrada</option></select></div>
+      <div class="col-sm-6"><label class="form-label">Categoria</label><select class="form-select" name="category" required>{% for value,label in category_labels.items() %}<option value="{{value}}">{{label}}</option>{% endfor %}</select></div>
+      <div class="col-sm-6"><label class="form-label">Valor</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="amount" inputmode="decimal" placeholder="0,00" required></div></div>
+      <div class="col-12"><label class="form-label">Descrição</label><input class="form-control" name="description" maxlength="180" placeholder="Ex.: compra de gelo" required></div>
+      <div class="col-12"><button class="btn btn-primary w-100">Registrar movimentação</button></div>
+    </form>
+  </div></div></div>
+  <div class="col-lg-5"><div class="card shadow-sm border-0 h-100"><div class="card-body"><h2 class="h5">Fechar e conferir</h2><p class="text-muted small">Conte o dinheiro e confira o saldo bancário. O sistema calculará qualquer diferença.</p>
+    <form method="post" action="{{url_for('cash.close_register')}}" class="row g-3">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+      <div class="col-12"><label class="form-label">Dinheiro físico conferido</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="counted_cash" inputmode="decimal" required></div></div>
+      <div class="col-12"><label class="form-label">Saldo em conta conferido</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="counted_bank" inputmode="decimal" required></div></div>
+      <div class="col-12"><label class="form-label">Observação</label><input class="form-control" name="closing_notes" maxlength="250"></div>
+      <div class="col-12"><button class="btn btn-dark w-100" onclick="return confirm('Confirma o fechamento do caixa de hoje?')">Fechar caixa</button></div>
+    </form>
+  </div></div></div>
+</div>
+{% endif %}
+
+<div class="card shadow-sm border-0 mb-4"><div class="card-header bg-white py-3"><h2 class="h5 mb-0">Movimentações avulsas e compras</h2></div><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Horário</th><th>Conta</th><th>Categoria</th><th>Descrição</th><th>Responsável</th><th class="text-end">Valor</th><th class="d-print-none"></th></tr></thead><tbody>
+  {% for m in summary.movements %}<tr class="{{'text-decoration-line-through text-muted' if m.reversed}}"><td>{{m.created_at|brdate}}</td><td>{{account_labels[m.account]}}</td><td>{{category_labels[m.category]}}</td><td>{{m.description}}{% if m.reversed %} <span class="badge text-bg-secondary">Estornado</span>{% endif %}</td><td>{{m.user_name or 'Sistema'}}</td><td class="text-end fw-bold {{'text-success' if m.direction == 'in' else 'text-danger'}}">{{'+' if m.direction == 'in' else '−'}} {{m.amount_cents|money}}</td><td class="d-print-none">{% if current_user.role == 'manager' and cash_session.status == 'open' and not m.reversed and m.source != 'reversal' %}<form method="post" action="{{url_for('cash.reverse_movement',movement_id=m.id)}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Estornar esta movimentação? O registro original será mantido.')">Estornar</button></form>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="7" class="text-center text-muted py-4">Nenhuma movimentação avulsa neste caixa. As vendas aparecem nos totais acima.</td></tr>{% endfor %}
+</tbody></table></div></div>
+
+<div class="card shadow-sm border-0 mb-4"><div class="card-header bg-white py-3 d-flex justify-content-between align-items-center"><h2 class="h5 mb-0">Vendas contabilizadas</h2><span class="badge text-bg-light">{{summary.sales|length}} venda(s)</span></div><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Horário</th><th>Pedido</th><th>Peladeiro</th><th>Pagamento</th><th class="text-end">Valor</th></tr></thead><tbody>
+  {% for sale in summary.sales %}<tr><td>{{sale.payment_date|brdate}}</td><td>#{{sale.id}}</td><td>{{sale.player_name}}</td><td>{{sale.payment_method}}</td><td class="text-end fw-bold">{{sale.total_cents|money}}</td></tr>
+  {% else %}<tr><td colspan="5" class="text-center text-muted py-4">Nenhuma venda paga nesta data.</td></tr>{% endfor %}
+</tbody></table></div></div>
+{% endif %}
+
+<div class="card shadow-sm border-0 mt-4 d-print-none"><div class="card-header bg-white py-3"><h2 class="h5 mb-0">Histórico de caixas</h2></div><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Data</th><th>Status</th><th>Dinheiro esperado</th><th>Conta esperada</th><th>Diferença total</th><th></th></tr></thead><tbody>
+  {% for item in history %}<tr><td>{{item.business_date[8:10]}}/{{item.business_date[5:7]}}/{{item.business_date[0:4]}}</td><td><span class="badge {{'text-bg-success' if item.status == 'open' else 'text-bg-secondary'}}">{{'Aberto' if item.status == 'open' else 'Fechado'}}</span></td><td>{{item.expected_cash_cents|money if item.status == 'closed' else 'Em andamento'}}</td><td>{{item.expected_bank_cents|money if item.status == 'closed' else 'Em andamento'}}</td><td>{% if item.status == 'closed' %}{{((item.cash_difference_cents or 0)+(item.bank_difference_cents or 0))|money}}{% else %}—{% endif %}</td><td><a class="btn btn-sm btn-outline-primary" href="{{url_for('cash.dashboard',date=item.business_date)}}">Ver</a></td></tr>
+  {% else %}<tr><td colspan="6" class="text-muted">Nenhum caixa registrado.</td></tr>{% endfor %}
+</tbody></table></div></div>
+{% endblock %}

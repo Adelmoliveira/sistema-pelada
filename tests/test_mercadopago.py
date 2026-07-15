@@ -17,6 +17,7 @@ from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
+from src.services.cash_register import get_session, session_summary
 from src.utils import alphabetical_key, brdate, local_today, month_bounds
 from werkzeug.security import check_password_hash
 
@@ -203,7 +204,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         positions = [page.index(f"<span>{label}</span>") for label in modules]
         self.assertEqual(positions, sorted(positions))
         for links in (
-            ["Conferir Pix", "Estoque", "Produtos", "Pedidos", "Venda rápida"],
+            ["Caixa", "Conferir Pix", "Estoque", "Produtos", "Pedidos", "Venda rápida"],
             ["Manutenção", "Materiais", "Relação de Carga"],
             ["Peladeiros", "Relatórios", "Usuários"],
         ):
@@ -705,13 +706,13 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("<span>Urgente</span>", html)
         for hidden_module in ("Bar", "Financeiro", "Administração"):
             self.assertNotIn(f"<span>{hidden_module}</span>", html)
-        for hidden_link in ("Conferir Pix", "Estoque", "Produtos", "Pedidos", "Peladeiros", "Relatórios", "Usuários", "Venda rápida"):
+        for hidden_link in ("Caixa", "Conferir Pix", "Estoque", "Produtos", "Pedidos", "Peladeiros", "Relatórios", "Usuários", "Venda rápida"):
             self.assertNotIn(f">{hidden_link}</a>", html)
         self.assertEqual(self.client.get("/infra/materials").status_code, 200)
         self.assertEqual(self.client.get("/infra/maintenance").status_code, 200)
         self.assertEqual(self.client.get("/urgent").status_code, 200)
 
-        for forbidden_path in ("/", "/sale", "/stock", "/players", "/users"):
+        for forbidden_path in ("/", "/sale", "/stock", "/cash", "/players", "/users"):
             denied = self.client.get(forbidden_path)
             self.assertEqual(denied.status_code, 302)
             self.assertTrue(denied.headers["Location"].endswith("/infra/load-relation"))
@@ -997,6 +998,140 @@ class MercadoPagoFlowTest(unittest.TestCase):
             sale = db.execute("SELECT * FROM sales WHERE id=?", (canceled_id,)).fetchone()
             self.assertEqual((sale["paid"], sale["payment_status"], sale["ready_for_delivery"]), (0, "canceled", 0))
             self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 3)
+
+    def test_cash_register_reconciles_sales_movements_reversal_and_closing(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        opened = self.client.post(
+            "/cash/open", data={"opening_cash": "100,00", "opening_bank": "500,00"}
+        )
+        self.assertEqual(opened.status_code, 303)
+        today = local_today().isoformat()
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                """INSERT INTO sales(player_id,payment_method,total_cents,paid,paid_at)
+                VALUES(?, 'Dinheiro',300,1,?)""",
+                (self.player_id, f"{today} 15:00:00"),
+            )
+            db.execute(
+                """INSERT INTO sales(player_id,payment_method,total_cents,paid,paid_at)
+                VALUES(?, 'Pix',500,1,?)""",
+                (self.player_id, f"{today} 15:01:00"),
+            )
+            db.execute(
+                """INSERT INTO sales(player_id,payment_method,total_cents,paid,paid_at)
+                VALUES(?, 'Cortesia',900,1,?)""",
+                (self.player_id, f"{today} 15:02:00"),
+            )
+            db.commit()
+
+        movement_response = self.client.post(
+            "/cash/movements",
+            data={
+                "account": "cash",
+                "direction": "out",
+                "category": "expense",
+                "amount": "2,00",
+                "description": "Compra de gelo",
+            },
+        )
+        self.assertEqual(movement_response.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            cash_session = get_session(db)
+            summary = session_summary(db, cash_session)
+            self.assertEqual(
+                (summary["cash_sales"], summary["bank_sales"], summary["expected_cash"], summary["expected_bank"]),
+                (300, 500, 10100, 50500),
+            )
+            movement_id = db.execute(
+                "SELECT id FROM cash_movements WHERE description='Compra de gelo'"
+            ).fetchone()["id"]
+
+        reversed_response = self.client.post(f"/cash/movements/{movement_id}/reverse")
+        self.assertEqual(reversed_response.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            cash_session = get_session(db)
+            self.assertEqual(session_summary(db, cash_session)["expected_cash"], 10300)
+
+        page = self.client.get("/cash").get_data(as_text=True)
+        self.assertIn("Dinheiro físico esperado", page)
+        self.assertIn("R$ 103,00", page)
+        self.assertIn("Estornado", page)
+
+        closed = self.client.post(
+            "/cash/close",
+            data={"counted_cash": "103,00", "counted_bank": "504,00", "closing_notes": "Conferido."},
+        )
+        self.assertEqual(closed.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            cash_session = get_session(db)
+            self.assertEqual(cash_session["status"], "closed")
+            self.assertEqual(
+                (cash_session["expected_cash_cents"], cash_session["expected_bank_cents"], cash_session["cash_difference_cents"], cash_session["bank_difference_cents"]),
+                (10300, 50500, 0, -100),
+            )
+            movement_count = db.execute("SELECT COUNT(*) total FROM cash_movements").fetchone()["total"]
+
+        rejected = self.client.post(
+            "/cash/movements",
+            data={"account": "cash", "direction": "in", "category": "other", "amount": "1,00", "description": "Tardio"},
+        )
+        self.assertEqual(rejected.status_code, 303)
+        with app.app_context():
+            self.assertEqual(
+                get_db().execute("SELECT COUNT(*) total FROM cash_movements").fetchone()["total"],
+                movement_count,
+            )
+
+    def test_paid_stock_purchase_creates_atomic_cash_outflow(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        rejected = self.client.post(
+            "/stock",
+            data={
+                "product_id": self.product_id,
+                "quantity": 3,
+                "cases": 0,
+                "unit_cost": "2,00",
+                "payment_account": "bank",
+                "notes": "Sem caixa",
+            },
+        )
+        self.assertEqual(rejected.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 5)
+            self.assertEqual(db.execute("SELECT COUNT(*) total FROM restocks").fetchone()["total"], 0)
+
+        self.client.post("/cash/open", data={"opening_cash": "0,00", "opening_bank": "100,00"})
+        accepted = self.client.post(
+            "/stock",
+            data={
+                "product_id": self.product_id,
+                "quantity": 3,
+                "cases": 0,
+                "unit_cost": "2,00",
+                "payment_account": "bank",
+                "notes": "Compra paga por Pix",
+            },
+        )
+        self.assertEqual(accepted.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 8)
+            movement = db.execute("SELECT * FROM cash_movements WHERE source='restock'").fetchone()
+            self.assertEqual(
+                (movement["account"], movement["direction"], movement["category"], movement["amount_cents"]),
+                ("bank", "out", "purchase", 600),
+            )
+            summary = session_summary(db, get_session(db))
+            self.assertEqual(summary["expected_bank"], 9400)
 
 
 if __name__ == "__main__":
