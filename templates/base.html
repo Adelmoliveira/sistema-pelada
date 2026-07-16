@@ -75,14 +75,12 @@
   </div>
 </div>
 {% endif %}
-{% if not current_user or current_user.role in ['client','maintenance'] %}
 <aside class="pwa-install" id="pwa-install" hidden aria-live="polite" aria-label="Instalar aplicativo">
   <img src="{{url_for('static',filename='icons/pwa-192.png')}}" alt="" width="52" height="52">
   <div class="pwa-install-copy"><strong>Instale Peladeiros GPCTA</strong><span id="pwa-install-message">Acesse mais rápido pela tela inicial do celular.</span></div>
   <button class="btn btn-sm btn-success" id="pwa-install-action" type="button">Instalar</button>
   <button class="pwa-install-close" id="pwa-install-close" type="button" aria-label="Agora não">×</button>
 </aside>
-{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="{{url_for('static',filename='pwa.js')}}" defer></script>
 {% if current_user %}<script>
