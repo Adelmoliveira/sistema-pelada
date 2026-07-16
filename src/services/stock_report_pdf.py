@@ -57,7 +57,8 @@ def stock_report_data(db, start_date="", end_date=""):
     for row in restocks:
         entries[row["product_id"]] = entries.get(row["product_id"], 0) + int(row["quantity"] or 0)
     exits = {row["product_id"]: int(row["quantity"] or 0) for row in sales}
-    products = db.execute("SELECT id,name,stock FROM products ORDER BY name COLLATE NOCASE").fetchall()
+    # LOWER(name) funciona tanto no SQLite local quanto no PostgreSQL/Supabase.
+    products = db.execute("SELECT id,name,stock FROM products ORDER BY LOWER(name),name").fetchall()
     rows = []
     for product in products:
         incoming = entries.get(product["id"], 0)
