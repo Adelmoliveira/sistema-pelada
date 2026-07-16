@@ -213,6 +213,24 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Informe seu nome de usuário", response.get_data(as_text=True))
 
+    def test_manager_changes_player_password_from_player_record(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE players SET war_name='Craque' WHERE id=?", (self.player_id,))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        response = self.client.post(
+            f"/players/{self.player_id}/password",
+            data={"new_password": "senha-nova-123"},
+        )
+        self.assertEqual(response.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            user = db.execute("SELECT * FROM users WHERE player_id=?", (self.player_id,)).fetchone()
+            self.assertIsNotNone(user)
+            self.assertTrue(check_password_hash(user["password_hash"], "senha-nova-123"))
+
     def test_pix_reconciliation_uses_payment_confirmation_date(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id

@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
 from src.db import get_db
-from src.routes.auth import roles_allowed
+from src.routes.auth import roles_allowed, make_password_hash
 from src.utils import alphabetical_key, normalize_cpf, spreadsheet_rows
 
 bp = Blueprint("players", __name__)
@@ -105,6 +105,42 @@ def player_membership_type(player_id):
             current_app.logger.error(f"Erro ao atualizar classificação do jogador {player_id}: {exc}")
             flash("Erro interno ao atualizar classificação financeira.", "danger")
     return redirect(url_for("players.players"))
+
+
+@bp.post("/players/<int:player_id>/password")
+@roles_allowed("manager")
+def reset_player_password(player_id):
+    db = get_db()
+    player = db.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    password = request.form.get("new_password", "")
+    if not player:
+        flash("Peladeiro não encontrado.", "warning")
+    elif not player["war_name"]:
+        flash("Cadastre o nome de guerra antes de criar o acesso.", "danger")
+    elif len(password) < 8:
+        flash("A senha deve ter ao menos 8 caracteres.", "danger")
+    else:
+        try:
+            user = db.execute("SELECT * FROM users WHERE player_id=? OR LOWER(username)=LOWER(?) LIMIT 1",
+                             (player_id, player["war_name"])).fetchone()
+            if user and user["role"] != "client":
+                raise ValueError("O nome de guerra já está vinculado a outro tipo de usuário.")
+            if user:
+                db.execute("UPDATE users SET username=?,name=?,password_hash=?,password_required=1,player_id=? WHERE id=?",
+                           (player["war_name"], player["war_name"], make_password_hash(password), player_id, user["id"]))
+            else:
+                db.execute("INSERT INTO users(username,name,password_hash,password_required,role,player_id) VALUES(?,?,?,1,'client',?)",
+                           (player["war_name"], player["war_name"], make_password_hash(password), player_id))
+            db.commit()
+            flash(f"Senha de {player['war_name']} atualizada.", "success")
+        except ValueError as exc:
+            db.rollback()
+            flash(str(exc), "danger")
+        except Exception as exc:
+            db.rollback()
+            current_app.logger.error(f"Erro ao redefinir senha do peladeiro {player_id}: {exc}")
+            flash("Não foi possível alterar a senha. Verifique se o nome de guerra já está em uso.", "danger")
+    return redirect(url_for("players.edit_player", player_id=player_id))
 
 @bp.route("/players/<int:player_id>/edit", methods=["GET", "POST"])
 @roles_allowed("manager")
