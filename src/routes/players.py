@@ -5,6 +5,20 @@ from src.utils import alphabetical_key, normalize_cpf, spreadsheet_rows
 
 bp = Blueprint("players", __name__)
 
+
+def _validate_war_name(db, war_name, player_id=None):
+    war_name = (war_name or "").strip()
+    if not war_name:
+        return ""
+    query = "SELECT id FROM players WHERE LOWER(war_name)=LOWER(?)"
+    params = [war_name]
+    if player_id is not None:
+        query += " AND id<>?"
+        params.append(player_id)
+    if db.execute(query, tuple(params)).fetchone():
+        raise ValueError("Já existe outro peladeiro com esse nome de guerra.")
+    return war_name
+
 @bp.get("/urgent")
 @roles_allowed("manager", "staff", "client", "infra", "maintenance")
 def urgent():
@@ -27,12 +41,13 @@ def players():
             if membership_type not in ("regular", "goalkeeper", "board", "veteran"):
                 raise ValueError("Classificação financeira inválida.")
             
+            war_name = _validate_war_name(db, request.form.get("war_name", ""))
             db.execute(
                 """INSERT INTO players
                 (name,war_name,cpf,phone,emergency_phone,email,membership_type) VALUES(?,?,?,?,?,?,?)""",
                 (
                     request.form["name"].strip(),
-                    request.form.get("war_name", "").strip(),
+                    war_name,
                     normalize_cpf(request.form.get("cpf")),
                     request.form.get("phone", "").strip(),
                     request.form.get("emergency_phone", "").strip(),
@@ -111,7 +126,7 @@ def edit_player(player_id):
                     WHERE id=?""",
                     (
                         request.form["name"].strip(),
-                        request.form.get("war_name", "").strip(),
+                        _validate_war_name(db, request.form.get("war_name", ""), player_id),
                         normalize_cpf(request.form.get("cpf")),
                         request.form.get("email", "").strip().lower(),
                         request.form.get("phone", "").strip(),

@@ -100,7 +100,14 @@ def sale():
         quantities = request.form.getlist("quantity")
         requested = {}
         try:
-            player_id = int(request.form["player_id"])
+            if g.user["role"] == "client":
+                player_id = int(g.user["player_id"] or request.form.get("player_id") or 0)
+                if not player_id:
+                    raise ValueError("Seu usuário ainda não está vinculado a um peladeiro.")
+                if g.user["player_id"] and request.form.get("player_id") and int(request.form["player_id"]) != int(g.user["player_id"]):
+                    raise ValueError("O pedido só pode ser registrado para o peladeiro conectado.")
+            else:
+                player_id = int(request.form["player_id"])
             for raw_id, raw_qty in zip(product_ids, quantities):
                 qty = int(raw_qty or 0)
                 if qty > 0:
@@ -167,7 +174,10 @@ def sale():
             current_app.logger.error(f"Erro ao processar venda: {exc}")
             flash("Erro interno ao processar a venda. Tente novamente.", "danger")
 
-    player_rows = db.execute("SELECT * FROM players WHERE active=1").fetchall()
+    if g.user["role"] == "client":
+        player_rows = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchall()
+    else:
+        player_rows = db.execute("SELECT * FROM players WHERE active=1").fetchall()
     player_rows = sorted(
         player_rows,
         key=lambda player: alphabetical_key(player["war_name"] or player["name"]),

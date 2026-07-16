@@ -60,7 +60,7 @@
                             <td>
                                 <div class="d-flex flex-wrap gap-2">
                                     <button type="button" class="btn btn-sm btn-outline-success edit-user" data-bs-toggle="modal" data-bs-target="#edit-user-modal" data-id="{{u.id}}" data-name="{{u.name|e}}" data-username="{{u.username|e}}">Editar</button>
-                                    {% if u.role in ['manager','staff','infra'] %}
+                                    {% if u.role in ['manager','staff','infra'] or (u.role == 'client' and u.password_required) %}
                                     <form method="post" action="{{url_for('auth.reset_user_password',user_id=u.id)}}" class="d-flex gap-1">
                                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                                         <input type="password" name="new_password" class="form-control form-control-sm" minlength="8" placeholder="Nova senha" required>

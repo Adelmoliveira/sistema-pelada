@@ -171,6 +171,42 @@ class MercadoPagoFlowTest(unittest.TestCase):
             local_day = get_db().execute("SELECT date(?)", ("2026-07-14 00:30:00",)).fetchone()[0]
         self.assertEqual(local_day, "2026-07-13")
 
+    def test_player_first_access_creates_password_and_identifies_sale(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE players SET war_name='Craque' WHERE id=?", (self.player_id,))
+            db.commit()
+
+        first_access = self.client.post("/login", data={"username": "Craque"})
+        self.assertEqual(first_access.status_code, 200)
+        self.assertIn("Primeiro acesso", first_access.get_data(as_text=True))
+        configured = self.client.post(
+            "/cliente/senha",
+            data={"password": "senha-segura", "password_confirm": "senha-segura"},
+        )
+        self.assertEqual(configured.status_code, 303)
+        with self.client.session_transaction() as session:
+            client_user_id = session["user_id"]
+        with app.app_context():
+            db = get_db()
+            client_user = db.execute("SELECT * FROM users WHERE id=?", (client_user_id,)).fetchone()
+            self.assertEqual((client_user["role"], client_user["player_id"], client_user["username"]), ("client", self.player_id, "Craque"))
+
+        page = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn("Craque", page)
+        self.assertNotIn("Quem está comprando?", page)
+        self.assertIn("Novo chamado", self.client.get("/sale").get_data(as_text=True))
+
+        sale = self.client.post(
+            "/sale",
+            data={"product_id": self.product_id, "quantity": 1, "payment_method": "Dinheiro", "notes": ""},
+        )
+        self.assertEqual(sale.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            created = db.execute("SELECT player_id,payment_status FROM sales ORDER BY id DESC LIMIT 1").fetchone()
+            self.assertEqual((created["player_id"], created["payment_status"]), (self.player_id, "pending_cash"))
+
     def test_pix_reconciliation_uses_payment_confirmation_date(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
