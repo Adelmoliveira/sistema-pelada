@@ -569,6 +569,13 @@ def init_sqlite(wrapper):
     if "password_required" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN password_required INTEGER NOT NULL DEFAULT 1")
         conn.commit()
+    if "player_id" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN player_id INTEGER REFERENCES players(id)")
+        conn.commit()
+    conn.execute("""UPDATE users SET player_id=(
+        SELECT p.id FROM players p WHERE p.active=1 AND p.war_name<>'' AND LOWER(p.war_name)=LOWER(users.username)
+    ) WHERE role='client' AND player_id IS NULL""")
+    conn.commit()
 
     sale_columns = {row[1] for row in conn.execute("PRAGMA table_info(sales)")}
     sale_migrations = {
@@ -633,6 +640,10 @@ def init_postgres(wrapper):
     
     # Run migration to add password_required if not exists in postgres
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_required INTEGER NOT NULL DEFAULT 1")
+    wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS player_id INTEGER REFERENCES players(id)")
+    wrapper.execute("""UPDATE users SET player_id=(
+        SELECT p.id FROM players p WHERE p.active=1 AND p.war_name<>'' AND LOWER(p.war_name)=LOWER(users.username)
+    ) WHERE role='client' AND player_id IS NULL""")
     wrapper.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
     wrapper.execute("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('manager','staff','client','infra','maintenance'))")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'approved'")

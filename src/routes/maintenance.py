@@ -41,7 +41,7 @@ def _form_values():
     area_code = request.form.get("area_code", "").strip().upper()
     category = request.form.get("category", "")
     priority = request.form.get("priority", "")
-    limited_access = g.user and g.user["role"] in ("maintenance", "staff")
+    limited_access = g.user and g.user["role"] in ("maintenance", "staff", "client")
     status = "open" if limited_access else request.form.get("status", "open")
     if not title:
         raise ValueError("O título do problema é obrigatório.")
@@ -174,7 +174,7 @@ def dashboard():
 
 
 @bp.route("/new", methods=["GET", "POST"])
-@roles_allowed("manager", "infra", "maintenance", "staff")
+@roles_allowed("manager", "infra", "maintenance", "staff", "client")
 def new_request():
     if request.method == "POST":
         try:

@@ -49,6 +49,7 @@
             {% if current_user.role == 'staff' %}<a class="{{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}">Novo chamado</a>{% else %}<a class="{{'active' if endpoint.startswith('maintenance.')}}" href="{{url_for('maintenance.requests_list')}}">Manutenção</a><a class="{{'active' if endpoint.startswith('infra.material')}}" href="{{url_for('infra.materials')}}">Materiais</a><a class="{{'active' if endpoint.startswith('infra.load_')}}" href="{{url_for('infra.load_relation')}}">Relação de Carga</a>{% endif %}
           </div></div>
         </div>{% endif %}
+        {% if current_user.role == 'client' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}"><span class="sidebar-module-icon">M</span><span>Novo chamado</span></a>{% endif %}
         {% if current_user.role == 'maintenance' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}"><span class="sidebar-module-icon">M</span><span>Novo chamado</span></a>{% endif %}
         <a class="sidebar-module sidebar-direct urgent {{'active' if urgent_active}}" href="{{url_for('players.urgent')}}"><span class="sidebar-module-icon">!</span><span>Urgente</span></a>
         {% if current_user.role == 'manager' %}<div class="sidebar-group">

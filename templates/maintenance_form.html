@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}{{form_title}} · Manutenção{% endblock %}
 {% block content %}
-<div class="row justify-content-center"><div class="col-xl-10"><div class="d-flex flex-wrap align-items-center gap-3 mb-3">{% if current_user.role not in ['maintenance','staff'] %}<a class="btn btn-outline-secondary" href="{{url_for('maintenance.requests_list')}}">← Voltar</a>{% endif %}<h1 class="h3 mb-0">{{form_title}}</h1></div>
+<div class="row justify-content-center"><div class="col-xl-10"><div class="d-flex flex-wrap align-items-center gap-3 mb-3">{% if current_user.role not in ['maintenance','staff','client'] %}<a class="btn btn-outline-secondary" href="{{url_for('maintenance.requests_list')}}">← Voltar</a>{% endif %}<h1 class="h3 mb-0">{{form_title}}</h1></div>
 <form method="post" enctype="multipart/form-data" class="card shadow-sm"><div class="card-body p-4"><input type="hidden" name="csrf_token" value="{{csrf_token()}}">
   <h2 class="h5 mb-3">Problema</h2><div class="row g-3">
     <div class="col-md-8"><label class="form-label fw-semibold">Título do problema <span class="text-danger">*</span></label><input class="form-control" name="title" maxlength="200" required value="{{request.form.get('title',maintenance.title if maintenance else '')}}"></div>
@@ -13,8 +13,8 @@
     <div class="col-md-4"><label class="form-label">Data da ocorrência</label><input class="form-control" type="date" name="occurred_on" required value="{{request.form.get('occurred_on',maintenance.occurred_on if maintenance else today)}}"></div>
     <div class="col-md-4"><label class="form-label">Prioridade</label>{% set current_priority=request.form.get('priority',maintenance.priority if maintenance else 'medium') %}<select class="form-select" name="priority">{% for code,name in priorities.items() %}<option value="{{code}}" {{'selected' if current_priority == code}}>{{name}}</option>{% endfor %}</select></div>
     <div class="col-md-4"><label class="form-label">Fotos do problema</label><input class="form-control" type="file" name="problem_photos" accept="image/jpeg,image/png,image/webp" multiple><div class="form-text">Até {{max_phase_photos}} fotos.</div></div>
-    {% if current_user.role in ['maintenance','staff'] %}<div class="col-12"><label class="form-label">Observações</label><textarea class="form-control" name="notes" rows="3" maxlength="5000">{{request.form.get('notes','')}}</textarea></div>{% endif %}
-  </div>{% if current_user.role not in ['maintenance','staff'] %}<hr class="my-4">
+    {% if current_user.role in ['maintenance','staff','client'] %}<div class="col-12"><label class="form-label">Observações</label><textarea class="form-control" name="notes" rows="3" maxlength="5000">{{request.form.get('notes','')}}</textarea></div>{% endif %}
+  </div>{% if current_user.role not in ['maintenance','staff','client'] %}<hr class="my-4">
   <h2 class="h5 mb-3">Acompanhamento e resolução</h2><div class="row g-3">
     <div class="col-md-4"><label class="form-label">Status</label>{% set current_status=request.form.get('status',maintenance.status if maintenance else 'open') %}<select class="form-select" name="status">{% for code,name in statuses.items() %}<option value="{{code}}" {{'selected' if current_status == code}}>{{name}}</option>{% endfor %}</select></div>
     <div class="col-md-4"><label class="form-label">Responsável</label><input class="form-control" name="responsible" maxlength="150" value="{{request.form.get('responsible',maintenance.responsible if maintenance else '')}}"></div>
@@ -26,6 +26,6 @@
     <div class="col-12"><label class="form-label">Observações</label><textarea class="form-control" name="notes" rows="3" maxlength="5000">{{request.form.get('notes',maintenance.notes if maintenance else '')}}</textarea></div>
   </div>{% endif %}
   {% if photos %}<hr class="my-4"><h2 class="h5">Fotos atuais</h2><div class="load-photo-grid">{% for photo in photos %}<label class="load-photo-option"><img src="{{photo.thumbnail_data}}" alt="Foto do chamado"><span class="d-block small mt-1">{{'Problema' if photo.phase == 'problem' else 'Resolução'}}</span><span class="form-check"><input class="form-check-input" type="checkbox" name="remove_photo_ids" value="{{photo.id}}"> Remover</span></label>{% endfor %}</div>{% endif %}
-  <div class="d-flex justify-content-end gap-2 mt-4">{% if current_user.role not in ['maintenance','staff'] %}<a class="btn btn-outline-secondary" href="{{url_for('maintenance.requests_list')}}">Cancelar</a>{% endif %}<button class="btn btn-primary">{{'Salvar alterações' if maintenance else 'Criar chamado'}}</button></div>
+  <div class="d-flex justify-content-end gap-2 mt-4">{% if current_user.role not in ['maintenance','staff','client'] %}<a class="btn btn-outline-secondary" href="{{url_for('maintenance.requests_list')}}">Cancelar</a>{% endif %}<button class="btn btn-primary">{{'Salvar alterações' if maintenance else 'Criar chamado'}}</button></div>
 </div></form></div></div>
 {% endblock %}

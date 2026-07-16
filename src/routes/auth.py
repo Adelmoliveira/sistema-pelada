@@ -34,6 +34,17 @@ def make_password_hash(password):
     # Compatível com o Python do macOS e com o ambiente de produção.
     return generate_password_hash(password, method="pbkdf2:sha256", salt_length=16)
 
+
+def _client_player_for_username(db, username):
+    return db.execute(
+        "SELECT * FROM players WHERE active=1 AND war_name<>'' AND LOWER(war_name)=LOWER(?)",
+        (username.strip(),),
+    ).fetchone()
+
+
+def _client_password_setup(player, user=None):
+    return render_template("client_password_setup.html", player=player, existing_user=user)
+
 def roles_allowed(*roles):
     def decorator(view):
         @wraps(view)
@@ -83,12 +94,17 @@ def login():
         )
     if request.method == "POST":
         db = get_db()
+        username = request.form["username"].strip()
         # Case insensitive query for username
         user = db.execute(
             "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND active=1",
-            (request.form["username"].strip(),)
+            (username,)
         ).fetchone()
-        passwordless_user = user and user["role"] in ("client", "maintenance") and not user["password_required"]
+        player = _client_player_for_username(db, username)
+        if player and (not user or (user["role"] == "client" and not user["password_required"])):
+            session["pending_client_player_id"] = player["id"]
+            return _client_password_setup(player, user)
+        passwordless_user = user and user["role"] == "maintenance" and not user["password_required"]
         if user and (passwordless_user or check_password_hash(user["password_hash"], request.form.get("password", ""))):
             session.clear()
             session["user_id"] = user["id"]
@@ -101,20 +117,51 @@ def login():
 
 @bp.route("/cliente", methods=["GET", "POST"])
 def client_access():
-    if g.user:
-        return redirect(url_for("sales.sale"))
+    return redirect(url_for("auth.login"))
+
+
+@bp.route("/cliente/senha", methods=["GET", "POST"])
+def client_password_setup():
+    player_id = session.get("pending_client_player_id")
+    if not player_id:
+        return redirect(url_for("auth.login"))
+    db = get_db()
+    player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (player_id,)).fetchone()
+    if not player or not player["war_name"]:
+        session.pop("pending_client_player_id", None)
+        flash("Peladeiro não encontrado ou sem nome de guerra cadastrado.", "danger")
+        return redirect(url_for("auth.login"))
+    user = db.execute("SELECT * FROM users WHERE player_id=? OR LOWER(username)=LOWER(?) LIMIT 1", (player_id, player["war_name"])).fetchone()
     if request.method == "POST":
-        db = get_db()
-        user = db.execute(
-            "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND active=1 AND role='client' AND password_required=0",
-            (request.form["username"].strip(),)
-        ).fetchone()
-        if user:
-            session.clear()
-            session["user_id"] = user["id"]
-            return redirect(url_for("sales.sale"), code=303)
-        flash("Cliente não encontrado ou acesso sem senha não habilitado.", "danger")
-    return render_template("client_access.html")
+        password = request.form.get("password", "")
+        confirmation = request.form.get("password_confirm", "")
+        if len(password) < 8:
+            flash("A senha deve ter ao menos 8 caracteres.", "danger")
+        elif password != confirmation:
+            flash("As senhas não coincidem.", "danger")
+        elif user and user["role"] != "client":
+            flash("Este nome de guerra já está vinculado a outro tipo de usuário.", "danger")
+        else:
+            try:
+                password_hash = make_password_hash(password)
+                if user:
+                    db.execute("UPDATE users SET password_hash=?,password_required=1,player_id=?,name=?,username=? WHERE id=?",
+                               (password_hash, player_id, player["war_name"], player["war_name"], user["id"]))
+                    user_id = user["id"]
+                else:
+                    cursor = db.execute("INSERT INTO users(username,name,password_hash,password_required,role,player_id) VALUES(?,?,?,1,'client',?)",
+                                        (player["war_name"], player["war_name"], password_hash, player_id))
+                    user_id = cursor.lastrowid
+                db.commit()
+                session.pop("pending_client_player_id", None)
+                session.clear()
+                session["user_id"] = user_id
+                return redirect(url_for("sales.sale"), code=303)
+            except Exception as exc:
+                db.rollback()
+                current_app.logger.error(f"Erro ao configurar senha do peladeiro {player_id}: {exc}")
+                flash("Não foi possível configurar sua senha. Tente novamente.", "danger")
+    return _client_password_setup(player, user)
 
 @bp.post("/logout")
 def logout():
@@ -164,8 +211,8 @@ def reset_user_password(user_id):
     password = request.form.get("new_password", "")
     if not target:
         flash("Usuário não encontrado.", "warning")
-    elif target["role"] not in ("manager", "staff", "infra"):
-        flash("Esta troca de senha é destinada a Gerente, Staff e Infra.", "danger")
+    elif target["role"] not in ("manager", "staff", "client", "infra"):
+        flash("Este usuário não utiliza senha redefinível.", "danger")
     elif len(password) < 8:
         flash("A nova senha deve ter ao menos 8 caracteres.", "danger")
     else:
