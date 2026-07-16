@@ -1411,6 +1411,30 @@ class MercadoPagoFlowTest(unittest.TestCase):
             ).fetchone()
             self.assertEqual((reversal["direction"], reversal["amount_cents"]), ("out", 1500))
 
+        transfer_reversal = self.client.post(
+            "/finance/ledger/transfers/1/reverse",
+            data={"reason": "Lançamento duplicado no aporte"},
+        )
+        self.assertEqual(transfer_reversal.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            from src.services.finance_accounts import finance_summary, latest_bar_balances
+            self.assertEqual(finance_summary(db)["bank"], 140000)
+            self.assertEqual(latest_bar_balances(db)["bank"], 40000)
+            transfer = db.execute("SELECT * FROM interaccount_transfers WHERE id=1").fetchone()
+            self.assertIsNotNone(transfer["reversed_at"])
+            finance_reversal = db.execute(
+                "SELECT * FROM finance_movements WHERE source='interaccount_transfer_reversal' AND source_id=1"
+            ).fetchone()
+            self.assertEqual((finance_reversal["direction"], finance_reversal["amount_cents"]), ("in", 25000))
+            cash_reversal = db.execute(
+                "SELECT * FROM cash_movements WHERE source='finance_transfer_reversal' AND source_id=1"
+            ).fetchone()
+            self.assertEqual((cash_reversal["direction"], cash_reversal["amount_cents"]), ("out", 25000))
+        audit_page = self.client.get("/finance/ledger").get_data(as_text=True)
+        self.assertIn("Lançamento duplicado no aporte", audit_page)
+        self.assertIn("Estornado", audit_page)
+
         with app.app_context():
             db = get_db()
             staff = db.execute(

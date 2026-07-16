@@ -101,8 +101,13 @@ def finance_ledger_rows(db, start_date, end_date, account="", category="", query
         term = f"%{query.lower()}%"
         params.extend([term, term])
     movements = db.execute(
-        f"""SELECT m.*,u.name user_name FROM finance_movements m
+        f"""SELECT m.*,u.name user_name,
+        t.reversed_at transfer_reversed,
+        EXISTS(SELECT 1 FROM finance_movements r WHERE r.reversed_movement_id=m.id) reversed
+        FROM finance_movements m
         LEFT JOIN users u ON u.id=m.created_by
+        LEFT JOIN interaccount_transfers t
+          ON m.source='interaccount_transfer' AND m.source_id=t.id
         WHERE {' AND '.join(conditions)} ORDER BY m.id DESC LIMIT 1000""",
         tuple(params),
     ).fetchall()
