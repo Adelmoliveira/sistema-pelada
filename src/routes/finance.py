@@ -406,6 +406,108 @@ def transfer_finance_bar():
     return redirect(url_for("finance.finance_ledger"), code=303)
 
 
+@bp.post("/finance/ledger/movements/<int:movement_id>/reverse")
+@roles_allowed("manager")
+def reverse_finance_movement(movement_id):
+    db = get_db()
+    try:
+        reason = request.form.get("reason", "").strip()
+        if len(reason) < 5:
+            raise ValueError("Informe o motivo do estorno (mínimo de 5 caracteres).")
+        movement = db.execute(
+            "SELECT * FROM finance_movements WHERE id=?", (movement_id,)
+        ).fetchone()
+        if not movement:
+            raise ValueError("Movimentação financeira não encontrada.")
+        if movement["source"] == "membership":
+            raise ValueError("Mensalidades devem ser estornadas pela tela de Visão financeira.")
+        if movement["source"] == "interaccount_transfer":
+            raise ValueError("Use a ação de estorno da transferência entre áreas.")
+        already_reversed = db.execute(
+            "SELECT 1 FROM finance_movements WHERE reversed_movement_id=?", (movement_id,)
+        ).fetchone()
+        if already_reversed:
+            raise ValueError("Esta movimentação já foi estornada.")
+        description = f"Estorno: {movement['description']} | Motivo: {reason}"
+        with db:
+            create_finance_movement(
+                db, movement["account"], "out" if movement["direction"] == "in" else "in",
+                "adjustment", movement["amount_cents"], description, g.user["id"],
+                source="finance_reversal", source_id=movement_id,
+                reversed_movement_id=movement_id,
+            )
+        flash("Movimentação estornada com auditoria; o lançamento original foi preservado.", "success")
+    except ValueError as exc:
+        flash(str(exc), "danger")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.error(f"Erro ao estornar movimentação financeira {movement_id}: {exc}")
+        flash("Erro interno ao estornar movimentação financeira.", "danger")
+    return redirect(url_for("finance.finance_ledger"), code=303)
+
+
+@bp.post("/finance/ledger/transfers/<int:transfer_id>/reverse")
+@roles_allowed("manager")
+def reverse_finance_bar_transfer(transfer_id):
+    db = get_db()
+    try:
+        reason = request.form.get("reason", "").strip()
+        if len(reason) < 5:
+            raise ValueError("Informe o motivo do estorno (mínimo de 5 caracteres).")
+        transfer = db.execute(
+            "SELECT * FROM interaccount_transfers WHERE id=?", (transfer_id,)
+        ).fetchone()
+        if not transfer:
+            raise ValueError("Transferência entre áreas não encontrada.")
+        if transfer["reversed_at"]:
+            raise ValueError("Esta transferência já foi estornada.")
+        cash_session = db.execute(
+            "SELECT * FROM cash_sessions WHERE id=?", (transfer["cash_session_id"],)
+        ).fetchone()
+        if not cash_session or cash_session["status"] != "open":
+            raise ValueError("Abra o caixa do Bar para estornar esta transferência.")
+        finance_movement = db.execute(
+            """SELECT * FROM finance_movements
+               WHERE source='interaccount_transfer' AND source_id=?""",
+            (transfer_id,),
+        ).fetchone()
+        cash_movement = db.execute(
+            """SELECT * FROM cash_movements
+               WHERE source='finance_transfer' AND source_id=?""",
+            (transfer_id,),
+        ).fetchone()
+        if not finance_movement or not cash_movement:
+            raise ValueError("A transferência não possui os lançamentos correspondentes para estorno.")
+        description = f"Estorno da transferência: {transfer['description']} | Motivo: {reason}"
+        with db:
+            create_finance_movement(
+                db, finance_movement["account"],
+                "out" if finance_movement["direction"] == "in" else "in",
+                "transfer", finance_movement["amount_cents"], description, g.user["id"],
+                source="interaccount_transfer_reversal", source_id=transfer_id,
+                reversed_movement_id=finance_movement["id"],
+            )
+            create_movement(
+                db, cash_session["id"], cash_movement["account"],
+                "out" if cash_movement["direction"] == "in" else "in",
+                "transfer", cash_movement["amount_cents"], description, g.user["id"],
+                source="finance_transfer_reversal", source_id=transfer_id,
+                reversed_movement_id=cash_movement["id"],
+            )
+            db.execute(
+                "UPDATE interaccount_transfers SET reversed_at=CURRENT_TIMESTAMP,reversed_by=? WHERE id=?",
+                (g.user["id"], transfer_id),
+            )
+        flash("Transferência estornada nas duas áreas com auditoria.", "success")
+    except ValueError as exc:
+        flash(str(exc), "danger")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.error(f"Erro ao estornar transferência financeira {transfer_id}: {exc}")
+        flash("Erro interno ao estornar transferência.", "danger")
+    return redirect(url_for("finance.finance_ledger"), code=303)
+
+
 @bp.get("/finance/ledger.pdf")
 @roles_allowed("manager")
 def finance_ledger_pdf():
