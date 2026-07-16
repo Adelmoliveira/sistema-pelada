@@ -207,6 +207,11 @@ class MercadoPagoFlowTest(unittest.TestCase):
             created = db.execute("SELECT player_id,payment_status FROM sales ORDER BY id DESC LIMIT 1").fetchone()
             self.assertEqual((created["player_id"], created["payment_status"]), (self.player_id, "pending_cash"))
 
+    def test_login_without_username_returns_form_instead_of_bad_request(self):
+        response = self.client.post("/login", data={"password": "qualquer"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Informe seu nome de usuário", response.get_data(as_text=True))
+
     def test_pix_reconciliation_uses_payment_confirmation_date(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
