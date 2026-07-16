@@ -1,8 +1,12 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, g
+from datetime import date
+
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, g, send_file
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import cents
 from src.services.cash_register import create_movement, get_session
+from src.services.stock_report_pdf import build_stock_report_pdf, stock_report_data
+from src.utils import local_today
 
 bp = Blueprint("products", __name__)
 
@@ -205,7 +209,38 @@ def stock():
         JOIN products p ON p.id=a.product_id LEFT JOIN users u ON u.id=a.user_id
         ORDER BY a.id DESC LIMIT 30"""
     ).fetchall()
-    return render_template("stock.html", products=product_rows, history=history, adjustments=adjustments)
+    return render_template("stock.html", products=product_rows, history=history, adjustments=adjustments,
+                           report_start=request.args.get("start", ""), report_end=request.args.get("end", ""))
+
+
+@bp.get("/stock/report.pdf")
+@roles_allowed("manager", "staff")
+def stock_report():
+    def parse_date(value, label):
+        value = (value or "").strip()
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            raise ValueError(f"Informe uma data válida para {label}.")
+
+    try:
+        start_date = parse_date(request.args.get("start"), "o início do período")
+        end_date = parse_date(request.args.get("end"), "o fim do período")
+        if start_date and end_date and start_date > end_date:
+            raise ValueError("A data inicial não pode ser posterior à data final.")
+    except ValueError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("products.stock"))
+    report = build_stock_report_pdf(
+        stock_report_data(get_db(), start_date.isoformat() if start_date else "", end_date.isoformat() if end_date else ""),
+        start_date, end_date, local_today(),
+    )
+    return send_file(
+        report, mimetype="application/pdf", as_attachment=True,
+        download_name=f"relatorio-estoque-{local_today().isoformat()}.pdf",
+    )
 
 
 @bp.route("/stock/restocks/<int:restock_id>/correct", methods=["GET", "POST"])
