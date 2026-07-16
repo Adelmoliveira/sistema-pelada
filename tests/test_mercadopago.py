@@ -18,6 +18,7 @@ from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
 from src.services.cash_register import get_session, session_summary
+from src.services.monthly_sales_report import monthly_sales_data
 from src.utils import alphabetical_key, brdate, local_today, month_bounds
 from werkzeug.security import check_password_hash
 
@@ -174,7 +175,6 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
         today = local_today().isoformat()
-        older_than_24h = (datetime.now().astimezone() - timedelta(hours=25)).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
         with app.app_context():
             db = get_db()
             included = db.execute(
@@ -184,16 +184,16 @@ class MercadoPagoFlowTest(unittest.TestCase):
             ).lastrowid
             excluded = db.execute(
                 """INSERT INTO sales(player_id,payment_method,total_cents,paid,created_at,paid_at)
-                VALUES(?,'Pix',900,1,?,?)""",
-                (self.player_id, f"{today} 15:01:00", older_than_24h),
+                VALUES(?,'Pix',900,1,?,'2026-01-02 12:00:00')""",
+                (self.player_id, f"{today} 15:01:00"),
             ).lastrowid
             db.commit()
-        page = self.client.get("/pix").get_data(as_text=True)
+        page = self.client.get(f"/pix?day={today}").get_data(as_text=True)
         self.assertIn(f"#{included}", page)
         self.assertNotIn(f"#{excluded}", page)
         self.assertIn("Pix confirmados", page)
-        self.assertIn("últimas 24 horas", page)
-        self.assertNotIn("Apagar", page)
+        invalid = self.client.get("/pix?day=data-invalida").get_data(as_text=True)
+        self.assertIn("data informada era inválida", invalid)
 
     def test_player_names_sort_ignoring_case_and_accents(self):
         names = ["Zeca", "áureo", "Ana", "Álvaro", "bruno"]
@@ -813,6 +813,49 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertTrue(response.data.startswith(b"%PDF-"))
         self.assertIn("attachment", response.headers["Content-Disposition"])
 
+    def test_manager_downloads_monthly_sales_accountability_pdf(self):
+        month = local_today().strftime("%Y-%m")
+        with app.app_context():
+            db = get_db()
+            for method, total, paid_time, quantity in (
+                ("Dinheiro", 600, f"{month}-10 15:00:00", 2),
+                ("Pix", 300, f"{month}-11 15:00:00", 1),
+                ("Pix", 300, f"{month}-12 15:00:00", 1),
+                ("Cortesia", 300, f"{month}-13 15:00:00", 1),
+            ):
+                sale = db.execute(
+                    """INSERT INTO sales(player_id,payment_method,total_cents,paid,paid_at)
+                    VALUES(?,?,?,?,?)""",
+                    (self.player_id, method, total, 1, paid_time),
+                )
+                db.execute(
+                    """INSERT INTO sale_items
+                    (sale_id,product_id,quantity,unit_price_cents,unit_cost_cents)
+                    VALUES(?,?,?,?,?)""",
+                    (sale.lastrowid, self.product_id, quantity, 300, 100),
+                )
+            db.commit()
+            data = monthly_sales_data(db, month)
+            self.assertEqual(
+                (data["summary"]["revenue"], data["summary"]["sales_count"], data["summary"]["items_sold"], data["summary"]["profit"]),
+                (1200, 3, 4, 800),
+            )
+            self.assertEqual((data["most_used_payment"], data["summary"]["courtesy_items"]), ("Pix", 1))
+            self.assertEqual(
+                (data["consumers"][0]["name"], data["consumers"][0]["purchases"], data["consumers"][0]["items"], data["consumers"][0]["total"]),
+                ("Peladeiro", 3, 4, 1200),
+            )
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get(f"/reports?month={month}").get_data(as_text=True)
+        self.assertIn("PDF de vendas mensais", page)
+        report = self.client.get(f"/reports/monthly-sales.pdf?month={month}")
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(report.mimetype, "application/pdf")
+        self.assertTrue(report.data.startswith(b"%PDF-"))
+        self.assertIn(f"vendas-mensais-{month}.pdf", report.headers["Content-Disposition"])
+
     def test_legacy_pix_remains_available_until_credentials_are_configured(self):
         app.config.update(
             MERCADOPAGO_ACCESS_TOKEN=None,
@@ -1337,6 +1380,72 @@ class MercadoPagoFlowTest(unittest.TestCase):
             ).status_code,
             302,
         )
+
+    def test_manager_corrects_restock_with_audit_trail(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        created = self.client.post(
+            "/stock",
+            data={
+                "product_id": self.product_id,
+                "quantity": 10,
+                "cases": 0,
+                "unit_cost": "2,00",
+                "notes": "Entrada digitada errada",
+            },
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            restock_id = db.execute("SELECT MAX(id) id FROM restocks").fetchone()["id"]
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 15)
+
+        corrected = self.client.post(
+            f"/stock/restocks/{restock_id}/correct",
+            data={"quantity": 6, "unit_cost": "1,50", "reason": "Quantidade e custo digitados errados"},
+        )
+        self.assertEqual(corrected.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            product = db.execute("SELECT * FROM products WHERE id=?", (self.product_id,)).fetchone()
+            original = db.execute("SELECT * FROM restocks WHERE id=?", (restock_id,)).fetchone()
+            correction = db.execute("SELECT * FROM restock_corrections WHERE restock_id=?", (restock_id,)).fetchone()
+            self.assertEqual((product["stock"], product["cost_cents"]), (11, 150))
+            self.assertEqual((original["quantity"], original["unit_cost_cents"]), (10, 200))
+            self.assertEqual(
+                (correction["previous_quantity"], correction["corrected_quantity"], correction["previous_unit_cost_cents"], correction["corrected_unit_cost_cents"]),
+                (10, 6, 200, 150),
+            )
+
+        corrected_again = self.client.post(
+            f"/stock/restocks/{restock_id}/correct",
+            data={"quantity": 7, "unit_cost": "1,75", "reason": "Recontagem feita pelo gerente"},
+        )
+        self.assertEqual(corrected_again.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            product = db.execute("SELECT * FROM products WHERE id=?", (self.product_id,)).fetchone()
+            latest = db.execute("SELECT * FROM restock_corrections ORDER BY id DESC LIMIT 1").fetchone()
+            self.assertEqual((product["stock"], product["cost_cents"]), (12, 175))
+            self.assertEqual((latest["previous_quantity"], latest["corrected_quantity"]), (6, 7))
+            self.assertEqual(db.execute("SELECT COUNT(*) total FROM restock_corrections").fetchone()["total"], 2)
+
+        page = self.client.get("/stock").get_data(as_text=True)
+        self.assertIn("Corrigida", page)
+        self.assertIn("Original: 10 un.", page)
+        self.assertIn("Recontagem feita pelo gerente", page)
+
+        with app.app_context():
+            db = get_db()
+            staff = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'staff')",
+                ("staff.estoque", "Staff Estoque", "hash"),
+            ).lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff
+        denied = self.client.get(f"/stock/restocks/{restock_id}/correct")
+        self.assertEqual(denied.status_code, 302)
 
     def test_paid_stock_purchase_creates_atomic_cash_outflow(self):
         with self.client.session_transaction() as session:

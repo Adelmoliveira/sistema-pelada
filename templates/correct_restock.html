@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block title %}Corrigir reposição · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex align-items-start justify-content-between gap-3 mb-4"><div><h1 class="h3 mb-1">Corrigir reposição #{{restock.id}}</h1><p class="text-muted mb-0">{{restock.product_name}}</p></div><a class="btn btn-outline-secondary" href="{{url_for('products.stock')}}">Voltar ao estoque</a></div>
+<div class="row justify-content-center"><div class="col-lg-8"><div class="alert alert-warning"><strong>Atenção:</strong> a entrada original será preservada. O sistema registrará a diferença no estoque, o motivo, o gerente e a data da correção.</div><div class="card shadow-sm"><div class="card-body p-4">
+  <div class="row g-3 mb-4"><div class="col-sm-4"><span class="text-muted small">Quantidade original</span><strong class="d-block">{{restock.quantity}} un.</strong></div><div class="col-sm-4"><span class="text-muted small">Custo original</span><strong class="d-block">{{restock.unit_cost_cents|money}}</strong></div><div class="col-sm-4"><span class="text-muted small">Estoque atual</span><strong class="d-block">{{restock.current_stock}} un.</strong></div></div>
+  <form method="post" class="row g-3"><input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+    <div class="col-md-6"><label class="form-label">Quantidade correta</label><input type="number" min="0" class="form-control" name="quantity" value="{{effective_quantity}}" required></div>
+    <div class="col-md-6"><label class="form-label">Custo correto por unidade</label><input class="form-control" name="unit_cost" inputmode="decimal" value="{{'%.2f'|format(effective_cost/100)|replace('.', ',')}}" required></div>
+    <div class="col-12"><label class="form-label">Motivo da correção</label><textarea class="form-control" name="reason" rows="3" minlength="5" maxlength="250" placeholder="Ex.: quantidade digitada incorretamente" required></textarea></div>
+    <div class="col-12"><button class="btn btn-warning w-100" onclick="return confirm('Confirma a correção desta reposição?')">Registrar correção</button></div>
+  </form>
+</div></div></div></div>
+{% endblock %}
