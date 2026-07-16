@@ -94,7 +94,10 @@ def login():
         )
     if request.method == "POST":
         db = get_db()
-        username = request.form["username"].strip()
+        username = request.form.get("username", "").strip()
+        if not username:
+            flash("Informe seu nome de usuário ou nome de guerra.", "danger")
+            return render_template("login.html"), 200
         # Case insensitive query for username
         user = db.execute(
             "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND active=1",
