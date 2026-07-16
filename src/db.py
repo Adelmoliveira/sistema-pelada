@@ -74,6 +74,18 @@ CREATE TABLE IF NOT EXISTS restocks (
     notes TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS restock_corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    restock_id INTEGER NOT NULL REFERENCES restocks(id),
+    previous_quantity INTEGER NOT NULL CHECK(previous_quantity >= 0),
+    corrected_quantity INTEGER NOT NULL CHECK(corrected_quantity >= 0),
+    previous_unit_cost_cents INTEGER NOT NULL CHECK(previous_unit_cost_cents >= 0),
+    corrected_unit_cost_cents INTEGER NOT NULL CHECK(corrected_unit_cost_cents >= 0),
+    reason TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_restock_corrections_restock ON restock_corrections(restock_id,id);
 CREATE TABLE IF NOT EXISTS stock_adjustments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id INTEGER NOT NULL REFERENCES products(id),

@@ -1022,6 +1022,72 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual((sale["paid"], sale["payment_status"], sale["ready_for_delivery"]), (0, "canceled", 0))
             self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 3)
 
+    def test_manager_corrects_restock_with_audit_trail(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        created = self.client.post(
+            "/stock",
+            data={
+                "product_id": self.product_id,
+                "quantity": 10,
+                "cases": 0,
+                "unit_cost": "2,00",
+                "notes": "Entrada digitada errada",
+            },
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            restock_id = db.execute("SELECT MAX(id) id FROM restocks").fetchone()["id"]
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 15)
+
+        corrected = self.client.post(
+            f"/stock/restocks/{restock_id}/correct",
+            data={"quantity": 6, "unit_cost": "1,50", "reason": "Quantidade e custo digitados errados"},
+        )
+        self.assertEqual(corrected.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            product = db.execute("SELECT * FROM products WHERE id=?", (self.product_id,)).fetchone()
+            original = db.execute("SELECT * FROM restocks WHERE id=?", (restock_id,)).fetchone()
+            correction = db.execute("SELECT * FROM restock_corrections WHERE restock_id=?", (restock_id,)).fetchone()
+            self.assertEqual((product["stock"], product["cost_cents"]), (11, 150))
+            self.assertEqual((original["quantity"], original["unit_cost_cents"]), (10, 200))
+            self.assertEqual(
+                (correction["previous_quantity"], correction["corrected_quantity"], correction["previous_unit_cost_cents"], correction["corrected_unit_cost_cents"]),
+                (10, 6, 200, 150),
+            )
+
+        corrected_again = self.client.post(
+            f"/stock/restocks/{restock_id}/correct",
+            data={"quantity": 7, "unit_cost": "1,75", "reason": "Recontagem feita pelo gerente"},
+        )
+        self.assertEqual(corrected_again.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            product = db.execute("SELECT * FROM products WHERE id=?", (self.product_id,)).fetchone()
+            latest = db.execute("SELECT * FROM restock_corrections ORDER BY id DESC LIMIT 1").fetchone()
+            self.assertEqual((product["stock"], product["cost_cents"]), (12, 175))
+            self.assertEqual((latest["previous_quantity"], latest["corrected_quantity"]), (6, 7))
+            self.assertEqual(db.execute("SELECT COUNT(*) total FROM restock_corrections").fetchone()["total"], 2)
+
+        page = self.client.get("/stock").get_data(as_text=True)
+        self.assertIn("Corrigida", page)
+        self.assertIn("Original: 10 un.", page)
+        self.assertIn("Recontagem feita pelo gerente", page)
+
+        with app.app_context():
+            db = get_db()
+            staff = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'staff')",
+                ("staff.estoque", "Staff Estoque", "hash"),
+            ).lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff
+        denied = self.client.get(f"/stock/restocks/{restock_id}/correct")
+        self.assertEqual(denied.status_code, 302)
+
 
 if __name__ == "__main__":
     unittest.main()

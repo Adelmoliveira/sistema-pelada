@@ -165,7 +165,13 @@ def stock():
 
     product_rows = db.execute("SELECT * FROM products WHERE active=1 ORDER BY stock, name").fetchall()
     history = db.execute(
-        """SELECT r.*, p.name product_name FROM restocks r JOIN products p ON p.id=r.product_id
+        """SELECT r.*,p.name product_name,c.corrected_quantity,c.corrected_unit_cost_cents,
+        c.reason correction_reason,c.created_at correction_created_at,u.name correction_user_name
+        FROM restocks r JOIN products p ON p.id=r.product_id
+        LEFT JOIN restock_corrections c ON c.id=(
+            SELECT MAX(c2.id) FROM restock_corrections c2 WHERE c2.restock_id=r.id
+        )
+        LEFT JOIN users u ON u.id=c.created_by
         ORDER BY r.id DESC LIMIT 30"""
     ).fetchall()
     adjustments = db.execute(
@@ -174,3 +180,75 @@ def stock():
         ORDER BY a.id DESC LIMIT 30"""
     ).fetchall()
     return render_template("stock.html", products=product_rows, history=history, adjustments=adjustments)
+
+
+@bp.route("/stock/restocks/<int:restock_id>/correct", methods=["GET", "POST"])
+@roles_allowed("manager")
+def correct_restock(restock_id):
+    db = get_db()
+    restock = db.execute(
+        """SELECT r.*,p.name product_name,p.stock current_stock,
+        c.corrected_quantity,c.corrected_unit_cost_cents
+        FROM restocks r JOIN products p ON p.id=r.product_id
+        LEFT JOIN restock_corrections c ON c.id=(
+            SELECT MAX(c2.id) FROM restock_corrections c2 WHERE c2.restock_id=r.id
+        ) WHERE r.id=?""",
+        (restock_id,),
+    ).fetchone()
+    if not restock:
+        flash("Reposição não encontrada.", "warning")
+        return redirect(url_for("products.stock"))
+
+    effective_quantity = restock["corrected_quantity"] if restock["corrected_quantity"] is not None else restock["quantity"]
+    effective_cost = restock["corrected_unit_cost_cents"] if restock["corrected_unit_cost_cents"] is not None else restock["unit_cost_cents"]
+    if request.method == "POST":
+        try:
+            corrected_quantity = int(request.form.get("quantity", ""))
+            corrected_cost = cents(request.form.get("unit_cost", "0"))
+            reason = request.form.get("reason", "").strip()
+            if corrected_quantity < 0 or corrected_cost < 0:
+                raise ValueError("Quantidade e custo não podem ser negativos.")
+            if len(reason) < 5:
+                raise ValueError("Informe um motivo com pelo menos 5 caracteres.")
+            new_stock = restock["current_stock"] + corrected_quantity - effective_quantity
+            if new_stock < 0:
+                raise ValueError("Não é possível reduzir essa quantidade porque parte do estoque já foi utilizada.")
+            latest_restock = db.execute(
+                "SELECT MAX(id) latest_id FROM restocks WHERE product_id=?",
+                (restock["product_id"],),
+            ).fetchone()["latest_id"]
+            with db:
+                db.execute(
+                    """INSERT INTO restock_corrections
+                    (restock_id,previous_quantity,corrected_quantity,previous_unit_cost_cents,
+                     corrected_unit_cost_cents,reason,created_by)
+                    VALUES(?,?,?,?,?,?,?)""",
+                    (restock_id, effective_quantity, corrected_quantity, effective_cost,
+                     corrected_cost, reason, g.user["id"]),
+                )
+                db.execute("UPDATE products SET stock=? WHERE id=?", (new_stock, restock["product_id"]))
+                if latest_restock == restock_id:
+                    db.execute(
+                        "UPDATE products SET cost_cents=? WHERE id=?",
+                        (corrected_cost, restock["product_id"]),
+                    )
+                db.execute(
+                    """INSERT INTO stock_adjustments
+                    (product_id,user_id,previous_stock,new_stock,difference,reason)
+                    VALUES(?,?,?,?,?,?)""",
+                    (restock["product_id"], g.user["id"], restock["current_stock"], new_stock,
+                     corrected_quantity - effective_quantity,
+                     f"Correção da reposição #{restock_id}: {reason}"),
+                )
+            flash(f"Reposição #{restock_id} corrigida com histórico preservado.", "success")
+            return redirect(url_for("products.stock"), code=303)
+        except ValueError as exc:
+            flash(str(exc), "danger")
+        except Exception as exc:
+            db.rollback()
+            current_app.logger.error(f"Erro ao corrigir reposição {restock_id}: {exc}")
+            flash("Erro interno ao corrigir a reposição.", "danger")
+    return render_template(
+        "correct_restock.html", restock=restock,
+        effective_quantity=effective_quantity, effective_cost=effective_cost,
+    )
