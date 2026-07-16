@@ -142,6 +142,22 @@ def load_user_and_protect_routes():
     }:
         return None
 
+    # Arquivos do PWA precisam continuar disponíveis mesmo durante uma
+    # instabilidade momentânea do banco de dados.
+    if request.endpoint in {"static", "service_worker", "offline"}:
+        return None
+
+    def database_unavailable(exc, operation):
+        app.logger.error(f"Erro ao {operation}: {exc}")
+        message = "Não foi possível conectar ao sistema agora. Sua sessão foi preservada; tente novamente."
+        if request.accept_mimetypes.best == "application/json":
+            response = jsonify(error=message)
+        else:
+            response = app.make_response(render_template("service_unavailable.html"))
+        response.status_code = 503
+        response.headers["Retry-After"] = "3"
+        return response
+
     user_id = session.get("user_id")
     if user_id:
         try:
@@ -149,18 +165,16 @@ def load_user_and_protect_routes():
             if not g.user:
                 session.clear()
         except Exception as exc:
-            app.logger.error(f"Erro ao carregar usuário da sessão: {exc}")
-            session.clear()
+            return database_unavailable(exc, "carregar usuário da sessão")
 
     # Sempre permitir acesso a arquivos estáticos e à rota de setup inicial
-    if request.endpoint in {"static", "service_worker", "offline", "auth.setup"}:
+    if request.endpoint == "auth.setup":
         return None
 
     try:
         has_users = get_db().execute("SELECT 1 FROM users LIMIT 1").fetchone()
     except Exception as exc:
-        app.logger.error(f"Erro ao verificar tabela de usuários: {exc}")
-        has_users = None
+        return database_unavailable(exc, "verificar tabela de usuários")
 
     if not has_users:
         if request.endpoint == "auth.setup":

@@ -28,11 +28,6 @@ self.addEventListener("fetch", event => {
   const request = event.request;
   if (request.method !== "GET") return;
 
-  if (request.mode === "navigate") {
-    event.respondWith(fetch(request).catch(() => caches.match(OFFLINE_URL)));
-    return;
-  }
-
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || !url.pathname.startsWith("/static/")) return;
 

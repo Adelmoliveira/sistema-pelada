@@ -704,9 +704,28 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(worker_response.status_code, 200)
         self.assertEqual(worker_response.headers["Service-Worker-Allowed"], "/")
         self.assertIn('const OFFLINE_URL = "/offline"', worker)
+        self.assertNotIn('request.mode === "navigate"', worker)
         self.assertNotIn('"/sale"', worker)
         self.assertNotIn('"/finance"', worker)
         self.assertEqual(self.client.get("/offline").status_code, 200)
+
+    def test_transient_database_failure_preserves_authenticated_session(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        with patch("app.get_db", side_effect=RuntimeError("falha temporária simulada")):
+            response = self.client.get("/players")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.headers["Retry-After"], "3")
+        self.assertIn("Sua sessão foi preservada", response.get_data(as_text=True))
+        with self.client.session_transaction() as session:
+            self.assertEqual(session.get("user_id"), self.user_id)
+
+        with patch("app.get_db", side_effect=RuntimeError("falha temporária simulada")):
+            static_response = self.client.get("/static/pwa.js")
+        self.assertEqual(static_response.status_code, 200)
+        static_response.close()
 
     def test_password_hash_is_compatible_with_local_python(self):
         password_hash = make_password_hash("senha-segura-123")
