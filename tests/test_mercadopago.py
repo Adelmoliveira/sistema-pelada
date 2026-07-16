@@ -180,6 +180,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         first_access = self.client.post("/login", data={"username": "Craque"})
         self.assertEqual(first_access.status_code, 200)
         self.assertIn("Primeiro acesso", first_access.get_data(as_text=True))
+        self.assertIn('action="/cliente/senha"', first_access.get_data(as_text=True))
         configured = self.client.post(
             "/cliente/senha",
             data={"password": "senha-segura", "password_confirm": "senha-segura"},
