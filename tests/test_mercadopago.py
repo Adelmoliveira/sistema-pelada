@@ -840,6 +840,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 (1200, 3, 4, 800),
             )
             self.assertEqual((data["most_used_payment"], data["summary"]["courtesy_items"]), ("Pix", 1))
+            self.assertEqual(
+                (data["consumers"][0]["name"], data["consumers"][0]["purchases"], data["consumers"][0]["items"], data["consumers"][0]["total"]),
+                ("Peladeiro", 3, 4, 1200),
+            )
 
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id

@@ -58,6 +58,15 @@ def monthly_sales_data(db, requested_month=None):
         GROUP BY p.id,p.name ORDER BY quantity DESC,revenue DESC,p.name""",
         (start, end),
     ).fetchall()
+    consumers = db.execute(
+        """SELECT p.name,COUNT(s.id) purchases,COALESCE(SUM(s.total_cents),0) total,
+        COALESCE(SUM((SELECT COALESCE(SUM(i.quantity),0) FROM sale_items i WHERE i.sale_id=s.id)),0) items
+        FROM sales s JOIN players p ON p.id=s.player_id
+        WHERE s.paid=1 AND s.payment_method<>'Cortesia'
+        AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?
+        GROUP BY p.id,p.name ORDER BY total DESC,purchases DESC,p.name""",
+        (start, end),
+    ).fetchall()
     daily = db.execute(
         """SELECT date(COALESCE(paid_at,created_at)) business_date,COUNT(*) sales_count,
         COALESCE(SUM(total_cents),0) revenue
@@ -84,6 +93,7 @@ def monthly_sales_data(db, requested_month=None):
         },
         "payments": payments,
         "products": products,
+        "consumers": consumers,
         "daily": daily,
         "most_used_payment": payments[0]["payment_method"] if payments else "Sem vendas",
     }
@@ -144,7 +154,11 @@ def build_monthly_sales_pdf(data, issued_on):
         [Paragraph(f"<b>{value}</b>", styles["SalesCenter"]) for value in (money(summary["revenue"]), summary["sales_count"], summary["items_sold"], money(summary["ticket_average"]), money(summary["profit"]))],
     ], colWidths=[54.2*mm]*5)
     cards.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), LIGHT_BLUE), ("BOX", (0,0), (-1,-1), .5, colors.HexColor("#B9D5E1")), ("INNERGRID", (0,0), (-1,-1), .5, colors.HexColor("#B9D5E1")), ("TOPPADDING", (0,0), (-1,-1), 5), ("BOTTOMPADDING", (0,0), (-1,-1), 5)]))
-    story.extend([cards, Spacer(1, 4*mm), Paragraph(f"Forma de pagamento mais utilizada: <b>{escape(data['most_used_payment'])}</b>", styles["SalesHeading"]), Paragraph("Formas de pagamento", styles["SalesHeading"])])
+    story.extend([
+        cards, Spacer(1, 3*mm),
+        Paragraph(f"Cortesias: <b>{summary['courtesy_sales']} registro(s), {summary['courtesy_items']} item(ns)</b> - Custo estimado das vendas: <b>{money(summary['cost'])}</b>", styles["SalesSub"]),
+        Spacer(1, 3*mm), Paragraph(f"Forma de pagamento mais utilizada: <b>{escape(data['most_used_payment'])}</b>", styles["SalesHeading"]), Paragraph("Formas de pagamento", styles["SalesHeading"]),
+    ])
 
     payment_rows = [[Paragraph(v, styles["SalesHeader"]) for v in ("Forma", "Quantidade de vendas", "% das vendas", "Valor recebido", "% do faturamento")]]
     for row in data["payments"]:
@@ -154,7 +168,20 @@ def build_monthly_sales_pdf(data, issued_on):
     payment_empty = len(payment_rows) == 1
     if payment_empty:
         payment_rows.append([Paragraph("Nenhuma venda paga no mês.", styles["SalesCenter"])] + [""]*4)
-    story.extend([_styled_table(payment_rows, [51*mm,55*mm,45*mm,65*mm,55*mm], payment_empty), Spacer(1,4*mm), Paragraph("Produtos vendidos", styles["SalesHeading"])])
+    story.extend([_styled_table(payment_rows, [51*mm,55*mm,45*mm,65*mm,55*mm], payment_empty), Spacer(1,4*mm), Paragraph("Ranking de quem mais consumiu", styles["SalesHeading"])])
+
+    consumer_rows = [[Paragraph(v, styles["SalesHeader"]) for v in ("Posição", "Peladeiro", "Compras", "Itens", "Valor consumido", "Ticket médio")]]
+    for position, row in enumerate(data["consumers"], 1):
+        ticket = round(int(row["total"] or 0) / int(row["purchases"])) if row["purchases"] else 0
+        consumer_rows.append([
+            Paragraph(f"{position}º", styles["SalesCenter"]), Paragraph(escape(row["name"]), styles["SalesCell"]),
+            Paragraph(str(row["purchases"]), styles["SalesCenter"]), Paragraph(str(row["items"]), styles["SalesCenter"]),
+            Paragraph(money(row["total"]), styles["SalesRight"]), Paragraph(money(ticket), styles["SalesRight"]),
+        ])
+    consumer_empty = len(consumer_rows) == 1
+    if consumer_empty:
+        consumer_rows.append([Paragraph("Nenhum consumo registrado no mês.", styles["SalesCenter"])] + [""]*5)
+    story.extend([_styled_table(consumer_rows, [22*mm,89*mm,35*mm,31*mm,49*mm,45*mm], consumer_empty), Spacer(1,4*mm), Paragraph("Produtos vendidos", styles["SalesHeading"])])
 
     product_rows = [[Paragraph(v, styles["SalesHeader"]) for v in ("Produto", "Unidades", "Cortesias", "Faturamento", "Custo estimado", "Lucro estimado")]]
     for row in data["products"]:
@@ -170,7 +197,7 @@ def build_monthly_sales_pdf(data, issued_on):
     daily_empty = len(daily_rows) == 1
     if daily_empty:
         daily_rows.append([Paragraph("Nenhuma venda no mês.", styles["SalesCenter"]), "", ""])
-    story.extend([_styled_table(daily_rows, [75*mm,95*mm,101*mm], daily_empty), Spacer(1,4*mm), Paragraph(f"Cortesias: <b>{summary['courtesy_sales']} registro(s), {summary['courtesy_items']} item(ns)</b> - Custo estimado das vendas: <b>{money(summary['cost'])}</b>", styles["SalesSub"])])
+    story.append(_styled_table(daily_rows, [75*mm,95*mm,101*mm], daily_empty))
 
     def footer(canvas, doc):
         canvas.saveState(); canvas.setStrokeColor(colors.HexColor("#D9E1E5")); canvas.line(13*mm,12*mm,landscape(A4)[0]-13*mm,12*mm)
