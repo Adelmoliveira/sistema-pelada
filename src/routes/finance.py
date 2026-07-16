@@ -5,6 +5,7 @@ from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.services.debtors_pdf import build_debtors_pdf
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
+from src.services.monthly_sales_report import build_monthly_sales_pdf, monthly_sales_data
 from src.utils import alphabetical_key, money, brdate, month_bounds, add_months, local_today
 
 bp = Blueprint("finance", __name__)
@@ -40,13 +41,13 @@ def reports():
         COALESCE(SUM(CASE WHEN payment_method='Dinheiro' THEN total_cents END),0) cash,
         COALESCE(SUM(CASE WHEN payment_method='Débito' THEN total_cents END),0) debit,
         COALESCE(SUM(CASE WHEN payment_method='Cortesia' THEN total_cents END),0) courtesy
-        FROM sales WHERE paid=1 AND created_at>=? AND created_at<?""", (start, end)).fetchone()
+        FROM sales WHERE paid=1 AND COALESCE(paid_at,created_at)>=? AND COALESCE(paid_at,created_at)<?""", (start, end)).fetchone()
 
     courtesy_items = db.execute(
         """SELECT COALESCE(SUM(i.quantity),0)
            FROM sale_items i JOIN sales s ON s.id=i.sale_id
            WHERE s.paid=1 AND s.payment_method='Cortesia'
-             AND s.created_at>=? AND s.created_at<?""",
+             AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?""",
         (start, end),
     ).fetchone()[0]
         
@@ -55,15 +56,17 @@ def reports():
         SUM(CASE WHEN s.payment_method!='Cortesia' THEN i.quantity*i.unit_price_cents ELSE 0 END) total,
         SUM(CASE WHEN s.payment_method!='Cortesia' THEN i.quantity*(i.unit_price_cents-i.unit_cost_cents) ELSE 0 END) profit
         FROM sale_items i JOIN sales s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id
-        WHERE s.paid=1 AND s.created_at>=? AND s.created_at<? GROUP BY p.id, p.name ORDER BY quantity DESC""", (start, end)).fetchall()
+        WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<? GROUP BY p.id, p.name ORDER BY quantity DESC""", (start, end)).fetchall()
         
     by_player = db.execute("""SELECT p.name, COUNT(s.id) purchases, SUM(s.total_cents) total
         FROM sales s JOIN players p ON p.id=s.player_id
-        WHERE s.paid=1 AND s.payment_method!='Cortesia' AND s.created_at>=? AND s.created_at<?
+        WHERE s.paid=1 AND s.payment_method!='Cortesia' AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?
         GROUP BY p.id, p.name ORDER BY total DESC""", (start, end)).fetchall()
         
-    sales_rows = db.execute("""SELECT s.*, p.name player_name FROM sales s JOIN players p ON p.id=s.player_id
-        WHERE s.paid=1 AND s.created_at>=? AND s.created_at<? ORDER BY s.id DESC""", (start, end)).fetchall()
+    sales_rows = db.execute("""SELECT s.*,p.name player_name,COALESCE(s.paid_at,s.created_at) sale_date
+        FROM sales s JOIN players p ON p.id=s.player_id
+        WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?
+        ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC""", (start, end)).fetchall()
         
     profit = sum(r["profit"] for r in by_product)
     report_year, due_month = int(month[:4]), int(month[5:7])
@@ -99,6 +102,17 @@ def reports():
     return render_template("reports.html", month=month, summary=summary, by_product=by_product,
                            by_player=by_player, sales=sales_rows, profit=profit,
                            courtesy_items=courtesy_items, membership=membership)
+
+
+@bp.get("/reports/monthly-sales.pdf")
+@roles_allowed("manager")
+def monthly_sales_pdf():
+    data = monthly_sales_data(get_db(), request.args.get("month"))
+    report = build_monthly_sales_pdf(data, local_today())
+    return send_file(
+        report, mimetype="application/pdf", as_attachment=True,
+        download_name=f"vendas-mensais-{data['month']}.pdf",
+    )
 
 @bp.route("/finance", methods=["GET", "POST"])
 @roles_allowed("manager")

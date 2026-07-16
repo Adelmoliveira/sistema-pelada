@@ -17,6 +17,7 @@ from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
+from src.services.monthly_sales_report import monthly_sales_data
 from src.utils import alphabetical_key, brdate, local_today, month_bounds
 from werkzeug.security import check_password_hash
 
@@ -810,6 +811,45 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.mimetype, "application/pdf")
         self.assertTrue(response.data.startswith(b"%PDF-"))
         self.assertIn("attachment", response.headers["Content-Disposition"])
+
+    def test_manager_downloads_monthly_sales_accountability_pdf(self):
+        month = local_today().strftime("%Y-%m")
+        with app.app_context():
+            db = get_db()
+            for method, total, paid_time, quantity in (
+                ("Dinheiro", 600, f"{month}-10 15:00:00", 2),
+                ("Pix", 300, f"{month}-11 15:00:00", 1),
+                ("Pix", 300, f"{month}-12 15:00:00", 1),
+                ("Cortesia", 300, f"{month}-13 15:00:00", 1),
+            ):
+                sale = db.execute(
+                    """INSERT INTO sales(player_id,payment_method,total_cents,paid,paid_at)
+                    VALUES(?,?,?,?,?)""",
+                    (self.player_id, method, total, 1, paid_time),
+                )
+                db.execute(
+                    """INSERT INTO sale_items
+                    (sale_id,product_id,quantity,unit_price_cents,unit_cost_cents)
+                    VALUES(?,?,?,?,?)""",
+                    (sale.lastrowid, self.product_id, quantity, 300, 100),
+                )
+            db.commit()
+            data = monthly_sales_data(db, month)
+            self.assertEqual(
+                (data["summary"]["revenue"], data["summary"]["sales_count"], data["summary"]["items_sold"], data["summary"]["profit"]),
+                (1200, 3, 4, 800),
+            )
+            self.assertEqual((data["most_used_payment"], data["summary"]["courtesy_items"]), ("Pix", 1))
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get(f"/reports?month={month}").get_data(as_text=True)
+        self.assertIn("PDF de vendas mensais", page)
+        report = self.client.get(f"/reports/monthly-sales.pdf?month={month}")
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(report.mimetype, "application/pdf")
+        self.assertTrue(report.data.startswith(b"%PDF-"))
+        self.assertIn(f"vendas-mensais-{month}.pdf", report.headers["Content-Disposition"])
 
     def test_legacy_pix_remains_available_until_credentials_are_configured(self):
         app.config.update(
