@@ -1,0 +1,49 @@
+{
+  "id": "/",
+  "name": "Peladeiros GPCTA",
+  "short_name": "Peladeiros",
+  "description": "Pedidos do Bar e abertura de chamados de manutenção do GPCTA.",
+  "lang": "pt-BR",
+  "start_url": "/login?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#f2f6f9",
+  "theme_color": "#07558c",
+  "categories": ["lifestyle", "productivity"],
+  "icons": [
+    {
+      "src": "/static/icons/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/pwa-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Venda rápida",
+      "short_name": "Venda",
+      "url": "/sale?source=pwa",
+      "icons": [{"src": "/static/icons/pwa-192.png", "sizes": "192x192", "type": "image/png"}]
+    },
+    {
+      "name": "Novo chamado",
+      "short_name": "Chamado",
+      "url": "/infra/maintenance/new?source=pwa",
+      "icons": [{"src": "/static/icons/pwa-192.png", "sizes": "192x192", "type": "image/png"}]
+    }
+  ]
+}
