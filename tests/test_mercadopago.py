@@ -246,6 +246,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(page.count('<strong>Teste</strong>'), 1)
         self.assertEqual(page.count('>Relatórios</a>'), 1)
         self.assertIn('action="/logout"', page)
+        self.assertIn('id="pwa-install"', page)
 
     def test_urgent_is_visible_and_accessible_to_every_user_role(self):
         with app.app_context():
@@ -296,6 +297,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("<span>Urgente</span>", page)
         self.assertNotIn("<span>Infra-Estrutura</span>", page)
         self.assertNotIn("Acompanhamento e resolução", page)
+        self.assertIn('id="pwa-install"', page)
         self.assertNotIn("← Voltar", page)
 
         submitted = self.client.post(
@@ -756,6 +758,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn(">Manutenção</a>", html)
         self.assertIn('class="sidebar-module sidebar-direct urgent ', html)
         self.assertIn("<span>Urgente</span>", html)
+        self.assertIn('id="pwa-install"', html)
         for hidden_module in ("Bar", "Financeiro", "Administração"):
             self.assertNotIn(f"<span>{hidden_module}</span>", html)
         for hidden_link in ("Caixa", "Conferir Pix", "Estoque", "Produtos", "Pedidos", "Peladeiros", "Relatórios", "Usuários", "Venda rápida"):
