@@ -1565,6 +1565,34 @@ class MercadoPagoFlowTest(unittest.TestCase):
             summary = session_summary(db, get_session(db))
             self.assertEqual(summary["expected_bank"], 9400)
 
+    def test_stock_report_pdf_lists_current_stock_entries_and_exits(self):
+        from src.services.stock_report_pdf import stock_report_data
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO restocks(product_id,quantity,unit_cost_cents,notes,created_at) VALUES(?,?,?,?,?)",
+                (self.product_id, 4, 100, "Entrada de teste", "2026-07-10 12:00:00"),
+            )
+            sale = db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,paid_at,created_at) VALUES(?,?,?,?,?,?,?)",
+                (self.player_id, "Dinheiro", 600, 1, "approved", "2026-07-11 12:00:00", "2026-07-11 12:00:00"),
+            )
+            db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                       (sale.lastrowid, self.product_id, 2, 300, 100))
+            db.commit()
+            rows = stock_report_data(db, "2026-07-01", "2026-07-31")
+            agua = next(row for row in rows if row["name"] == "Água")
+            self.assertEqual((agua["stock"], agua["entries"], agua["exits"], agua["net"]), (5, 4, 2, 2))
+
+        response = self.client.get("/stock/report.pdf?start=2026-07-01&end=2026-07-31")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertIn("relatorio-estoque-", response.headers["Content-Disposition"])
+        self.assertTrue(response.data.startswith(b"%PDF-"))
+
     def test_cash_transfer_history_filters_and_pdf(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
