@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from flask import Flask, g, redirect, request, session, url_for, flash, jsonify
+from flask import Flask, g, redirect, request, session, url_for, flash, jsonify, render_template
 from flask_wtf.csrf import CSRFProtect, CSRFError
 
 # Carregar variáveis de ambiente do arquivo .env.local se existir (desenvolvimento)
@@ -89,6 +89,19 @@ app.register_blueprint(infra_bp)
 app.register_blueprint(maintenance_bp)
 app.register_blueprint(cash_bp)
 
+
+@app.get("/service-worker.js")
+def service_worker():
+    response = app.send_static_file("service-worker.js")
+    response.headers["Service-Worker-Allowed"] = "/"
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+
+@app.get("/offline")
+def offline():
+    return render_template("offline.html")
+
 # Exempt public/authentication routes from CSRF to avoid login issues in local/dev deployments
 from src.routes.auth import setup, login, client_access, logout
 from src.routes.sales import mercadopago_create_order, mercadopago_webhook
@@ -140,7 +153,7 @@ def load_user_and_protect_routes():
             session.clear()
 
     # Sempre permitir acesso a arquivos estáticos e à rota de setup inicial
-    if request.endpoint == "static" or request.endpoint == "auth.setup":
+    if request.endpoint in {"static", "service_worker", "offline", "auth.setup"}:
         return None
 
     try:

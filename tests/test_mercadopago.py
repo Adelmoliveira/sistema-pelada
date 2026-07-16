@@ -681,6 +681,31 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Copyright © 2026 | Grupo de Peladas do CTA - GPCTA", page)
         self.assertNotIn(">Sair</button>", page)
 
+    def test_pwa_assets_are_public_installable_and_do_not_cache_private_pages(self):
+        login = self.client.get("/login").get_data(as_text=True)
+        self.assertIn('rel="manifest" href="/static/manifest.webmanifest"', login)
+        self.assertIn('rel="apple-touch-icon"', login)
+        self.assertIn('id="pwa-install"', login)
+        self.assertIn('src="/static/pwa.js"', login)
+
+        manifest_response = self.client.get("/static/manifest.webmanifest")
+        self.assertEqual(manifest_response.status_code, 200)
+        manifest = manifest_response.get_json()
+        manifest_response.close()
+        self.assertEqual(manifest["name"], "Peladeiros GPCTA")
+        self.assertEqual(manifest["display"], "standalone")
+        self.assertEqual({icon["sizes"] for icon in manifest["icons"]}, {"192x192", "512x512"})
+
+        worker_response = self.client.get("/service-worker.js")
+        worker = worker_response.get_data(as_text=True)
+        worker_response.close()
+        self.assertEqual(worker_response.status_code, 200)
+        self.assertEqual(worker_response.headers["Service-Worker-Allowed"], "/")
+        self.assertIn('const OFFLINE_URL = "/offline"', worker)
+        self.assertNotIn('"/sale"', worker)
+        self.assertNotIn('"/finance"', worker)
+        self.assertEqual(self.client.get("/offline").status_code, 200)
+
     def test_password_hash_is_compatible_with_local_python(self):
         password_hash = make_password_hash("senha-segura-123")
         self.assertTrue(password_hash.startswith("pbkdf2:sha256:"))
