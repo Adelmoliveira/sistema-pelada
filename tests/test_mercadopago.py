@@ -704,6 +704,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(worker_response.status_code, 200)
         self.assertEqual(worker_response.headers["Service-Worker-Allowed"], "/")
         self.assertIn('const OFFLINE_URL = "/offline"', worker)
+        self.assertNotIn('request.mode === "navigate"', worker)
         self.assertNotIn('"/sale"', worker)
         self.assertNotIn('"/finance"', worker)
         self.assertEqual(self.client.get("/offline").status_code, 200)
