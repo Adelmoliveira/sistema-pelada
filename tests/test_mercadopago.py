@@ -230,8 +230,9 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         for links in (
             ["Caixa", "Conferir Pix", "Estoque", "Produtos", "Pedidos", "Venda rápida"],
+            ["Visão financeira", "Livro-caixa", "Lembretes", "Relatórios"],
             ["Manutenção", "Materiais", "Relação de Carga"],
-            ["Peladeiros", "Relatórios", "Usuários"],
+            ["Peladeiros", "Usuários"],
         ):
             link_positions = [page.index(f">{label}</a>") for label in links]
             self.assertEqual(link_positions, sorted(link_positions))
@@ -243,6 +244,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('class="topbar-account"', page)
         self.assertIn('<strong>Teste</strong><small>Gerente</small>', page)
         self.assertEqual(page.count('<strong>Teste</strong>'), 1)
+        self.assertEqual(page.count('>Relatórios</a>'), 1)
         self.assertIn('action="/logout"', page)
 
     def test_urgent_is_visible_and_accessible_to_every_user_role(self):

@@ -11,10 +11,10 @@
 {% set endpoint=request.endpoint or '' %}
 {% set cash_active=endpoint.startswith('cash.') %}
 {% set bar_active=endpoint.startswith('sales.') or endpoint.startswith('products.') or cash_active %}
-{% set finance_active=endpoint.startswith('finance.') and endpoint not in ['finance.dashboard','finance.reports'] %}
+{% set finance_active=endpoint.startswith('finance.') and endpoint != 'finance.dashboard' %}
 {% set infra_active=endpoint.startswith('infra.') or endpoint.startswith('maintenance.') %}
 {% set urgent_active=endpoint == 'players.urgent' %}
-{% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) or endpoint == 'finance.reports' %}
+{% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) %}
 {% set role_label={'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção'}.get(current_user.role,current_user.role) %}
 <div class="app-shell" id="app-shell">
   <aside class="offcanvas-lg offcanvas-start app-sidebar" tabindex="-1" id="app-sidebar" aria-labelledby="sidebar-title">
@@ -33,7 +33,7 @@
         </div>{% endif %}
         {% if current_user.role == 'manager' %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if finance_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-finance" aria-expanded="{{'true' if finance_active else 'false'}}" aria-controls="sidebar-finance"><span class="sidebar-module-icon">$</span><span>Financeiro</span><span class="sidebar-chevron">⌄</span></button>
-          <div class="collapse {{'show' if finance_active}}" id="sidebar-finance"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'finance.finance'}}" href="{{url_for('finance.finance')}}">Mensalidades</a><a class="{{'active' if endpoint == 'finance.finance_ledger'}}" href="{{url_for('finance.finance_ledger')}}">Livro-caixa</a></div></div>
+          <div class="collapse {{'show' if finance_active}}" id="sidebar-finance"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'finance.finance'}}" href="{{url_for('finance.finance')}}">Visão financeira</a><a class="{{'active' if endpoint == 'finance.finance_ledger'}}" href="{{url_for('finance.finance_ledger')}}">Livro-caixa</a><a class="{{'active' if endpoint == 'finance.reminders'}}" href="{{url_for('finance.reminders')}}">Lembretes</a><a class="{{'active' if endpoint == 'finance.reports'}}" href="{{url_for('finance.reports')}}">Relatórios</a></div></div>
         </div>{% endif %}
         {% if current_user.role in ['manager','staff','infra'] %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if infra_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-infra" aria-expanded="{{'true' if infra_active else 'false'}}" aria-controls="sidebar-infra"><span class="sidebar-module-icon">I</span><span>Infra-Estrutura</span><span class="sidebar-chevron">⌄</span></button>
@@ -45,7 +45,7 @@
         <a class="sidebar-module sidebar-direct urgent {{'active' if urgent_active}}" href="{{url_for('players.urgent')}}"><span class="sidebar-module-icon">!</span><span>Urgente</span></a>
         {% if current_user.role == 'manager' %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if admin_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-admin" aria-expanded="{{'true' if admin_active else 'false'}}" aria-controls="sidebar-admin"><span class="sidebar-module-icon">A</span><span>Administração</span><span class="sidebar-chevron">⌄</span></button>
-          <div class="collapse {{'show' if admin_active}}" id="sidebar-admin"><div class="sidebar-submenu"><a class="{{'active' if endpoint.startswith('players.') and not urgent_active}}" href="{{url_for('players.players')}}">Peladeiros</a><a class="{{'active' if endpoint == 'finance.reports'}}" href="{{url_for('finance.reports')}}">Relatórios</a><a class="{{'active' if endpoint.startswith('auth.user')}}" href="{{url_for('auth.users')}}">Usuários</a></div></div>
+          <div class="collapse {{'show' if admin_active}}" id="sidebar-admin"><div class="sidebar-submenu"><a class="{{'active' if endpoint.startswith('players.') and not urgent_active}}" href="{{url_for('players.players')}}">Peladeiros</a><a class="{{'active' if endpoint.startswith('auth.user')}}" href="{{url_for('auth.users')}}">Usuários</a></div></div>
         </div>{% endif %}
       </nav>
     </div>
