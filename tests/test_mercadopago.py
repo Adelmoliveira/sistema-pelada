@@ -1113,6 +1113,231 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 movement_count,
             )
 
+    def test_staff_operates_cash_register_without_receiving_financial_balances(self):
+        yesterday = (local_today() - timedelta(days=1)).isoformat()
+        with app.app_context():
+            db = get_db()
+            staff = db.execute(
+                """INSERT INTO users(username,name,password_hash,role)
+                VALUES('atendente-caixa','Atendente Caixa','hash','staff')"""
+            )
+            staff_id = staff.lastrowid
+            db.execute(
+                """INSERT INTO cash_sessions
+                (business_date,opening_cash_cents,opening_bank_cents,status,opened_by,
+                 counted_cash_cents,counted_bank_cents,expected_cash_cents,expected_bank_cents,
+                 cash_difference_cents,bank_difference_cents,closed_by,closed_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+                (yesterday, 10000, 60000, "closed", self.user_id, 12345, 67890,
+                 12345, 67890, 0, 0, self.user_id),
+            )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+
+        opening_page = self.client.get("/cash").get_data(as_text=True)
+        self.assertIn("Abrir caixa de hoje", opening_page)
+        for private_text in (
+            "Dinheiro físico inicial", "Saldo inicial em conta", "Histórico avançado",
+            "PDF deste dia", "R$ 123,45", "R$ 678,90",
+        ):
+            self.assertNotIn(private_text, opening_page)
+
+        opened = self.client.post(
+            "/cash/open", data={"opening_cash": "9999,99", "opening_bank": "9999,99"}
+        )
+        self.assertEqual(opened.status_code, 303)
+        with app.app_context():
+            cash_session = get_session(get_db())
+            self.assertEqual(
+                (cash_session["opening_cash_cents"], cash_session["opening_bank_cents"]),
+                (12345, 67890),
+            )
+
+        open_page = self.client.get("/cash").get_data(as_text=True)
+        self.assertIn("Encerrar caixa", open_page)
+        for private_text in (
+            "Dinheiro físico esperado", "Conta bancária / Pix esperada",
+            "Nova entrada ou saída", "Transferir entre contas", "Vendas contabilizadas",
+            "R$ 123,45", "R$ 678,90",
+        ):
+            self.assertNotIn(private_text, open_page)
+
+        self.assertEqual(self.client.get("/cash/history").status_code, 302)
+        self.assertEqual(self.client.get("/cash/history.pdf").status_code, 302)
+        self.assertEqual(
+            self.client.post(
+                "/cash/movements",
+                data={"account": "cash", "direction": "in", "category": "other",
+                      "amount": "1,00", "description": "Tentativa"},
+            ).status_code,
+            302,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/cash/transfers",
+                data={"from_account": "cash", "to_account": "bank", "amount": "1,00"},
+            ).status_code,
+            302,
+        )
+
+        closed = self.client.post(
+            "/cash/close", data={"counted_cash": "9999,99", "counted_bank": "9999,99"}
+        )
+        self.assertEqual(closed.status_code, 303)
+        with app.app_context():
+            cash_session = get_session(get_db())
+            session_id = cash_session["id"]
+            self.assertEqual(cash_session["status"], "closed")
+            self.assertIsNone(cash_session["counted_cash_cents"])
+            self.assertIsNone(cash_session["counted_bank_cents"])
+            self.assertEqual(
+                (cash_session["expected_cash_cents"], cash_session["expected_bank_cents"]),
+                (12345, 67890),
+            )
+
+        closed_page = self.client.get("/cash").get_data(as_text=True)
+        self.assertIn("Aguardando conferência", closed_page)
+        self.assertNotIn("R$ 123,45", closed_page)
+        self.assertNotIn("R$ 678,90", closed_page)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        manager_page = self.client.get("/cash").get_data(as_text=True)
+        self.assertIn("Concluir conferência financeira", manager_page)
+        self.assertIn("R$ 123,45", manager_page)
+        self.assertIn("R$ 678,90", manager_page)
+        self.assertIn("Pendente", self.client.get("/cash/history").get_data(as_text=True))
+        pending_pdf = self.client.get("/cash/history.pdf")
+        self.assertEqual(pending_pdf.status_code, 200)
+        self.assertTrue(pending_pdf.data.startswith(b"%PDF-"))
+        reconciled = self.client.post(
+            f"/cash/{session_id}/reconcile",
+            data={"counted_cash": "120,00", "counted_bank": "680,00", "closing_notes": "Conferido pelo gerente."},
+        )
+        self.assertEqual(reconciled.status_code, 303)
+        with app.app_context():
+            cash_session = get_session(get_db())
+            self.assertEqual(
+                (cash_session["counted_cash_cents"], cash_session["counted_bank_cents"],
+                 cash_session["cash_difference_cents"], cash_session["bank_difference_cents"]),
+                (12000, 68000, -345, 110),
+            )
+
+    def test_finance_and_bar_keep_separate_balances_with_audited_transfers(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        setup_page = self.client.get("/finance/ledger").get_data(as_text=True)
+        self.assertIn("Informe o patrimônio atual do Financeiro", setup_page)
+        initialized = self.client.post(
+            "/finance/ledger/initialize",
+            data={"opening_cash": "200,00", "opening_bank": "1.000,00"},
+        )
+        self.assertEqual(initialized.status_code, 303)
+        self.client.post("/cash/open", data={"opening_cash": "100,00", "opening_bank": "500,00"})
+
+        fundraising = self.client.post(
+            "/finance/ledger/movements",
+            data={"account": "bank", "direction": "in", "category": "fundraising",
+                  "amount": "300,00", "description": "Arrecadação do evento"},
+        )
+        expense = self.client.post(
+            "/finance/ledger/movements",
+            data={"account": "cash", "direction": "out", "category": "expense",
+                  "amount": "50,00", "description": "Material administrativo"},
+        )
+        self.assertEqual((fundraising.status_code, expense.status_code), (303, 303))
+
+        membership = self.client.post(
+            "/finance",
+            data={"player_id": self.player_id, "start_month": local_today().strftime("%Y-%m"),
+                  "months_count": "1", "payment_method": "Pix", "notes": "Recebido"},
+        )
+        self.assertEqual(membership.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            payment_id = db.execute("SELECT id FROM membership_payments").fetchone()["id"]
+            membership_entry = db.execute(
+                "SELECT * FROM finance_movements WHERE source='membership' AND source_id=?",
+                (payment_id,),
+            ).fetchone()
+            self.assertEqual(
+                (membership_entry["account"], membership_entry["direction"], membership_entry["amount_cents"]),
+                ("bank", "in", 1500),
+            )
+
+        to_bar = self.client.post(
+            "/finance/ledger/transfers",
+            data={"direction": "finance_to_bar", "amount": "250,00", "description": "Aporte para estoque"},
+        )
+        to_finance = self.client.post(
+            "/finance/ledger/transfers",
+            data={"direction": "bar_to_finance", "amount": "100,00", "description": "Devolução de aporte"},
+        )
+        self.assertEqual((to_bar.status_code, to_finance.status_code), (303, 303))
+
+        with app.app_context():
+            db = get_db()
+            from src.services.finance_accounts import finance_summary, latest_bar_balances
+            finance_balances = finance_summary(db)
+            bar_balances = latest_bar_balances(db)
+            self.assertEqual(
+                (finance_balances["cash"], finance_balances["bank"], bar_balances["bank"]),
+                (15000, 116500, 65000),
+            )
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM interaccount_transfers").fetchone()[0], 2)
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM cash_movements WHERE source='finance_transfer'").fetchone()[0],
+                2,
+            )
+
+        accounts_page = self.client.get("/finance/ledger").get_data(as_text=True)
+        self.assertIn("Banco do Financeiro", accounts_page)
+        self.assertIn("R$ 1.165,00", accounts_page)
+        self.assertIn("R$ 1.815,00", accounts_page)
+        self.assertIn("Aporte para estoque", accounts_page)
+        self.assertIn("Histórico do Livro-caixa", accounts_page)
+        filtered = self.client.get("/finance/ledger?account=bank&category=fundraising&q=evento")
+        self.assertEqual(filtered.status_code, 200)
+        self.assertIn("Arrecadação do evento", filtered.get_data(as_text=True))
+        ledger_pdf = self.client.get("/finance/ledger.pdf?account=bank")
+        self.assertEqual(ledger_pdf.status_code, 200)
+        self.assertTrue(ledger_pdf.data.startswith(b"%PDF-"))
+        self.assertIn("livro-caixa-financeiro-", ledger_pdf.headers["Content-Disposition"])
+
+        deleted = self.client.post(f"/finance/{payment_id}/delete")
+        self.assertEqual(deleted.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            from src.services.finance_accounts import finance_summary
+            self.assertEqual(finance_summary(db)["bank"], 115000)
+            reversal = db.execute(
+                "SELECT * FROM finance_movements WHERE source='membership_reversal' AND source_id=?",
+                (payment_id,),
+            ).fetchone()
+            self.assertEqual((reversal["direction"], reversal["amount_cents"]), ("out", 1500))
+
+        with app.app_context():
+            db = get_db()
+            staff = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES('staff-finance','Staff','hash','staff')"
+            )
+            db.commit()
+            staff_id = staff.lastrowid
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        self.assertEqual(self.client.get("/finance/ledger").status_code, 302)
+        self.assertEqual(
+            self.client.post(
+                "/finance/ledger/movements",
+                data={"account": "bank", "direction": "in", "category": "other",
+                      "amount": "999,00", "description": "Tentativa"},
+            ).status_code,
+            302,
+        )
+
     def test_paid_stock_purchase_creates_atomic_cash_outflow(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id

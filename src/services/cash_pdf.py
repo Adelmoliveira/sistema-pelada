@@ -93,12 +93,13 @@ def build_cash_pdf(data, start_date, end_date, filter_text, account_labels, cate
 
     session_rows = [[Paragraph(v, styles["CashHeader"]) for v in ("Data", "Status", "Dinheiro esperado", "Dinheiro conferido", "Conta esperada", "Conta conferida", "Diferença total", "Responsável")]]
     for row in data["sessions"]:
+        pending = row["status"] == "closed" and row["counted_cash_cents"] is None
         difference = int(row["cash_difference_cents"] or 0) + int(row["bank_difference_cents"] or 0)
         session_rows.append([
-            Paragraph(_date_br(row["business_date"]), styles["CashCenter"]), Paragraph("Aberto" if row["status"] == "open" else "Fechado", styles["CashCenter"]),
-            Paragraph(money(row["expected_cash_cents"]) if row["status"] == "closed" else "Em andamento", styles["CashRight"]), Paragraph(money(row["counted_cash_cents"]) if row["status"] == "closed" else "-", styles["CashRight"]),
-            Paragraph(money(row["expected_bank_cents"]) if row["status"] == "closed" else "Em andamento", styles["CashRight"]), Paragraph(money(row["counted_bank_cents"]) if row["status"] == "closed" else "-", styles["CashRight"]),
-            Paragraph(money(difference), styles["CashRight"]), Paragraph(escape(row["closed_by_name"] or row["opened_by_name"] or "-"), styles["CashCell"]),
+            Paragraph(_date_br(row["business_date"]), styles["CashCenter"]), Paragraph("Aberto" if row["status"] == "open" else ("Pendente" if pending else "Fechado"), styles["CashCenter"]),
+            Paragraph(money(row["expected_cash_cents"]) if row["status"] == "closed" else "Em andamento", styles["CashRight"]), Paragraph("Pendente" if pending else (money(row["counted_cash_cents"]) if row["status"] == "closed" else "-"), styles["CashRight"]),
+            Paragraph(money(row["expected_bank_cents"]) if row["status"] == "closed" else "Em andamento", styles["CashRight"]), Paragraph("Pendente" if pending else (money(row["counted_bank_cents"]) if row["status"] == "closed" else "-"), styles["CashRight"]),
+            Paragraph("Pendente" if pending else money(difference), styles["CashRight"]), Paragraph(escape(row["closed_by_name"] or row["opened_by_name"] or "-"), styles["CashCell"]),
         ])
     if len(session_rows) == 1:
         session_rows.append([Paragraph("Nenhum caixa no período.", styles["CashCenter"])] + [""] * 7)

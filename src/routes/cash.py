@@ -47,25 +47,40 @@ def _history_filters():
 @roles_allowed("manager", "staff")
 def dashboard():
     db = get_db()
-    selected_date = request.args.get("date", local_today().isoformat())
+    staff_limited = g.user["role"] == "staff"
+    selected_date = local_today().isoformat() if staff_limited else request.args.get("date", local_today().isoformat())
     try:
         date.fromisoformat(selected_date)
     except ValueError:
         selected_date = local_today().isoformat()
-    session = get_session(db, selected_date)
-    summary = session_summary(db, session) if session else None
-    history = db.execute(
-        """SELECT s.*,op.name opened_by_name,cl.name closed_by_name
-        FROM cash_sessions s
-        LEFT JOIN users op ON op.id=s.opened_by
-        LEFT JOIN users cl ON cl.id=s.closed_by
-        ORDER BY s.business_date DESC LIMIT 31"""
-    ).fetchall()
-    previous_session = db.execute(
-        """SELECT * FROM cash_sessions WHERE status='closed' AND business_date<?
-        ORDER BY business_date DESC LIMIT 1""",
-        (local_today().isoformat(),),
-    ).fetchone()
+    if staff_limited:
+        # Não carregue nem envie valores financeiros para o navegador do staff.
+        session = db.execute(
+            """SELECT s.id,s.business_date,s.status,s.opened_at,s.closed_at,
+            CASE WHEN s.counted_cash_cents IS NULL THEN 0 ELSE 1 END reconciled,
+            op.name opened_by_name,cl.name closed_by_name
+            FROM cash_sessions s
+            LEFT JOIN users op ON op.id=s.opened_by
+            LEFT JOIN users cl ON cl.id=s.closed_by
+            WHERE s.business_date=?""",
+            (selected_date,),
+        ).fetchone()
+        summary, history, previous_session = None, [], None
+    else:
+        session = get_session(db, selected_date)
+        summary = session_summary(db, session) if session else None
+        history = db.execute(
+            """SELECT s.*,op.name opened_by_name,cl.name closed_by_name
+            FROM cash_sessions s
+            LEFT JOIN users op ON op.id=s.opened_by
+            LEFT JOIN users cl ON cl.id=s.closed_by
+            ORDER BY s.business_date DESC LIMIT 31"""
+        ).fetchall()
+        previous_session = db.execute(
+            """SELECT * FROM cash_sessions WHERE status='closed' AND business_date<?
+            ORDER BY business_date DESC LIMIT 1""",
+            (local_today().isoformat(),),
+        ).fetchone()
     return render_template(
         "cash.html",
         cash_session=session,
@@ -76,6 +91,7 @@ def dashboard():
         today=local_today(),
         selected_date=selected_date,
         previous_session=previous_session,
+        staff_limited=staff_limited,
     )
 
 
@@ -86,8 +102,19 @@ def open_register():
     try:
         if get_session(db):
             raise ValueError("O caixa de hoje já foi aberto.")
-        opening_cash = cents(request.form.get("opening_cash", "0"))
-        opening_bank = cents(request.form.get("opening_bank", "0"))
+        if g.user["role"] == "staff":
+            previous = db.execute(
+                """SELECT COALESCE(counted_cash_cents,expected_cash_cents,0) opening_cash,
+                COALESCE(counted_bank_cents,expected_bank_cents,0) opening_bank
+                FROM cash_sessions WHERE status='closed' AND business_date<?
+                ORDER BY business_date DESC LIMIT 1""",
+                (local_today().isoformat(),),
+            ).fetchone()
+            opening_cash = previous["opening_cash"] if previous else 0
+            opening_bank = previous["opening_bank"] if previous else 0
+        else:
+            opening_cash = cents(request.form.get("opening_cash", "0"))
+            opening_bank = cents(request.form.get("opening_bank", "0"))
         if min(opening_cash, opening_bank) < 0:
             raise ValueError("Os saldos iniciais não podem ser negativos.")
         db.execute(
@@ -108,7 +135,7 @@ def open_register():
 
 
 @bp.post("/movements")
-@roles_allowed("manager", "staff")
+@roles_allowed("manager")
 def add_movement():
     db = get_db()
     try:
@@ -139,7 +166,7 @@ def add_movement():
 
 
 @bp.post("/transfers")
-@roles_allowed("manager", "staff")
+@roles_allowed("manager")
 def add_transfer():
     db = get_db()
     try:
@@ -189,11 +216,22 @@ def close_register():
         session = get_session(db)
         if not session or session["status"] != "open":
             raise ValueError("Não há caixa aberto para fechar.")
+        summary = session_summary(db, session)
+        if g.user["role"] == "staff":
+            db.execute(
+                """UPDATE cash_sessions SET status='closed',counted_cash_cents=NULL,counted_bank_cents=NULL,
+                expected_cash_cents=?,expected_bank_cents=?,cash_difference_cents=NULL,bank_difference_cents=NULL,
+                closing_notes='Encerramento operacional pelo staff; conferência financeira pendente.',
+                closed_by=?,closed_at=CURRENT_TIMESTAMP WHERE id=? AND status='open'""",
+                (summary["expected_cash"], summary["expected_bank"], g.user["id"], session["id"]),
+            )
+            db.commit()
+            flash("Caixa encerrado. A conferência financeira será realizada pelo gerente.", "success")
+            return redirect(url_for("cash.dashboard"), code=303)
         counted_cash = cents(request.form.get("counted_cash", "0"))
         counted_bank = cents(request.form.get("counted_bank", "0"))
         if min(counted_cash, counted_bank) < 0:
             raise ValueError("Os saldos conferidos não podem ser negativos.")
-        summary = session_summary(db, session)
         db.execute(
             """UPDATE cash_sessions SET status='closed',counted_cash_cents=?,counted_bank_cents=?,
             expected_cash_cents=?,expected_bank_cents=?,cash_difference_cents=?,bank_difference_cents=?,
@@ -219,6 +257,45 @@ def close_register():
         current_app.logger.error(f"Erro ao fechar caixa: {exc}")
         flash("Erro interno ao fechar o caixa.", "danger")
     return redirect(url_for("cash.dashboard"), code=303)
+
+
+@bp.post("/<int:session_id>/reconcile")
+@roles_allowed("manager")
+def reconcile_register(session_id):
+    db = get_db()
+    session = None
+    try:
+        session = db.execute(
+            "SELECT * FROM cash_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        if not session or session["status"] != "closed":
+            raise ValueError("Somente um caixa encerrado pode ser conferido.")
+        if session["counted_cash_cents"] is not None or session["counted_bank_cents"] is not None:
+            raise ValueError("Este caixa já possui conferência financeira.")
+        counted_cash = cents(request.form.get("counted_cash", "0"))
+        counted_bank = cents(request.form.get("counted_bank", "0"))
+        if min(counted_cash, counted_bank) < 0:
+            raise ValueError("Os saldos conferidos não podem ser negativos.")
+        expected_cash = int(session["expected_cash_cents"] or 0)
+        expected_bank = int(session["expected_bank_cents"] or 0)
+        notes = request.form.get("closing_notes", "").strip()
+        db.execute(
+            """UPDATE cash_sessions SET counted_cash_cents=?,counted_bank_cents=?,
+            cash_difference_cents=?,bank_difference_cents=?,closing_notes=? WHERE id=?""",
+            (
+                counted_cash, counted_bank, counted_cash - expected_cash,
+                counted_bank - expected_bank, notes, session_id,
+            ),
+        )
+        db.commit()
+        flash("Conferência financeira registrada.", "success")
+    except ValueError as exc:
+        flash(str(exc), "danger")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.error(f"Erro ao conferir caixa {session_id}: {exc}")
+        flash("Erro interno ao registrar a conferência.", "danger")
+    return redirect(url_for("cash.dashboard", date=session["business_date"] if session else local_today().isoformat()), code=303)
 
 
 @bp.post("/movements/<int:movement_id>/reverse")
@@ -328,7 +405,7 @@ def reopen_register(session_id):
 
 
 @bp.get("/history")
-@roles_allowed("manager", "staff")
+@roles_allowed("manager")
 def history():
     start, end, account, direction, category, query = _history_filters()
     data = history_rows(get_db(), start, end, account, direction, category, query)
@@ -340,7 +417,7 @@ def history():
 
 
 @bp.get("/history.pdf")
-@roles_allowed("manager", "staff")
+@roles_allowed("manager")
 def history_pdf():
     start, end, account, direction, category, query = _history_filters()
     data = history_rows(get_db(), start, end, account, direction, category, query)

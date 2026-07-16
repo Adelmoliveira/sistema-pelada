@@ -1,13 +1,46 @@
 import hmac
+from datetime import date
 
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify, send_file
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify, send_file, g
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.services.debtors_pdf import build_debtors_pdf
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
-from src.utils import alphabetical_key, money, brdate, month_bounds, add_months, local_today
+from src.services.cash_register import create_movement, get_session, session_summary
+from src.services.finance_accounts import (
+    ALL_CATEGORY_LABELS,
+    ACCOUNT_LABELS as FINANCE_ACCOUNT_LABELS,
+    MOVEMENT_CATEGORY_LABELS,
+    create_finance_movement,
+    finance_ledger_rows,
+    finance_summary,
+    latest_bar_balances,
+)
+from src.services.finance_ledger_pdf import build_finance_ledger_pdf
+from src.utils import alphabetical_key, money, brdate, cents, month_bounds, add_months, local_today
 
 bp = Blueprint("finance", __name__)
+
+
+def _finance_ledger_filters():
+    today = local_today()
+    start_text = request.args.get("start", today.replace(day=1).isoformat())
+    end_text = request.args.get("end", today.isoformat())
+    try:
+        start = date.fromisoformat(start_text)
+        end = date.fromisoformat(end_text)
+        if start > end:
+            raise ValueError
+    except ValueError:
+        start, end = today.replace(day=1), today
+    account = request.args.get("account", "")
+    category = request.args.get("category", "")
+    query = request.args.get("q", "").strip()[:80]
+    if account not in {"", *FINANCE_ACCOUNT_LABELS}:
+        account = ""
+    if category not in {"", *ALL_CATEGORY_LABELS}:
+        category = ""
+    return start.isoformat(), end.isoformat(), account, category, query
 
 @bp.route("/")
 @roles_allowed("manager", "staff")
@@ -107,6 +140,8 @@ def finance():
     monthly_fee = 1500
     if request.method == "POST":
         try:
+            if not db.execute("SELECT 1 FROM finance_accounts WHERE id=1").fetchone():
+                raise ValueError("Cadastre os saldos iniciais no Livro-caixa antes de registrar recebimentos.")
             player_id = int(request.form["player_id"])
             eligible = db.execute("SELECT 1 FROM players WHERE id=? AND active=1 AND membership_type='regular'", (player_id,)).fetchone()
             if not eligible:
@@ -123,6 +158,13 @@ def finance():
                 for covered_month in covered_months:
                     db.execute("INSERT INTO membership_months(payment_id,player_id,month) VALUES(?,?,?)",
                                  (cur.lastrowid, player_id, covered_month))
+                payment_method = request.form["payment_method"]
+                player = db.execute("SELECT name FROM players WHERE id=?", (player_id,)).fetchone()
+                create_finance_movement(
+                    db, "cash" if payment_method == "Dinheiro" else "bank", "in",
+                    "membership", amount, f"Mensalidade de {player['name']}", g.user["id"],
+                    source="membership", source_id=cur.lastrowid,
+                )
             flash(f"Mensalidade registrada: {months_count} mês(es), total de {money(amount)}.", "success")
         except ValueError as exc:
             flash(str(exc), "danger")
@@ -183,21 +225,190 @@ def finance():
                            current_month=local_today().strftime("%Y-%m"), history_page=history_page,
                            history_pages=history_pages, history_total=history_total,
                            members_page=members_page, members_pages=members_pages,
-                           members_total=len(all_status_rows), exempt_count=exempt_count)
+                           members_total=len(all_status_rows), exempt_count=exempt_count,
+                           finance_account_initialized=bool(db.execute("SELECT 1 FROM finance_accounts WHERE id=1").fetchone()))
 
 @bp.post("/finance/<int:payment_id>/delete")
 @roles_allowed("manager")
 def delete_membership_payment(payment_id):
     db = get_db()
     try:
+        payment = db.execute(
+            "SELECT mp.*,p.name player_name FROM membership_payments mp JOIN players p ON p.id=mp.player_id WHERE mp.id=?",
+            (payment_id,),
+        ).fetchone()
+        if not payment:
+            flash("Recebimento não encontrado.", "warning")
+            return redirect(request.referrer or url_for("finance.finance"))
         with db:
-            deleted = db.execute("DELETE FROM membership_payments WHERE id=?", (payment_id,))
-        flash("Recebimento apagado." if deleted.rowcount else "Recebimento não encontrado.",
-              "success" if deleted.rowcount else "warning")
+            original = db.execute(
+                "SELECT * FROM finance_movements WHERE source='membership' AND source_id=?",
+                (payment_id,),
+            ).fetchone()
+            if original:
+                create_finance_movement(
+                    db, original["account"], "out", "adjustment", original["amount_cents"],
+                    f"Estorno de mensalidade apagada: {payment['player_name']}", g.user["id"],
+                    source="membership_reversal", source_id=payment_id,
+                    reversed_movement_id=original["id"],
+                )
+            db.execute("DELETE FROM membership_payments WHERE id=?", (payment_id,))
+        flash("Recebimento apagado e saldo financeiro estornado.", "success")
     except Exception as exc:
         current_app.logger.error(f"Erro ao deletar recebimento {payment_id}: {exc}")
         flash("Erro interno ao apagar o recebimento.", "danger")
     return redirect(request.referrer or url_for("finance.finance"))
+
+
+@bp.get("/finance/accounts")
+@roles_allowed("manager")
+def legacy_finance_accounts():
+    return redirect(url_for("finance.finance_ledger"), code=302)
+
+
+@bp.get("/finance/ledger")
+@roles_allowed("manager")
+def finance_ledger():
+    db = get_db()
+    start, end, account, category, query = _finance_ledger_filters()
+    summary = finance_summary(db)
+    bar = latest_bar_balances(db)
+    ledger = finance_ledger_rows(db, start, end, account, category, query)
+    transfers = db.execute(
+        """SELECT t.*,u.name user_name FROM interaccount_transfers t
+        LEFT JOIN users u ON u.id=t.created_by ORDER BY t.id DESC LIMIT 50"""
+    ).fetchall()
+    return render_template(
+        "finance_accounts.html", summary=summary, bar=bar, ledger=ledger,
+        transfers=transfers, finance_account_labels=FINANCE_ACCOUNT_LABELS,
+        movement_category_labels=MOVEMENT_CATEGORY_LABELS, all_category_labels=ALL_CATEGORY_LABELS,
+        consolidated_bank=summary["bank"] + bar["bank"],
+        consolidated_cash=summary["cash"] + bar["cash"],
+        start=start, end=end, account=account, category=category, query=query,
+    )
+
+
+@bp.post("/finance/ledger/initialize")
+@roles_allowed("manager")
+def initialize_finance_accounts():
+    db = get_db()
+    try:
+        if db.execute("SELECT 1 FROM finance_accounts WHERE id=1").fetchone():
+            raise ValueError("Os saldos iniciais do Financeiro já foram cadastrados.")
+        opening_cash = cents(request.form.get("opening_cash", "0"))
+        opening_bank = cents(request.form.get("opening_bank", "0"))
+        if min(opening_cash, opening_bank) < 0:
+            raise ValueError("Os saldos iniciais não podem ser negativos.")
+        db.execute(
+            """INSERT INTO finance_accounts
+            (id,opening_cash_cents,opening_bank_cents,created_by) VALUES(1,?,?,?)""",
+            (opening_cash, opening_bank, g.user["id"]),
+        )
+        db.commit()
+        flash("Saldos iniciais do Financeiro cadastrados.", "success")
+    except ValueError as exc:
+        flash(str(exc), "danger")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.error(f"Erro ao iniciar contas financeiras: {exc}")
+        flash("Erro interno ao cadastrar os saldos iniciais.", "danger")
+    return redirect(url_for("finance.finance_ledger"), code=303)
+
+
+@bp.post("/finance/ledger/movements")
+@roles_allowed("manager")
+def add_finance_movement():
+    db = get_db()
+    try:
+        if not db.execute("SELECT 1 FROM finance_accounts WHERE id=1").fetchone():
+            raise ValueError("Cadastre os saldos iniciais do Financeiro antes de fazer lançamentos.")
+        direction = request.form.get("direction")
+        account = request.form.get("account")
+        amount = cents(request.form.get("amount", "0"))
+        if direction == "out":
+            available = finance_summary(db)["cash" if account == "cash" else "bank"]
+            if amount > available:
+                raise ValueError(f"Saldo insuficiente em {FINANCE_ACCOUNT_LABELS.get(account, 'conta selecionada')}.")
+        create_finance_movement(
+            db, account, direction, request.form.get("category"), amount,
+            request.form.get("description", ""), g.user["id"],
+        )
+        db.commit()
+        flash("Movimentação financeira registrada.", "success")
+    except ValueError as exc:
+        flash(str(exc), "danger")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.error(f"Erro ao lançar movimentação financeira: {exc}")
+        flash("Erro interno ao registrar a movimentação.", "danger")
+    return redirect(url_for("finance.finance_ledger"), code=303)
+
+
+@bp.post("/finance/ledger/transfers")
+@roles_allowed("manager")
+def transfer_finance_bar():
+    db = get_db()
+    try:
+        if not db.execute("SELECT 1 FROM finance_accounts WHERE id=1").fetchone():
+            raise ValueError("Cadastre os saldos iniciais do Financeiro antes de transferir.")
+        cash_session = get_session(db)
+        if not cash_session or cash_session["status"] != "open":
+            raise ValueError("Abra o caixa do Bar antes de transferir valores entre as áreas.")
+        direction = request.form.get("direction")
+        if direction not in {"finance_to_bar", "bar_to_finance"}:
+            raise ValueError("Sentido da transferência inválido.")
+        amount = cents(request.form.get("amount", "0"))
+        if amount <= 0:
+            raise ValueError("O valor deve ser maior que zero.")
+        available = finance_summary(db)["bank"] if direction == "finance_to_bar" else session_summary(db, cash_session)["expected_bank"]
+        if amount > available:
+            origin = "Banco do Financeiro" if direction == "finance_to_bar" else "Banco do Bar"
+            raise ValueError(f"Saldo insuficiente no {origin}.")
+        description = request.form.get("description", "").strip() or "Transferência entre Financeiro e Bar"
+        with db:
+            transfer = db.execute(
+                """INSERT INTO interaccount_transfers
+                (cash_session_id,direction,amount_cents,description,created_by)
+                VALUES(?,?,?,?,?)""",
+                (cash_session["id"], direction, amount, description, g.user["id"]),
+            )
+            finance_direction = "out" if direction == "finance_to_bar" else "in"
+            bar_direction = "in" if direction == "finance_to_bar" else "out"
+            create_finance_movement(
+                db, "bank", finance_direction, "transfer", amount, description, g.user["id"],
+                source="interaccount_transfer", source_id=transfer.lastrowid,
+            )
+            create_movement(
+                db, cash_session["id"], "bank", bar_direction, "transfer", amount,
+                description, g.user["id"], source="finance_transfer", source_id=transfer.lastrowid,
+            )
+        flash("Transferência registrada nas contas do Financeiro e do Bar.", "success")
+    except ValueError as exc:
+        flash(str(exc), "danger")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.error(f"Erro ao transferir entre Financeiro e Bar: {exc}")
+        flash("Erro interno ao registrar a transferência.", "danger")
+    return redirect(url_for("finance.finance_ledger"), code=303)
+
+
+@bp.get("/finance/ledger.pdf")
+@roles_allowed("manager")
+def finance_ledger_pdf():
+    db = get_db()
+    start, end, account, category, query = _finance_ledger_filters()
+    summary = finance_summary(db)
+    bar = latest_bar_balances(db)
+    ledger = finance_ledger_rows(db, start, end, account, category, query)
+    filters = [FINANCE_ACCOUNT_LABELS.get(account, ""), ALL_CATEGORY_LABELS.get(category, ""), query]
+    report = build_finance_ledger_pdf(
+        ledger, summary, bar, start, end, " | ".join(value for value in filters if value),
+        FINANCE_ACCOUNT_LABELS, ALL_CATEGORY_LABELS, local_today(),
+    )
+    return send_file(
+        report, mimetype="application/pdf", as_attachment=True,
+        download_name=f"livro-caixa-financeiro-{start}-a-{end}.pdf",
+    )
 
 
 def smtp_configuration():

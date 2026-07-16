@@ -215,6 +215,40 @@ CREATE TABLE IF NOT EXISTS membership_months (
     month TEXT NOT NULL,
     UNIQUE(player_id, month)
 );
+CREATE TABLE IF NOT EXISTS finance_accounts (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    opening_cash_cents INTEGER NOT NULL DEFAULT 0 CHECK(opening_cash_cents >= 0),
+    opening_bank_cents INTEGER NOT NULL DEFAULT 0 CHECK(opening_bank_cents >= 0),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS finance_movements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account TEXT NOT NULL CHECK(account IN ('cash','bank')),
+    direction TEXT NOT NULL CHECK(direction IN ('in','out')),
+    category TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    description TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
+    source_id INTEGER,
+    created_by INTEGER REFERENCES users(id),
+    reversed_movement_id INTEGER REFERENCES finance_movements(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source,source_id)
+);
+CREATE TABLE IF NOT EXISTS interaccount_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cash_session_id INTEGER NOT NULL REFERENCES cash_sessions(id),
+    direction TEXT NOT NULL CHECK(direction IN ('finance_to_bar','bar_to_finance')),
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    description TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id),
+    reversed_at TEXT,
+    reversed_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_finance_movements_created ON finance_movements(created_at);
+CREATE INDEX IF NOT EXISTS idx_interaccount_transfers_created ON interaccount_transfers(created_at);
 CREATE TABLE IF NOT EXISTS reminder_settings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     enabled INTEGER NOT NULL DEFAULT 0,

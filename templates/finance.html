@@ -6,11 +6,13 @@
             isento(s)</p>
     </div>
     <div class="d-flex gap-2 align-items-center">
+        <a class="btn btn-outline-success" href="{{url_for('finance.finance_ledger')}}">Livro-caixa</a>
         <a class="btn btn-outline-primary" href="{{url_for('finance.reminders')}}">Lembretes por e-mail</a>
         <form><input type="number" name="year" value="{{year}}" min="2020" max="2100" class="form-control"
                 onchange="this.form.submit()"></form>
     </div>
 </div>
+{% if not finance_account_initialized %}<div class="alert alert-warning mt-3"><strong>Configuração necessária:</strong> cadastre os saldos iniciais do Financeiro antes de registrar novos recebimentos. <a class="alert-link" href="{{url_for('finance.finance_ledger')}}">Configurar agora</a>.</div>{% endif %}
 <div class="row g-3 my-2">
     <div class="col-md-4">
         <div class="card shadow-sm h-100">

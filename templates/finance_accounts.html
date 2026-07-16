@@ -1,0 +1,84 @@
+{% extends 'base.html' %}
+{% block title %}Livro-caixa Financeiro · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+  <div><h1 class="h2 mb-1">Livro-caixa Financeiro</h1><p class="text-muted mb-0">Arrecadações e despesas separadas do Caixa operacional do Bar.</p></div>
+  <div class="d-flex flex-wrap gap-2"><a class="btn btn-outline-secondary" href="{{url_for('finance.finance')}}">Voltar às mensalidades</a>{% if summary.initialized %}<a class="btn btn-danger" href="{{url_for('finance.finance_ledger_pdf',start=start,end=end,account=account,category=category,q=query)}}">Relatório PDF</a>{% endif %}</div>
+</div>
+
+{% if not summary.initialized %}
+<div class="row justify-content-center"><div class="col-xl-8"><div class="card shadow-sm border-warning"><div class="card-body p-4">
+  <span class="badge text-bg-warning mb-3">Configuração inicial</span>
+  <h2 class="h4">Informe o patrimônio atual do Financeiro</h2>
+  <p class="text-muted">Use os valores que pertencem às mensalidades e demais arrecadações. Não inclua dinheiro ou saldo pertencente ao Bar. Esta base será cadastrada uma única vez.</p>
+  <form method="post" action="{{url_for('finance.initialize_finance_accounts')}}" class="row g-3">
+    <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+    <div class="col-md-6"><label class="form-label">Dinheiro físico do Financeiro</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="opening_cash" value="0,00" inputmode="decimal" required></div></div>
+    <div class="col-md-6"><label class="form-label">Saldo bancário do Financeiro</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="opening_bank" value="0,00" inputmode="decimal" required></div></div>
+    <div class="col-12"><button class="btn btn-primary w-100">Cadastrar saldos iniciais</button></div>
+  </form>
+</div></div></div></div>
+{% else %}
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-xl"><div class="card shadow-sm border-0 h-100"><div class="card-body"><small class="text-muted">Banco do Financeiro</small><strong class="d-block fs-4 text-primary">{{summary.bank|money}}</strong></div></div></div>
+  <div class="col-sm-6 col-xl"><div class="card shadow-sm border-0 h-100"><div class="card-body"><small class="text-muted">Dinheiro do Financeiro</small><strong class="d-block fs-4">{{summary.cash|money}}</strong></div></div></div>
+  <div class="col-sm-6 col-xl"><div class="card shadow-sm border-0 h-100"><div class="card-body"><small class="text-muted">Banco do Bar</small><strong class="d-block fs-4 text-success">{{bar.bank|money}}</strong></div></div></div>
+  <div class="col-sm-6 col-xl"><div class="card shadow-sm border-primary h-100"><div class="card-body"><small class="text-muted">Total bancário consolidado</small><strong class="d-block fs-4 text-primary">{{consolidated_bank|money}}</strong></div></div></div>
+  <div class="col-sm-6 col-xl"><div class="card shadow-sm border-0 h-100"><div class="card-body"><small class="text-muted">Dinheiro físico consolidado</small><strong class="d-block fs-4">{{consolidated_cash|money}}</strong></div></div></div>
+</div>
+<div class="alert alert-info"><strong>Saldos virtuais:</strong> Banco do Financeiro e Banco do Bar permanecem separados para prestação de contas. O consolidado mostra quanto existe ao todo nas contas bancárias.</div>
+
+<div class="card shadow-sm border-0 mb-4"><div class="card-body">
+  <form method="get" action="{{url_for('finance.finance_ledger')}}" class="row g-3 align-items-end">
+    <div class="col-sm-6 col-lg-2"><label class="form-label">Data inicial</label><input type="date" class="form-control" name="start" value="{{start}}" required></div>
+    <div class="col-sm-6 col-lg-2"><label class="form-label">Data final</label><input type="date" class="form-control" name="end" value="{{end}}" required></div>
+    <div class="col-sm-6 col-lg-2"><label class="form-label">Conta</label><select class="form-select" name="account"><option value="">Todas</option>{% for value,label in finance_account_labels.items() %}<option value="{{value}}" {{'selected' if account == value}}>{{label}}</option>{% endfor %}</select></div>
+    <div class="col-sm-6 col-lg-2"><label class="form-label">Categoria</label><select class="form-select" name="category"><option value="">Todas</option>{% for value,label in all_category_labels.items() %}<option value="{{value}}" {{'selected' if category == value}}>{{label}}</option>{% endfor %}</select></div>
+    <div class="col-lg-3"><label class="form-label">Buscar</label><input class="form-control" name="q" value="{{query}}" placeholder="Descrição ou responsável"></div>
+    <div class="col-lg-1"><button class="btn btn-primary w-100">Filtrar</button></div>
+  </form>
+</div></div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-4"><div class="card shadow-sm border-0"><div class="card-body"><small class="text-muted">Entradas no período</small><strong class="d-block fs-4 text-success">{{ledger.totals['in']|money}}</strong></div></div></div>
+  <div class="col-md-4"><div class="card shadow-sm border-0"><div class="card-body"><small class="text-muted">Saídas no período</small><strong class="d-block fs-4 text-danger">{{ledger.totals.out|money}}</strong></div></div></div>
+  <div class="col-md-4"><div class="card shadow-sm border-0"><div class="card-body"><small class="text-muted">Movimento líquido</small><strong class="d-block fs-4 {{'text-success' if ledger.totals.net >= 0 else 'text-danger'}}">{{ledger.totals.net|money}}</strong></div></div></div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-6"><div class="card shadow-sm border-0 h-100"><div class="card-body">
+    <h2 class="h5">Nova arrecadação ou despesa</h2>
+    <form method="post" action="{{url_for('finance.add_finance_movement')}}" class="row g-3">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+      <div class="col-sm-6"><label class="form-label">Conta</label><select class="form-select" name="account" required>{% for value,label in finance_account_labels.items() %}<option value="{{value}}">{{label}}</option>{% endfor %}</select></div>
+      <div class="col-sm-6"><label class="form-label">Movimento</label><select class="form-select" name="direction" required><option value="in">Entrada</option><option value="out">Saída</option></select></div>
+      <div class="col-sm-6"><label class="form-label">Categoria</label><select class="form-select" name="category" required>{% for value,label in movement_category_labels.items() %}<option value="{{value}}">{{label}}</option>{% endfor %}</select></div>
+      <div class="col-sm-6"><label class="form-label">Valor</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="amount" inputmode="decimal" required></div></div>
+      <div class="col-12"><label class="form-label">Descrição</label><input class="form-control" name="description" maxlength="180" placeholder="Ex.: arrecadação do evento" required></div>
+      <div class="col-12"><button class="btn btn-primary w-100">Registrar movimentação</button></div>
+    </form>
+  </div></div></div>
+  <div class="col-lg-6"><div class="card shadow-sm border-0 h-100"><div class="card-body">
+    <h2 class="h5">Transferir entre Financeiro e Bar</h2>
+    <p class="text-muted small">A transferência movimenta as duas contas e não altera o total bancário consolidado. O caixa do Bar precisa estar aberto.</p>
+    <form method="post" action="{{url_for('finance.transfer_finance_bar')}}" class="row g-3">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+      <div class="col-12"><label class="form-label">Sentido</label><select class="form-select" name="direction" required><option value="finance_to_bar">Banco do Financeiro → Banco do Bar</option><option value="bar_to_finance">Banco do Bar → Banco do Financeiro</option></select></div>
+      <div class="col-sm-5"><label class="form-label">Valor</label><div class="input-group"><span class="input-group-text">R$</span><input class="form-control" name="amount" inputmode="decimal" required></div></div>
+      <div class="col-sm-7"><label class="form-label">Motivo</label><input class="form-control" name="description" maxlength="180" placeholder="Ex.: aporte para estoque" required></div>
+      <div class="col-12"><button class="btn btn-info w-100">Registrar transferência</button></div>
+    </form>
+  </div></div></div>
+</div>
+
+<div class="card shadow-sm border-0 mb-4"><div class="card-header bg-white d-flex justify-content-between"><h2 class="h5 mb-0">Histórico do Livro-caixa</h2><span class="text-muted">{{ledger.movements|length}} registro(s)</span></div><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Data</th><th>Conta</th><th>Tipo</th><th>Categoria</th><th>Descrição</th><th>Responsável</th><th class="text-end">Valor</th></tr></thead><tbody>
+{% for item in ledger.movements %}<tr><td>{{item.created_at|brdate}}</td><td>{{finance_account_labels[item.account]}}</td><td>{{'Entrada' if item.direction == 'in' else 'Saída'}}</td><td>{{all_category_labels.get(item.category,item.category)}}</td><td>{{item.description}}</td><td>{{item.user_name or 'Sistema'}}</td><td class="text-end fw-bold {{'text-success' if item.direction == 'in' else 'text-danger'}}">{{'+' if item.direction == 'in' else '−'}} {{item.amount_cents|money}}</td></tr>
+{% else %}<tr><td colspan="7" class="text-center text-muted py-4">Nenhuma movimentação encontrada para os filtros informados.</td></tr>{% endfor %}
+</tbody></table></div></div>
+
+<div class="card shadow-sm border-0"><div class="card-header bg-white"><h2 class="h5 mb-0">Transferências entre áreas</h2></div><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Data</th><th>Sentido</th><th>Descrição</th><th>Responsável</th><th class="text-end">Valor</th></tr></thead><tbody>
+{% for item in transfers %}<tr><td>{{item.created_at|brdate}}</td><td>{{'Financeiro → Bar' if item.direction == 'finance_to_bar' else 'Bar → Financeiro'}}</td><td>{{item.description}}</td><td>{{item.user_name or 'Sistema'}}</td><td class="text-end fw-bold">{{item.amount_cents|money}}</td></tr>
+{% else %}<tr><td colspan="5" class="text-center text-muted py-4">Nenhuma transferência entre áreas.</td></tr>{% endfor %}
+</tbody></table></div></div>
+{% endif %}
+{% endblock %}
