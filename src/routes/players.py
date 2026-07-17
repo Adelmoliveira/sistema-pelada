@@ -2,6 +2,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from src.db import get_db
 from src.routes.auth import roles_allowed, make_password_hash
 from src.utils import alphabetical_key, normalize_cpf, spreadsheet_rows
+from src.services.material_photos import process_material_photo
 
 bp = Blueprint("players", __name__)
 
@@ -42,9 +43,11 @@ def players():
                 raise ValueError("Classificação financeira inválida.")
             
             war_name = _validate_war_name(db, request.form.get("war_name", ""))
+            processed_photo = process_material_photo(request.files.get("photo"))
+            photo_data, thumbnail_data = processed_photo or ("", "")
             db.execute(
                 """INSERT INTO players
-                (name,war_name,cpf,phone,emergency_phone,email,membership_type) VALUES(?,?,?,?,?,?,?)""",
+                (name,war_name,cpf,phone,emergency_phone,email,membership_type,photo_data,thumbnail_data) VALUES(?,?,?,?,?,?,?,?,?)""",
                 (
                     request.form["name"].strip(),
                     war_name,
@@ -52,7 +55,7 @@ def players():
                     request.form.get("phone", "").strip(),
                     request.form.get("emergency_phone", "").strip(),
                     request.form.get("email", "").strip().lower(),
-                    membership_type
+                    membership_type, photo_data, thumbnail_data
                 )
             )
             db.commit()
@@ -157,8 +160,10 @@ def edit_player(player_id):
             flash("Classificação financeira inválida.", "danger")
         else:
             try:
+                processed_photo = process_material_photo(request.files.get("photo"))
+                photo_fields = (processed_photo or (player["photo_data"], player["thumbnail_data"]))
                 db.execute(
-                    """UPDATE players SET name=?,war_name=?,cpf=?,email=?,phone=?,emergency_phone=?,membership_type=?
+                    """UPDATE players SET name=?,war_name=?,cpf=?,email=?,phone=?,emergency_phone=?,membership_type=?,photo_data=?,thumbnail_data=?
                     WHERE id=?""",
                     (
                         request.form["name"].strip(),
@@ -168,6 +173,7 @@ def edit_player(player_id):
                         request.form.get("phone", "").strip(),
                         request.form.get("emergency_phone", "").strip(),
                         membership_type,
+                        photo_fields[0], photo_fields[1],
                         player_id
                     )
                 )

@@ -231,6 +231,34 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertIsNotNone(user)
             self.assertTrue(check_password_hash(user["password_hash"], "senha-nova-123"))
 
+    def test_player_photo_is_saved_and_sent_to_delivery_queue(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        image = BytesIO()
+        Image.new("RGB", (24, 24), (20, 100, 180)).save(image, format="JPEG")
+        image.seek(0)
+        created = self.client.post(
+            "/players",
+            data={"name": "Peladeiro com foto", "war_name": "Foto", "membership_type": "regular",
+                  "photo": (image, "foto.jpg")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            player = db.execute("SELECT * FROM players WHERE war_name='Foto'").fetchone()
+            self.assertTrue(player["thumbnail_data"].startswith("data:image/jpeg;base64,"))
+            sale = db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (player["id"], "Dinheiro", 300, 1, "approved"),
+            )
+            db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                       (sale.lastrowid, self.product_id, 1, 300, 100))
+            db.commit()
+        feed = self.client.get("/orders/feed")
+        self.assertEqual(feed.status_code, 200)
+        self.assertTrue(feed.get_json()["pending"][-1]["player_photo"].startswith("data:image/jpeg;base64,"))
+
     def test_pix_reconciliation_uses_payment_confirmation_date(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id

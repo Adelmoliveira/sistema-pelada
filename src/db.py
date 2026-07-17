@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS players (
     emergency_phone TEXT DEFAULT '',
     email TEXT DEFAULT '',
     membership_type TEXT NOT NULL DEFAULT 'regular',
+    photo_data TEXT DEFAULT '',
+    thumbnail_data TEXT DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -554,6 +556,10 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE players ADD COLUMN emergency_phone TEXT DEFAULT ''")
     if "cpf" not in columns:
         conn.execute("ALTER TABLE players ADD COLUMN cpf TEXT DEFAULT ''")
+    if "photo_data" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN photo_data TEXT DEFAULT ''")
+    if "thumbnail_data" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN thumbnail_data TEXT DEFAULT ''")
     conn.commit()
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_players_cpf ON players(cpf) WHERE cpf<>''")
     conn.commit()
@@ -641,6 +647,8 @@ def init_postgres(wrapper):
     # Run migration to add password_required if not exists in postgres
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_required INTEGER NOT NULL DEFAULT 1")
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS player_id INTEGER REFERENCES players(id)")
+    wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
     wrapper.execute("""UPDATE users SET player_id=(
         SELECT p.id FROM players p WHERE p.active=1 AND p.war_name<>'' AND LOWER(p.war_name)=LOWER(users.username)
     ) WHERE role='client' AND player_id IS NULL""")

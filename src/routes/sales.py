@@ -253,6 +253,7 @@ def delivery_order_data(db, sale):
     return {
         "id": sale["id"],
         "player_name": sale["war_name"] or sale["player_name"],
+        "player_photo": sale["player_thumbnail_data"] or "",
         "total_cents": sale["total_cents"],
         "payment_method": sale["payment_method"],
         "payment_status": sale["payment_status"],
@@ -269,7 +270,7 @@ def delivery_order_data(db, sale):
 @roles_allowed("manager", "staff")
 def orders_feed():
     db = get_db()
-    select = """SELECT s.*,p.name player_name,p.war_name,u.name delivered_by_name
+    select = """SELECT s.*,p.name player_name,p.war_name,p.thumbnail_data player_thumbnail_data,u.name delivered_by_name
                 FROM sales s JOIN players p ON p.id=s.player_id
                 LEFT JOIN users u ON u.id=s.delivered_by"""
     pending = db.execute(
