@@ -334,6 +334,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Aniversariantes do mês", page.get_data(as_text=True))
         self.assertIn("Aniversariante", page.get_data(as_text=True))
         sidebar = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn("Parabéns, Peladeiro Aniversariante!", sidebar)
+        self.assertIn("muitas resenhas e gols na nossa pelada", sidebar)
         self.assertIn("Aniversariantes do mês", sidebar)
         self.assertIn('<span>Venda rápida</span>', sidebar)
         self.assertNotIn('<span>Bar</span>', sidebar)
