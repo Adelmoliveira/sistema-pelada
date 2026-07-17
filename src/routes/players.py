@@ -1,10 +1,36 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, send_file
 from src.db import get_db
 from src.routes.auth import roles_allowed, make_password_hash
 from src.utils import alphabetical_key, normalize_cpf, spreadsheet_rows
 from src.services.material_photos import process_material_photo
+from src.services.players_pdf import build_players_pdf
+from src.utils import local_today
 
 bp = Blueprint("players", __name__)
+
+
+def _player_report_rows(db, query=""):
+    rows = db.execute("SELECT * FROM players WHERE active=1").fetchall()
+    query = (query or "").strip()
+    if query:
+        folded = query.casefold()
+        rows = [row for row in rows if folded in (row["war_name"] or "").casefold() or folded in (row["name"] or "").casefold()]
+    return sorted(rows, key=lambda row: alphabetical_key(row["war_name"] or row["name"]))
+
+
+@bp.get("/players/report")
+@roles_allowed("manager")
+def players_report():
+    query = request.args.get("q", "").strip()
+    return render_template("players_report.html", players=_player_report_rows(get_db(), query), query=query)
+
+
+@bp.get("/players/report.pdf")
+@roles_allowed("manager")
+def players_report_pdf():
+    query = request.args.get("q", "").strip()
+    report = build_players_pdf(_player_report_rows(get_db(), query), local_today(), query)
+    return send_file(report, mimetype="application/pdf", as_attachment=True, download_name="cadastro-completo-peladeiros.pdf")
 
 
 def _validate_war_name(db, war_name, player_id=None):

@@ -398,6 +398,24 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertLess(urgent_page.index("<td>Ana</td>"), urgent_page.index("<td>Peladeiro</td>"))
         self.assertLess(urgent_page.index("<td>Peladeiro</td>"), urgent_page.index("<td>Zeca</td>"))
 
+    def test_manager_can_list_complete_player_records_and_download_pdf(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE players SET war_name='Craque', birth_date='1990-07-17', phone='11999999999', emergency_phone='11888888888', postal_code='12245000', address_street='Rua Teste', address_number='50', address_city='São José dos Campos', address_state='SP' WHERE id=?", (self.player_id,))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/players/report?q=Craque")
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        self.assertIn("Cadastro completo dos peladeiros", html)
+        self.assertIn("Craque", html)
+        self.assertIn("Rua Teste", html)
+        report = self.client.get("/players/report.pdf?q=Craque")
+        self.assertEqual(report.status_code, 200)
+        self.assertTrue(report.data.startswith(b"%PDF-"))
+        self.assertIn("cadastro-completo-peladeiros.pdf", report.headers["Content-Disposition"])
+
     def test_manager_sidebar_groups_modules_and_links(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
