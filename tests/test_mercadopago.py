@@ -196,6 +196,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
 
         page = self.client.get("/sale").get_data(as_text=True)
         self.assertIn("Craque", page)
+        self.assertIn("<strong class=\"d-block fs-5\">Peladeiro</strong>", page)
         self.assertIn("<small>Peladeiro</small>", page)
         self.assertNotIn("Quem está comprando?", page)
         self.assertIn("Novo chamado", self.client.get("/sale").get_data(as_text=True))
