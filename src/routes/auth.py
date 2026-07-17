@@ -48,6 +48,24 @@ def _client_player_for_username(db, username):
 def _client_password_setup(player, user=None):
     return render_template("client_password_setup.html", player=player, existing_user=user)
 
+
+def _client_profile_complete(db, player_id):
+    player = db.execute(
+        "SELECT birth_date, phone, emergency_phone, postal_code FROM players WHERE id=? AND active=1",
+        (player_id,),
+    ).fetchone()
+    if not player:
+        return False
+    postal_code = "".join(ch for ch in (player["postal_code"] or "") if ch.isdigit())
+    return bool(player["birth_date"] and player["phone"] and player["emergency_phone"] and len(postal_code) == 8)
+
+
+def _client_home_redirect(db, user):
+    if user["role"] == "client" and user["player_id"] and not _client_profile_complete(db, user["player_id"]):
+        flash("Complete seu cadastro para continuar.", "info")
+        return url_for("auth.my_account")
+    return url_for(home_endpoint(user["role"]))
+
 def roles_allowed(*roles):
     def decorator(view):
         @wraps(view)
@@ -92,7 +110,7 @@ def setup():
 def login():
     if g.user:
         return redirect(
-            safe_next_url(request.args.get("next")) or url_for(home_endpoint(g.user["role"])),
+            safe_next_url(request.args.get("next")) or _client_home_redirect(get_db(), g.user),
             code=303 if request.method == "POST" else 302,
         )
     if request.method == "POST":
@@ -115,7 +133,7 @@ def login():
             session.clear()
             session["user_id"] = user["id"]
             return redirect(
-                safe_next_url(request.form.get("next")) or url_for(home_endpoint(user["role"])),
+                safe_next_url(request.form.get("next")) or _client_home_redirect(db, user),
                 code=303,
             )
         flash("Usuário ou senha inválidos.", "danger")
@@ -162,7 +180,9 @@ def client_password_setup():
                 session.pop("pending_client_player_id", None)
                 session.clear()
                 session["user_id"] = user_id
-                return redirect(url_for("sales.sale"), code=303)
+                destination = url_for("auth.my_account")
+                flash("Senha criada. Complete seu cadastro para continuar.", "info")
+                return redirect(destination, code=303)
             except Exception as exc:
                 db.rollback()
                 current_app.logger.error(f"Erro ao configurar senha do peladeiro {player_id}: {exc}")
@@ -204,8 +224,14 @@ def my_account():
                     raise ValueError("A data de nascimento informada não é válida.")
 
             postal_code = "".join(ch for ch in request.form.get("postal_code", "") if ch.isdigit())
-            if postal_code and len(postal_code) != 8:
-                raise ValueError("Informe um CEP válido com 8 dígitos.")
+            if not birth_date:
+                raise ValueError("A data de nascimento é obrigatória.")
+            if not request.form.get("phone", "").strip():
+                raise ValueError("O contato normal é obrigatório.")
+            if not request.form.get("emergency_phone", "").strip():
+                raise ValueError("O contato de emergência é obrigatório.")
+            if len(postal_code) != 8:
+                raise ValueError("O CEP é obrigatório e deve ter 8 dígitos.")
             values = {
                 "birth_date": birth_date,
                 "phone": request.form.get("phone", "").strip()[:40],

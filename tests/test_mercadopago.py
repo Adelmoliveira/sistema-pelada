@@ -186,6 +186,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             data={"password": "senha-segura", "password_confirm": "senha-segura"},
         )
         self.assertEqual(configured.status_code, 303)
+        self.assertEqual(configured.headers["Location"], "/minha-conta")
         with self.client.session_transaction() as session:
             client_user_id = session["user_id"]
         with app.app_context():
@@ -269,7 +270,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
         image = BytesIO()
         Image.new("RGB", (24, 24), (180, 80, 20)).save(image, format="JPEG")
         image.seek(0)
-        response = self.client.post("/minha-conta", data={"photo": (image, "perfil.jpg")}, content_type="multipart/form-data")
+        response = self.client.post("/minha-conta", data={
+            "birth_date": "1990-07-17", "phone": "(12) 99999-1111", "emergency_phone": "(12) 98888-2222",
+            "postal_code": "12245000", "photo": (image, "perfil.jpg")
+        }, content_type="multipart/form-data")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Foto atualizada com sucesso", response.get_data(as_text=True))
         with app.app_context():
