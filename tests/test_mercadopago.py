@@ -419,6 +419,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(page.count('>Relatórios</a>'), 1)
         self.assertIn('action="/logout"', page)
         self.assertIn('id="pwa-install"', page)
+        self.assertIn("Aniversariantes do mês", page)
+        self.assertIn('href="/aniversariantes"', page)
 
     def test_urgent_is_visible_and_accessible_to_every_user_role(self):
         with app.app_context():

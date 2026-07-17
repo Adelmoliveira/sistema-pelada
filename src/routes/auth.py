@@ -281,7 +281,7 @@ def change_my_password():
 
 
 @bp.get("/aniversariantes")
-@roles_allowed("client")
+@roles_allowed("client", "manager")
 def birthdays():
     today = local_today()
     db = get_db()
