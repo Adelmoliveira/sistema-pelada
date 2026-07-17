@@ -288,6 +288,20 @@ def finance_ledger():
     summary = finance_summary(db)
     bar = latest_bar_balances(db)
     ledger = finance_ledger_rows(db, start, end, account, category, query)
+    ledger_total = len(ledger["movements"])
+    try:
+        ledger_per_page = int(request.args.get("ledger_per_page", 15))
+    except ValueError:
+        ledger_per_page = 15
+    if ledger_per_page not in (15, 25, 50, 100):
+        ledger_per_page = 15
+    try:
+        ledger_page = max(1, int(request.args.get("ledger_page", 1)))
+    except ValueError:
+        ledger_page = 1
+    ledger_pages = max(1, (ledger_total + ledger_per_page - 1) // ledger_per_page)
+    ledger_page = min(ledger_page, ledger_pages)
+    ledger["movements"] = ledger["movements"][(ledger_page - 1) * ledger_per_page:ledger_page * ledger_per_page]
     transfers = db.execute(
         """SELECT t.*,u.name user_name FROM interaccount_transfers t
         LEFT JOIN users u ON u.id=t.created_by ORDER BY t.id DESC LIMIT 50"""
@@ -299,6 +313,8 @@ def finance_ledger():
         consolidated_bank=summary["bank"] + bar["bank"],
         consolidated_cash=summary["cash"] + bar["cash"],
         start=start, end=end, account=account, category=category, query=query,
+        ledger_page=ledger_page, ledger_pages=ledger_pages, ledger_per_page=ledger_per_page,
+        ledger_total=ledger_total,
     )
 
 
