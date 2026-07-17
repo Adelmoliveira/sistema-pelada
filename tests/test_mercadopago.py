@@ -317,7 +317,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
         page = self.client.get("/finance").get_data(as_text=True)
-        self.assertIn("Hoje é aniversário de", page)
+        self.assertIn("Hoje é aniversário do peladeiro", page)
         self.assertIn("Aniversariante", page)
 
     def test_client_can_view_month_birthdays_from_sidebar(self):
