@@ -186,6 +186,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             data={"password": "senha-segura", "password_confirm": "senha-segura"},
         )
         self.assertEqual(configured.status_code, 303)
+        self.assertEqual(configured.headers["Location"], "/minha-conta")
         with self.client.session_transaction() as session:
             client_user_id = session["user_id"]
         with app.app_context():
@@ -269,12 +270,78 @@ class MercadoPagoFlowTest(unittest.TestCase):
         image = BytesIO()
         Image.new("RGB", (24, 24), (180, 80, 20)).save(image, format="JPEG")
         image.seek(0)
-        response = self.client.post("/minha-conta", data={"photo": (image, "perfil.jpg")}, content_type="multipart/form-data")
+        response = self.client.post("/minha-conta", data={
+            "birth_date": "1990-07-17", "phone": "(12) 99999-1111", "emergency_phone": "(12) 98888-2222",
+            "postal_code": "12245000", "photo": (image, "perfil.jpg")
+        }, content_type="multipart/form-data")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Foto atualizada com sucesso", response.get_data(as_text=True))
         with app.app_context():
             player = get_db().execute("SELECT thumbnail_data FROM players WHERE id=?", (self.player_id,)).fetchone()
             self.assertTrue(player["thumbnail_data"].startswith("data:image/jpeg;base64,"))
+
+    def test_client_can_update_profile_and_change_own_password(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE players SET war_name='Perfil' WHERE id=?", (self.player_id,))
+            db.commit()
+        self.client.post("/login", data={"username": "Perfil"})
+        self.client.post("/cliente/senha", data={"password": "senha-segura", "password_confirm": "senha-segura"})
+        response = self.client.post("/minha-conta", data={
+            "birth_date": "1990-07-17", "phone": "(12) 99999-1111", "emergency_phone": "Maria (12) 98888-2222",
+            "postal_code": "12245000", "address_street": "Rua Teste", "address_number": "50",
+            "address_complement": "Casa", "address_neighborhood": "Centro", "address_city": "São José dos Campos", "address_state": "sp",
+        })
+        self.assertEqual(response.status_code, 200)
+        with app.app_context():
+            player = get_db().execute("SELECT * FROM players WHERE id=?", (self.player_id,)).fetchone()
+            self.assertEqual((player["birth_date"], player["postal_code"], player["address_state"]), ("1990-07-17", "12245000", "SP"))
+            self.assertEqual(player["emergency_phone"], "Maria (12) 98888-2222")
+        changed = self.client.post("/minha-conta/senha", data={"password": "senha-nova-123", "password_confirm": "senha-nova-123"})
+        self.assertEqual(changed.status_code, 302)
+        self.client.post("/logout")
+        login = self.client.post("/login", data={"username": "Perfil", "password": "senha-nova-123"})
+        self.assertEqual(login.status_code, 303)
+
+    def test_birthday_notice_is_shown_to_authenticated_users(self):
+        with app.app_context():
+            db = get_db()
+            today = local_today()
+            db.execute("UPDATE players SET war_name='Aniversariante', birth_date=? WHERE id=?",
+                       (f"1990-{today.month:02d}-{today.day:02d}", self.player_id))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/finance").get_data(as_text=True)
+        self.assertIn("Hoje é aniversário de", page)
+        self.assertIn("Aniversariante", page)
+
+    def test_client_can_view_month_birthdays_from_sidebar(self):
+        with app.app_context():
+            db = get_db()
+            today = local_today()
+            db.execute("UPDATE players SET war_name='Aniversariante', birth_date=? WHERE id=?",
+                       (f"1990-{today.month:02d}-{today.day:02d}", self.player_id))
+            db.commit()
+        self.client.post("/login", data={"username": "Aniversariante"})
+        self.client.post("/cliente/senha", data={"password": "senha-segura", "password_confirm": "senha-segura"})
+        page = self.client.get("/aniversariantes")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Aniversariantes do mês", page.get_data(as_text=True))
+        self.assertIn("Aniversariante", page.get_data(as_text=True))
+        sidebar = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn("Aniversariantes do mês", sidebar)
+
+    def test_new_maintenance_request_prefills_logged_client_war_name(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE players SET war_name='Nome de Guerra' WHERE id=?", (self.player_id,))
+            db.commit()
+        self.client.post("/login", data={"username": "Nome de Guerra"})
+        self.client.post("/cliente/senha", data={"password": "senha-segura", "password_confirm": "senha-segura"})
+        page = self.client.get("/infra/maintenance/new").get_data(as_text=True)
+        self.assertIn('value="Nome de Guerra" readonly', page)
+        self.assertIn("Preenchido automaticamente pelo usuário logado", page)
 
     def test_pix_reconciliation_uses_payment_confirmation_date(self):
         with self.client.session_transaction() as session:
@@ -352,6 +419,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(page.count('>Relatórios</a>'), 1)
         self.assertIn('action="/logout"', page)
         self.assertIn('id="pwa-install"', page)
+        self.assertIn("Aniversariantes do mês", page)
+        self.assertIn('href="/aniversariantes"', page)
 
     def test_urgent_is_visible_and_accessible_to_every_user_role(self):
         with app.app_context():

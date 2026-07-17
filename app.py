@@ -13,7 +13,7 @@ except ImportError:
     pass
 
 from src.db import get_db
-from src.utils import money, brdate, cpfmask
+from src.utils import money, brdate, cpfmask, local_today
 from src.routes.auth import bp as auth_bp, home_endpoint
 from src.routes.players import bp as players_bp
 from src.routes.products import bp as products_bp
@@ -195,13 +195,21 @@ def load_user_and_protect_routes():
 @app.context_processor
 def inject_user():
     player = None
+    today_birthdays = []
     user = g.get("user")
-    if user and user["role"] == "client" and user["player_id"]:
+    if user:
         try:
-            player = get_db().execute("SELECT thumbnail_data FROM players WHERE id=?", (user["player_id"],)).fetchone()
+            db = get_db()
+            if user["role"] == "client" and user["player_id"]:
+                player = db.execute("SELECT thumbnail_data FROM players WHERE id=?", (user["player_id"],)).fetchone()
+            today_birthdays = db.execute("""SELECT id, name, war_name, thumbnail_data
+                FROM players WHERE active=1 AND birth_date<>'' AND substr(birth_date,6,5)=?
+                ORDER BY LOWER(COALESCE(war_name, name))""",
+                (local_today().strftime("%m-%d"),)).fetchall()
         except Exception:
             player = None
-    return {"current_user": user, "current_player": player}
+            today_birthdays = []
+    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays}
 
 if __name__ == "__main__":
     app.run(debug=True)

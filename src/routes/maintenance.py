@@ -125,6 +125,19 @@ def _template_context():
     )
 
 
+def _requester_name():
+    """Nome exibido no formulário, sempre derivado da sessão autenticada."""
+    if not g.user:
+        return ""
+    if g.user["role"] == "client" and g.user["player_id"]:
+        player = get_db().execute(
+            "SELECT war_name, name FROM players WHERE id=?", (g.user["player_id"],)
+        ).fetchone()
+        if player:
+            return player["war_name"] or player["name"]
+    return g.user["name"]
+
+
 @bp.get("")
 @roles_allowed("manager", "infra")
 def requests_list():
@@ -215,7 +228,7 @@ def new_request():
             flash("Erro interno ao criar o chamado.", "danger")
     return render_template(
         "maintenance_form.html", maintenance=None, photos=[], form_title="Novo chamado",
-        today=local_today().isoformat(), **_template_context(),
+        today=local_today().isoformat(), requester_name=_requester_name(), **_template_context(),
     )
 
 

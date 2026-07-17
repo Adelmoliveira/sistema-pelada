@@ -1,4 +1,5 @@
 import os
+from datetime import date
 from functools import wraps
 from urllib.parse import urlsplit
 from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app, jsonify
@@ -6,6 +7,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 from src.db import get_db
 from src.services.material_photos import process_material_photo
+from src.utils import local_today
 
 bp = Blueprint("auth", __name__)
 
@@ -45,6 +47,24 @@ def _client_player_for_username(db, username):
 
 def _client_password_setup(player, user=None):
     return render_template("client_password_setup.html", player=player, existing_user=user)
+
+
+def _client_profile_complete(db, player_id):
+    player = db.execute(
+        "SELECT birth_date, phone, emergency_phone, postal_code FROM players WHERE id=? AND active=1",
+        (player_id,),
+    ).fetchone()
+    if not player:
+        return False
+    postal_code = "".join(ch for ch in (player["postal_code"] or "") if ch.isdigit())
+    return bool(player["birth_date"] and player["phone"] and player["emergency_phone"] and len(postal_code) == 8)
+
+
+def _client_home_redirect(db, user):
+    if user["role"] == "client" and user["player_id"] and not _client_profile_complete(db, user["player_id"]):
+        flash("Complete seu cadastro para continuar.", "info")
+        return url_for("auth.my_account")
+    return url_for(home_endpoint(user["role"]))
 
 def roles_allowed(*roles):
     def decorator(view):
@@ -90,7 +110,7 @@ def setup():
 def login():
     if g.user:
         return redirect(
-            safe_next_url(request.args.get("next")) or url_for(home_endpoint(g.user["role"])),
+            safe_next_url(request.args.get("next")) or _client_home_redirect(get_db(), g.user),
             code=303 if request.method == "POST" else 302,
         )
     if request.method == "POST":
@@ -113,7 +133,7 @@ def login():
             session.clear()
             session["user_id"] = user["id"]
             return redirect(
-                safe_next_url(request.form.get("next")) or url_for(home_endpoint(user["role"])),
+                safe_next_url(request.form.get("next")) or _client_home_redirect(db, user),
                 code=303,
             )
         flash("Usuário ou senha inválidos.", "danger")
@@ -160,7 +180,9 @@ def client_password_setup():
                 session.pop("pending_client_player_id", None)
                 session.clear()
                 session["user_id"] = user_id
-                return redirect(url_for("sales.sale"), code=303)
+                destination = url_for("auth.my_account")
+                flash("Senha criada. Complete seu cadastro para continuar.", "info")
+                return redirect(destination, code=303)
             except Exception as exc:
                 db.rollback()
                 current_app.logger.error(f"Erro ao configurar senha do peladeiro {player_id}: {exc}")
@@ -183,22 +205,96 @@ def my_account():
         return redirect(url_for("sales.sale"))
     if request.method == "POST":
         try:
-            processed = process_material_photo(request.files.get("photo"))
-            if not processed:
-                raise ValueError("Escolha uma foto antes de salvar.")
-            photo_data, thumbnail_data = processed
-            db.execute("UPDATE players SET photo_data=?,thumbnail_data=? WHERE id=?",
-                       (photo_data, thumbnail_data, player["id"]))
+            photo_data = player["photo_data"] or ""
+            thumbnail_data = player["thumbnail_data"] or ""
+            uploaded_photo = request.files.get("photo")
+            if uploaded_photo and uploaded_photo.filename:
+                processed = process_material_photo(uploaded_photo)
+                if not processed:
+                    raise ValueError("A foto escolhida não é válida.")
+                photo_data, thumbnail_data = processed
+
+            birth_date = request.form.get("birth_date", "").strip()
+            if birth_date:
+                try:
+                    parsed_birth_date = date.fromisoformat(birth_date)
+                except ValueError:
+                    raise ValueError("Informe uma data de nascimento válida.")
+                if parsed_birth_date > local_today() or parsed_birth_date.year < 1900:
+                    raise ValueError("A data de nascimento informada não é válida.")
+
+            postal_code = "".join(ch for ch in request.form.get("postal_code", "") if ch.isdigit())
+            if not birth_date:
+                raise ValueError("A data de nascimento é obrigatória.")
+            if not request.form.get("phone", "").strip():
+                raise ValueError("O contato normal é obrigatório.")
+            if not request.form.get("emergency_phone", "").strip():
+                raise ValueError("O contato de emergência é obrigatório.")
+            if len(postal_code) != 8:
+                raise ValueError("O CEP é obrigatório e deve ter 8 dígitos.")
+            values = {
+                "birth_date": birth_date,
+                "phone": request.form.get("phone", "").strip()[:40],
+                "emergency_phone": request.form.get("emergency_phone", "").strip()[:40],
+                "postal_code": postal_code,
+                "address_street": request.form.get("address_street", "").strip()[:160],
+                "address_number": request.form.get("address_number", "").strip()[:30],
+                "address_complement": request.form.get("address_complement", "").strip()[:100],
+                "address_neighborhood": request.form.get("address_neighborhood", "").strip()[:100],
+                "address_city": request.form.get("address_city", "").strip()[:100],
+                "address_state": request.form.get("address_state", "").strip().upper()[:2],
+            }
+            db.execute("""UPDATE players SET photo_data=?,thumbnail_data=?,birth_date=?,phone=?,
+                emergency_phone=?,postal_code=?,address_street=?,address_number=?,address_complement=?,
+                address_neighborhood=?,address_city=?,address_state=? WHERE id=?""",
+                (photo_data, thumbnail_data, values["birth_date"], values["phone"], values["emergency_phone"],
+                 values["postal_code"], values["address_street"], values["address_number"], values["address_complement"],
+                 values["address_neighborhood"], values["address_city"], values["address_state"], player["id"]))
             db.commit()
-            flash("Foto atualizada com sucesso.", "success")
+            flash("Foto atualizada com sucesso." if uploaded_photo and uploaded_photo.filename else "Dados da conta atualizados com sucesso.", "success")
             player = db.execute("SELECT * FROM players WHERE id=?", (player["id"],)).fetchone()
         except ValueError as exc:
             flash(str(exc), "danger")
         except Exception as exc:
             db.rollback()
-            current_app.logger.error(f"Erro ao atualizar foto do peladeiro {player['id']}: {exc}")
-            flash("Não foi possível atualizar a foto.", "danger")
+            current_app.logger.error(f"Erro ao atualizar conta do peladeiro {player['id']}: {exc}")
+            flash("Não foi possível atualizar os dados da conta.", "danger")
     return render_template("my_account.html", player=player)
+
+
+@bp.post("/minha-conta/senha")
+@roles_allowed("client")
+def change_my_password():
+    password = request.form.get("password", "")
+    confirmation = request.form.get("password_confirm", "")
+    if len(password) < 8:
+        flash("A nova senha deve ter ao menos 8 caracteres.", "danger")
+    elif password != confirmation:
+        flash("As senhas não coincidem.", "danger")
+    else:
+        db = get_db()
+        db.execute("UPDATE users SET password_hash=?,password_required=1 WHERE id=?",
+                   (make_password_hash(password), g.user["id"]))
+        db.commit()
+        flash("Senha alterada com sucesso.", "success")
+    return redirect(url_for("auth.my_account"))
+
+
+@bp.get("/aniversariantes")
+@roles_allowed("client", "manager")
+def birthdays():
+    today = local_today()
+    db = get_db()
+    players = db.execute(
+        """SELECT name, war_name, birth_date, thumbnail_data
+           FROM players
+           WHERE active=1 AND birth_date<>'' AND substr(birth_date, 6, 2)=?
+           ORDER BY substr(birth_date, 9, 2), LOWER(COALESCE(war_name, name))""",
+        (f"{today.month:02d}",),
+    ).fetchall()
+    months = ("janeiro", "fevereiro", "março", "abril", "maio", "junho",
+              "julho", "agosto", "setembro", "outubro", "novembro", "dezembro")
+    return render_template("birthdays.html", players=players, month_name=months[today.month - 1])
 
 @bp.route("/users", methods=["GET", "POST"])
 @roles_allowed("manager")
