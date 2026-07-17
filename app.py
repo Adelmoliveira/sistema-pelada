@@ -194,7 +194,14 @@ def load_user_and_protect_routes():
 
 @app.context_processor
 def inject_user():
-    return {"current_user": g.get("user")}
+    player = None
+    user = g.get("user")
+    if user and user["role"] == "client" and user["player_id"]:
+        try:
+            player = get_db().execute("SELECT thumbnail_data FROM players WHERE id=?", (user["player_id"],)).fetchone()
+        except Exception:
+            player = None
+    return {"current_user": user, "current_player": player}
 
 if __name__ == "__main__":
     app.run(debug=True)
