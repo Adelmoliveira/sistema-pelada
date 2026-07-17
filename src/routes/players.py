@@ -33,6 +33,16 @@ def players_report_pdf():
     return send_file(report, mimetype="application/pdf", as_attachment=True, download_name="cadastro-completo-peladeiros.pdf")
 
 
+@bp.get("/players/report/<int:player_id>")
+@roles_allowed("manager")
+def player_report_detail(player_id):
+    player = get_db().execute("SELECT * FROM players WHERE id=? AND active=1", (player_id,)).fetchone()
+    if not player:
+        flash("Peladeiro não encontrado.", "warning")
+        return redirect(url_for("players.players_report"))
+    return render_template("player_report_detail.html", player=player)
+
+
 def _validate_war_name(db, war_name, player_id=None):
     war_name = (war_name or "").strip()
     if not war_name:
