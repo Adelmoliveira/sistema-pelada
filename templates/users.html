@@ -54,7 +54,7 @@
                             <td>
                                 {{labels[u.role]}}<br>
                                 <span class="badge {{'bg-success' if u.active else 'bg-secondary'}}">{{'Ativo' if u.active else 'Inativo'}}</span>
-                                {% if u.role in ['client','maintenance'] %}
+                                {% if u.role in ['client','maintenance','display'] %}
                                 <span class="badge {{'bg-warning text-dark' if not u.password_required else 'bg-primary'}}">{{'Sem senha' if not u.password_required else 'Com senha'}}</span>
                                 {% endif %}
                             </td>
@@ -119,9 +119,10 @@
     function accessMode() {
         const client = role.value === 'client';
         const maintenance = role.value === 'maintenance';
+        const display = role.value === 'display';
         box.classList.toggle('d-none', !client);
         if (!client) check.checked = false;
-        password.disabled = maintenance || (client && check.checked);
+        password.disabled = maintenance || display || (client && check.checked);
         password.required = !password.disabled;
     }
 

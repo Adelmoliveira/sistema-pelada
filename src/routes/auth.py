@@ -130,7 +130,7 @@ def login():
         if player and (not user or (user["role"] == "client" and not user["password_required"])):
             session["pending_client_player_id"] = player["id"]
             return _client_password_setup(player, user)
-        passwordless_user = user and user["role"] == "maintenance" and not user["password_required"]
+        passwordless_user = user and user["role"] in ("maintenance", "display") and not user["password_required"]
         if user and (passwordless_user or check_password_hash(user["password_hash"], request.form.get("password", ""))):
             session.clear()
             session["user_id"] = user["id"]
@@ -307,7 +307,7 @@ def users():
             username = request.form["username"].strip()
             password = request.form.get("password", "")
             role = request.form["role"]
-            passwordless = role == "maintenance" or (role == "client" and request.form.get("passwordless") == "1")
+            passwordless = role in ("maintenance", "display") or (role == "client" and request.form.get("passwordless") == "1")
             if len(username) < 3:
                 raise ValueError("O usuário deve ter ao menos 3 caracteres.")
             if role not in ("manager", "staff", "client", "infra", "maintenance", "display"):
