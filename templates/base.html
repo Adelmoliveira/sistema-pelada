@@ -69,6 +69,7 @@
 {% else %}
 <main class="container py-4">
 {% endif %}
+{% if current_user and today_birthdays %}<div class="alert alert-info mx-3 mt-3 mb-0" role="status">🎉 Hoje é aniversário de {% for birthday in today_birthdays %}<strong>{{birthday.war_name or birthday.name}}</strong>{% if not loop.last %}, {% endif %}{% endfor %}! Deseje parabéns ao{% if today_birthdays|length > 1 %}s{% endif %} aniversariante{% if today_birthdays|length > 1 %}s{% endif %}.</div>{% endif %}
   {% for category,message in get_flashed_messages(with_categories=true) %}<div class="alert alert-{{category}} alert-dismissible fade show">{{message}}<button class="btn-close" data-bs-dismiss="alert"></button></div>{% endfor %}
   {% block content %}{% endblock %}
 </main>

@@ -276,6 +276,42 @@ class MercadoPagoFlowTest(unittest.TestCase):
             player = get_db().execute("SELECT thumbnail_data FROM players WHERE id=?", (self.player_id,)).fetchone()
             self.assertTrue(player["thumbnail_data"].startswith("data:image/jpeg;base64,"))
 
+    def test_client_can_update_profile_and_change_own_password(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE players SET war_name='Perfil' WHERE id=?", (self.player_id,))
+            db.commit()
+        self.client.post("/login", data={"username": "Perfil"})
+        self.client.post("/cliente/senha", data={"password": "senha-segura", "password_confirm": "senha-segura"})
+        response = self.client.post("/minha-conta", data={
+            "birth_date": "1990-07-17", "phone": "(12) 99999-1111", "emergency_phone": "Maria (12) 98888-2222",
+            "postal_code": "12245000", "address_street": "Rua Teste", "address_number": "50",
+            "address_complement": "Casa", "address_neighborhood": "Centro", "address_city": "São José dos Campos", "address_state": "sp",
+        })
+        self.assertEqual(response.status_code, 200)
+        with app.app_context():
+            player = get_db().execute("SELECT * FROM players WHERE id=?", (self.player_id,)).fetchone()
+            self.assertEqual((player["birth_date"], player["postal_code"], player["address_state"]), ("1990-07-17", "12245000", "SP"))
+            self.assertEqual(player["emergency_phone"], "Maria (12) 98888-2222")
+        changed = self.client.post("/minha-conta/senha", data={"password": "senha-nova-123", "password_confirm": "senha-nova-123"})
+        self.assertEqual(changed.status_code, 302)
+        self.client.post("/logout")
+        login = self.client.post("/login", data={"username": "Perfil", "password": "senha-nova-123"})
+        self.assertEqual(login.status_code, 303)
+
+    def test_birthday_notice_is_shown_to_authenticated_users(self):
+        with app.app_context():
+            db = get_db()
+            today = local_today()
+            db.execute("UPDATE players SET war_name='Aniversariante', birth_date=? WHERE id=?",
+                       (f"1990-{today.month:02d}-{today.day:02d}", self.player_id))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/finance").get_data(as_text=True)
+        self.assertIn("Hoje é aniversário de", page)
+        self.assertIn("Aniversariante", page)
+
     def test_pix_reconciliation_uses_payment_confirmation_date(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id

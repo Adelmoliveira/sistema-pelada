@@ -22,6 +22,14 @@ CREATE TABLE IF NOT EXISTS players (
     cpf TEXT DEFAULT '',
     phone TEXT DEFAULT '',
     emergency_phone TEXT DEFAULT '',
+    birth_date TEXT DEFAULT '',
+    postal_code TEXT DEFAULT '',
+    address_street TEXT DEFAULT '',
+    address_number TEXT DEFAULT '',
+    address_complement TEXT DEFAULT '',
+    address_neighborhood TEXT DEFAULT '',
+    address_city TEXT DEFAULT '',
+    address_state TEXT DEFAULT '',
     email TEXT DEFAULT '',
     membership_type TEXT NOT NULL DEFAULT 'regular',
     photo_data TEXT DEFAULT '',
@@ -554,6 +562,9 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE players ADD COLUMN war_name TEXT DEFAULT ''")
     if "emergency_phone" not in columns:
         conn.execute("ALTER TABLE players ADD COLUMN emergency_phone TEXT DEFAULT ''")
+    for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
+        if column not in columns:
+            conn.execute(f"ALTER TABLE players ADD COLUMN {column} TEXT DEFAULT ''")
     if "cpf" not in columns:
         conn.execute("ALTER TABLE players ADD COLUMN cpf TEXT DEFAULT ''")
     if "photo_data" not in columns:
@@ -649,6 +660,8 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS player_id INTEGER REFERENCES players(id)")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
+    for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
+        wrapper.execute(f"ALTER TABLE players ADD COLUMN IF NOT EXISTS {column} TEXT DEFAULT ''")
     wrapper.execute("""UPDATE users SET player_id=(
         SELECT p.id FROM players p WHERE p.active=1 AND p.war_name<>'' AND LOWER(p.war_name)=LOWER(users.username)
     ) WHERE role='client' AND player_id IS NULL""")
