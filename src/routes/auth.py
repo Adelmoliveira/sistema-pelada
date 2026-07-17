@@ -5,6 +5,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 from src.db import get_db
+from src.services.material_photos import process_material_photo
 
 bp = Blueprint("auth", __name__)
 
@@ -170,6 +171,34 @@ def client_password_setup():
 def logout():
     session.clear()
     return redirect(url_for("auth.login"), code=303)
+
+
+@bp.route("/minha-conta", methods=["GET", "POST"])
+@roles_allowed("client")
+def my_account():
+    db = get_db()
+    player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchone()
+    if not player:
+        flash("Seu usuário ainda não está vinculado a um peladeiro.", "danger")
+        return redirect(url_for("sales.sale"))
+    if request.method == "POST":
+        try:
+            processed = process_material_photo(request.files.get("photo"))
+            if not processed:
+                raise ValueError("Escolha uma foto antes de salvar.")
+            photo_data, thumbnail_data = processed
+            db.execute("UPDATE players SET photo_data=?,thumbnail_data=? WHERE id=?",
+                       (photo_data, thumbnail_data, player["id"]))
+            db.commit()
+            flash("Foto atualizada com sucesso.", "success")
+            player = db.execute("SELECT * FROM players WHERE id=?", (player["id"],)).fetchone()
+        except ValueError as exc:
+            flash(str(exc), "danger")
+        except Exception as exc:
+            db.rollback()
+            current_app.logger.error(f"Erro ao atualizar foto do peladeiro {player['id']}: {exc}")
+            flash("Não foi possível atualizar a foto.", "danger")
+    return render_template("my_account.html", player=player)
 
 @bp.route("/users", methods=["GET", "POST"])
 @roles_allowed("manager")
