@@ -431,6 +431,24 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Aniversariantes do mês", page)
         self.assertIn('href="/aniversariantes"', page)
 
+    def test_display_profile_opens_live_orders_and_birthdays_panel(self):
+        with app.app_context():
+            db = get_db()
+            cursor = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'display')",
+                ("painel", "Painel da TV", "hash"),
+            )
+            display_id = cursor.lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = display_id
+        panel = self.client.get("/painel")
+        self.assertEqual(panel.status_code, 200)
+        html = panel.get_data(as_text=True)
+        self.assertIn("Pedidos em andamento", html)
+        self.assertIn("Aniversariantes do mês", html)
+        self.assertEqual(self.client.get("/painel/feed").status_code, 200)
+
     def test_urgent_is_visible_and_accessible_to_every_user_role(self):
         with app.app_context():
             db = get_db()
