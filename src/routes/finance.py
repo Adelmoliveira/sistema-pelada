@@ -229,6 +229,11 @@ def finance():
     collected = db.execute("SELECT COALESCE(SUM(amount_cents),0) FROM membership_payments WHERE created_at>=? AND created_at<?",
                              (f"{year}-01-01", f"{year + 1}-01-01")).fetchone()[0]
     today = local_today()
+    current_month = today.strftime("%Y-%m")
+    month_names = ("janeiro", "fevereiro", "março", "abril", "maio", "junho",
+                   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro")
+    month_options = [(f"{month_year:04d}-{month:02d}", f"{month_names[month - 1].capitalize()} de {month_year}")
+                     for month_year in range(2020, today.year + 2) for month in range(1, 13)]
     due_month = 12 if year < today.year else (today.month if year == today.year else 0)
     expected_to_date = len(players_rows) * due_month * monthly_fee
     covered_to_date = sum(sum(1 for month in row["months"] if month <= due_month) for row in all_status_rows) * monthly_fee
@@ -236,7 +241,7 @@ def finance():
     return render_template("finance.html", players=players_rows, statuses=status_rows, history=history,
                            year=year, monthly_fee=monthly_fee, collected=collected,
                            expected=expected_to_date, outstanding=max(0, expected_to_date-covered_to_date),
-                           current_month=local_today().strftime("%Y-%m"), history_page=history_page,
+                           current_month=current_month, month_options=month_options, history_page=history_page,
                            history_pages=history_pages, history_total=history_total,
                            members_page=members_page, members_pages=members_pages,
                            members_total=len(all_status_rows), exempt_count=exempt_count,
