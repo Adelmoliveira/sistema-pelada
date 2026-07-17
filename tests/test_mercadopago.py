@@ -317,7 +317,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
         page = self.client.get("/finance").get_data(as_text=True)
-        self.assertIn("Hoje é aniversário de", page)
+        self.assertIn("Hoje é aniversário do peladeiro", page)
         self.assertIn("Aniversariante", page)
 
     def test_client_can_view_month_birthdays_from_sidebar(self):
@@ -334,6 +334,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Aniversariantes do mês", page.get_data(as_text=True))
         self.assertIn("Aniversariante", page.get_data(as_text=True))
         sidebar = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn("Parabéns, Peladeiro Aniversariante!", sidebar)
+        self.assertIn("muitas resenhas e gols na nossa pelada", sidebar)
         self.assertIn("Aniversariantes do mês", sidebar)
         self.assertIn('<span>Venda rápida</span>', sidebar)
         self.assertNotIn('<span>Bar</span>', sidebar)
@@ -398,6 +400,29 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertLess(urgent_page.index("<td>Ana</td>"), urgent_page.index("<td>Peladeiro</td>"))
         self.assertLess(urgent_page.index("<td>Peladeiro</td>"), urgent_page.index("<td>Zeca</td>"))
 
+    def test_manager_can_list_complete_player_records_and_download_pdf(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE players SET war_name='Craque', birth_date='1990-07-17', phone='11999999999', emergency_phone='11888888888', postal_code='12245000', address_street='Rua Teste', address_number='50', address_city='São José dos Campos', address_state='SP' WHERE id=?", (self.player_id,))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/players/report?q=Craque")
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        self.assertIn("Cadastro completo dos peladeiros", html)
+        self.assertIn("Craque", html)
+        self.assertIn("Rua Teste", html)
+        self.assertIn(f"/players/report/{self.player_id}", html)
+        self.assertIn('target="_blank"', html)
+        detail = self.client.get(f"/players/report/{self.player_id}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn("Contato de emergência", detail.get_data(as_text=True))
+        report = self.client.get("/players/report.pdf?q=Craque")
+        self.assertEqual(report.status_code, 200)
+        self.assertTrue(report.data.startswith(b"%PDF-"))
+        self.assertIn("cadastro-completo-peladeiros.pdf", report.headers["Content-Disposition"])
+
     def test_manager_sidebar_groups_modules_and_links(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
@@ -410,7 +435,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             ["Caixa", "Conferir Pix", "Estoque", "Produtos", "Pedidos", "Venda rápida"],
             ["Mensalidades", "Livro-caixa", "Lembretes", "Relatórios"],
             ["Manutenção", "Materiais", "Relação de Carga"],
-            ["Peladeiros", "Usuários"],
+            ["Peladeiros", "Cadastro completo / PDF", "Usuários"],
         ):
             link_positions = [page.index(f">{label}</a>") for label in links]
             self.assertEqual(link_positions, sorted(link_positions))
