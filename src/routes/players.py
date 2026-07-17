@@ -22,7 +22,16 @@ def _player_report_rows(db, query=""):
 @roles_allowed("manager")
 def players_report():
     query = request.args.get("q", "").strip()
-    return render_template("players_report.html", players=_player_report_rows(get_db(), query), query=query)
+    all_players = _player_report_rows(get_db(), query)
+    per_page = 10
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    pages = max(1, (len(all_players) + per_page - 1) // per_page)
+    page = min(page, pages)
+    players = all_players[(page - 1) * per_page:page * per_page]
+    return render_template("players_report.html", players=players, query=query, page=page, pages=pages, total=len(all_players))
 
 
 @bp.get("/players/report.pdf")

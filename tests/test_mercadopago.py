@@ -404,6 +404,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             db = get_db()
             db.execute("UPDATE players SET war_name='Craque', birth_date='1990-07-17', phone='11999999999', emergency_phone='11888888888', postal_code='12245000', address_street='Rua Teste', address_number='50', address_city='São José dos Campos', address_state='SP' WHERE id=?", (self.player_id,))
+            for index in range(11):
+                db.execute("INSERT INTO players(name,war_name) VALUES(?,?)", (f"Peladeiro Extra {index}", f"Extra{index}"))
             db.commit()
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
@@ -422,6 +424,9 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(report.status_code, 200)
         self.assertTrue(report.data.startswith(b"%PDF-"))
         self.assertIn("cadastro-completo-peladeiros.pdf", report.headers["Content-Disposition"])
+        paged = self.client.get("/players/report?page=2")
+        self.assertEqual(paged.status_code, 200)
+        self.assertIn("Próxima", paged.get_data(as_text=True))
 
     def test_manager_sidebar_groups_modules_and_links(self):
         with self.client.session_transaction() as session:
