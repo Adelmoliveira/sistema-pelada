@@ -408,7 +408,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         for links in (
             ["Caixa", "Conferir Pix", "Estoque", "Produtos", "Pedidos", "Venda rápida"],
-            ["Visão financeira", "Livro-caixa", "Lembretes", "Relatórios"],
+            ["Mensalidades", "Livro-caixa", "Lembretes", "Relatórios"],
             ["Manutenção", "Materiais", "Relação de Carga"],
             ["Peladeiros", "Usuários"],
         ):
