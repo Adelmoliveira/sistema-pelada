@@ -258,6 +258,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
             db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
                        (sale.lastrowid, self.product_id, 1, 300, 100))
             db.commit()
+        players_page = self.client.get("/players").get_data(as_text=True)
+        self.assertIn('alt="Foto de Foto"', players_page)
         feed = self.client.get("/orders/feed")
         self.assertEqual(feed.status_code, 200)
         self.assertTrue(feed.get_json()["pending"][-1]["player_photo"].startswith("data:image/jpeg;base64,"))
