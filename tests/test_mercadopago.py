@@ -316,6 +316,22 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Hoje é aniversário de", page)
         self.assertIn("Aniversariante", page)
 
+    def test_client_can_view_month_birthdays_from_sidebar(self):
+        with app.app_context():
+            db = get_db()
+            today = local_today()
+            db.execute("UPDATE players SET war_name='Aniversariante', birth_date=? WHERE id=?",
+                       (f"1990-{today.month:02d}-{today.day:02d}", self.player_id))
+            db.commit()
+        self.client.post("/login", data={"username": "Aniversariante"})
+        self.client.post("/cliente/senha", data={"password": "senha-segura", "password_confirm": "senha-segura"})
+        page = self.client.get("/aniversariantes")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Aniversariantes do mês", page.get_data(as_text=True))
+        self.assertIn("Aniversariante", page.get_data(as_text=True))
+        sidebar = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn("Aniversariantes do mês", sidebar)
+
     def test_new_maintenance_request_prefills_logged_client_war_name(self):
         with app.app_context():
             db = get_db()

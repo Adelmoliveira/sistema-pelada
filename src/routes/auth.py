@@ -279,6 +279,23 @@ def change_my_password():
         flash("Senha alterada com sucesso.", "success")
     return redirect(url_for("auth.my_account"))
 
+
+@bp.get("/aniversariantes")
+@roles_allowed("client")
+def birthdays():
+    today = local_today()
+    db = get_db()
+    players = db.execute(
+        """SELECT name, war_name, birth_date, thumbnail_data
+           FROM players
+           WHERE active=1 AND birth_date<>'' AND substr(birth_date, 6, 2)=?
+           ORDER BY substr(birth_date, 9, 2), LOWER(COALESCE(war_name, name))""",
+        (f"{today.month:02d}",),
+    ).fetchall()
+    months = ("janeiro", "fevereiro", "março", "abril", "maio", "junho",
+              "julho", "agosto", "setembro", "outubro", "novembro", "dezembro")
+    return render_template("birthdays.html", players=players, month_name=months[today.month - 1])
+
 @bp.route("/users", methods=["GET", "POST"])
 @roles_allowed("manager")
 def users():
