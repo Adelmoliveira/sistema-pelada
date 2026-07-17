@@ -32,13 +32,13 @@
         <img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" alt="Logo GPCTA"><span><small>Grupo de Peladas do CTA</small><strong>PELADEIROS GPCTA</strong></span>
       </a>
       <nav class="sidebar-nav" aria-label="Menu principal">
-        {% if current_user.role in ['manager','staff','client'] %}<div class="sidebar-group">
+        {% if current_user.role in ['manager','staff'] %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if bar_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-bar" aria-expanded="{{'true' if bar_active else 'false'}}" aria-controls="sidebar-bar"><span class="sidebar-module-icon">B</span><span>Bar</span><span class="sidebar-chevron">⌄</span></button>
           <div class="collapse {{'show' if bar_active}}" id="sidebar-bar"><div class="sidebar-submenu">
             {% if current_user.role in ['manager','staff'] %}<a class="{{'active' if cash_active}}" href="{{url_for('cash.dashboard')}}">Caixa</a><a class="{{'active' if endpoint == 'sales.pix'}}" href="{{url_for('sales.pix')}}">Conferir Pix</a><a class="{{'active' if endpoint == 'products.stock'}}" href="{{url_for('products.stock')}}">Estoque</a><a class="{{'active' if endpoint.startswith('products.products') or endpoint.startswith('products.edit_product')}}" href="{{url_for('products.products')}}">Produtos</a><a class="{{'active' if endpoint.startswith('sales.orders')}}" href="{{url_for('sales.orders')}}">Pedidos</a>{% endif %}
             <a class="{{'active' if endpoint == 'sales.sale'}}" href="{{url_for('sales.sale')}}">Venda rápida</a>
           </div></div>
-        </div>{% endif %}
+        </div>{% elif current_user.role == 'client' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'sales.sale'}}" href="{{url_for('sales.sale')}}"><span class="sidebar-module-icon">B</span><span>Venda rápida</span></a>{% endif %}
         {% if current_user.role == 'manager' %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if finance_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-finance" aria-expanded="{{'true' if finance_active else 'false'}}" aria-controls="sidebar-finance"><span class="sidebar-module-icon">$</span><span>Financeiro</span><span class="sidebar-chevron">⌄</span></button>
           <div class="collapse {{'show' if finance_active}}" id="sidebar-finance"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'finance.finance'}}" href="{{url_for('finance.finance')}}">Visão financeira</a><a class="{{'active' if endpoint == 'finance.finance_ledger'}}" href="{{url_for('finance.finance_ledger')}}">Livro-caixa</a><a class="{{'active' if endpoint == 'finance.reminders'}}" href="{{url_for('finance.reminders')}}">Lembretes</a><a class="{{'active' if endpoint == 'finance.reports'}}" href="{{url_for('finance.reports')}}">Relatórios</a></div></div>
