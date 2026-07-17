@@ -449,6 +449,18 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Aniversariantes do mês", html)
         self.assertEqual(self.client.get("/painel/feed").status_code, 200)
 
+    def test_display_user_is_created_and_logs_in_without_password(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        created = self.client.post("/users", data={
+            "name": "Monitor", "username": "monitor-tv", "role": "display", "password": "",
+        })
+        self.assertEqual(created.status_code, 302)
+        self.client.post("/logout")
+        login = self.client.post("/login", data={"username": "monitor-tv", "password": ""})
+        self.assertEqual(login.status_code, 303)
+        self.assertTrue(login.headers["Location"].endswith("/painel"))
+
     def test_urgent_is_visible_and_accessible_to_every_user_role(self):
         with app.app_context():
             db = get_db()
