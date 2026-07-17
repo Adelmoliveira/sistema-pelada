@@ -312,6 +312,17 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Hoje é aniversário de", page)
         self.assertIn("Aniversariante", page)
 
+    def test_new_maintenance_request_prefills_logged_client_war_name(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE players SET war_name='Nome de Guerra' WHERE id=?", (self.player_id,))
+            db.commit()
+        self.client.post("/login", data={"username": "Nome de Guerra"})
+        self.client.post("/cliente/senha", data={"password": "senha-segura", "password_confirm": "senha-segura"})
+        page = self.client.get("/infra/maintenance/new").get_data(as_text=True)
+        self.assertIn('value="Nome de Guerra" readonly', page)
+        self.assertIn("Preenchido automaticamente pelo usuário logado", page)
+
     def test_pix_reconciliation_uses_payment_confirmation_date(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
