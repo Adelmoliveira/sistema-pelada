@@ -45,8 +45,8 @@
                         class="form-label">Peladeiro</label><select name="player_id" class="form-select mb-3" required>
                         <option value="">Selecione</option>{% for p in players %}<option value="{{p.id}}">{{p.name}}
                         </option>{% endfor %}
-                    </select><label class="form-label">Primeiro mês pago</label><select name="start_month"
-                        class="form-select mb-3" required>{% for month_value, month_label in month_options %}<option value="{{month_value}}" {{'selected' if month_value == current_month}}>{{month_label}}</option>{% endfor %}</select><label
+                    </select><label class="form-label">Primeiro mês pago</label><input type="month" name="start_month"
+                        value="{{current_month}}" class="form-control mb-3" required><label
                         class="form-label">Quantidade de meses</label><select name="months_count" id="months-count"
                         class="form-select mb-2">{% for n in range(1,13) %}<option value="{{n}}" {{'selected' if n==1}}>
                             {{n}} {{'mês' if n==1 else 'meses'}}{% if n==12 %} — ano completo{% endif %}</option>{%
