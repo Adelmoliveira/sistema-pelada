@@ -17,6 +17,7 @@
                         <option value="client">Cliente — somente venda rápida</option>
                         <option value="infra">Infra — somente Materiais e Relação de Carga</option>
                         <option value="maintenance">Manutenção — somente novo chamado, sem senha</option>
+                        <option value="display">Painel — exibição de pedidos e aniversariantes</option>
                         <option value="staff">Staff — sem peladeiros e relatórios</option>
                         <option value="manager">Gerente — acesso completo</option>
                     </select>
@@ -45,7 +46,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {% set labels={'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção'} %}
+                        {% set labels={'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção','display':'Painel'} %}
                         {% for u in users %}
                         <tr class="{{'text-muted' if not u.active}}">
                             <td>{{u.name}}</td>

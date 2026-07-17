@@ -18,6 +18,8 @@ def home_endpoint(role):
         return "infra.load_relation"
     if role == "maintenance":
         return "maintenance.new_request"
+    if role == "display":
+        return "display.panel"
     return "finance.dashboard"
 
 def safe_next_url(value):
@@ -308,7 +310,7 @@ def users():
             passwordless = role == "maintenance" or (role == "client" and request.form.get("passwordless") == "1")
             if len(username) < 3:
                 raise ValueError("O usuário deve ter ao menos 3 caracteres.")
-            if role not in ("manager", "staff", "client", "infra", "maintenance"):
+            if role not in ("manager", "staff", "client", "infra", "maintenance", "display"):
                 raise ValueError("Perfil inválido.")
             if not passwordless and len(password) < 8:
                 raise ValueError("A senha deve ter ao menos 8 caracteres.")
