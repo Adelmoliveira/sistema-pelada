@@ -23,7 +23,7 @@
 {% set infra_active=endpoint.startswith('infra.') or endpoint.startswith('maintenance.') %}
 {% set urgent_active=endpoint == 'players.urgent' %}
 {% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) %}
-{% set role_label={'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção'}.get(current_user.role,current_user.role) %}
+{% set role_label={'manager':'Gerente','staff':'Staff','client':'Peladeiro','infra':'Infra','maintenance':'Manutenção'}.get(current_user.role,current_user.role) %}
 <div class="app-shell" id="app-shell">
   <aside class="offcanvas-lg offcanvas-start app-sidebar" tabindex="-1" id="app-sidebar" aria-labelledby="sidebar-title">
     <div class="offcanvas-header sidebar-mobile-header"><span class="fw-semibold">Menu</span><button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" data-bs-target="#app-sidebar" aria-label="Fechar"></button></div>
