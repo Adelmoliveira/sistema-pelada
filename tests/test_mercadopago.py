@@ -340,6 +340,32 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('<span>Venda rápida</span>', sidebar)
         self.assertNotIn('<span>Bar</span>', sidebar)
 
+    def test_female_birthday_message_uses_name_without_peladeiro(self):
+        with app.app_context():
+            db = get_db()
+            today = local_today()
+            db.execute("UPDATE players SET war_name='Maria Eduarda', gender='female', birth_date=? WHERE id=?",
+                       (f"1990-{today.month:02d}-{today.day:02d}", self.player_id))
+            db.commit()
+        self.client.post("/login", data={"username": "Maria Eduarda"})
+        self.client.post("/cliente/senha", data={"password": "senha-segura", "password_confirm": "senha-segura"})
+        page = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn("Parabéns, Maria Eduarda!", page)
+        self.assertNotIn("Parabéns, Peladeiro Maria Eduarda!", page)
+
+    def test_female_birthday_notice_uses_feminine_generic_message(self):
+        with app.app_context():
+            db = get_db()
+            today = local_today()
+            db.execute("UPDATE players SET war_name='Maria Eduarda', gender='female', birth_date=? WHERE id=?",
+                       (f"1990-{today.month:02d}-{today.day:02d}", self.player_id))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/finance").get_data(as_text=True)
+        self.assertIn("Hoje é aniversário da", page)
+        self.assertIn("à aniversariante", page)
+
     def test_new_maintenance_request_prefills_logged_client_war_name(self):
         with app.app_context():
             db = get_db()

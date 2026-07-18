@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS players (
     cpf TEXT DEFAULT '',
     phone TEXT DEFAULT '',
     emergency_phone TEXT DEFAULT '',
+    gender TEXT NOT NULL DEFAULT 'male',
     birth_date TEXT DEFAULT '',
     postal_code TEXT DEFAULT '',
     address_street TEXT DEFAULT '',
@@ -562,6 +563,8 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE players ADD COLUMN war_name TEXT DEFAULT ''")
     if "emergency_phone" not in columns:
         conn.execute("ALTER TABLE players ADD COLUMN emergency_phone TEXT DEFAULT ''")
+    if "gender" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN gender TEXT NOT NULL DEFAULT 'male'")
     for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
         if column not in columns:
             conn.execute(f"ALTER TABLE players ADD COLUMN {column} TEXT DEFAULT ''")
@@ -660,6 +663,7 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS player_id INTEGER REFERENCES players(id)")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS gender TEXT NOT NULL DEFAULT 'male'")
     for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
         wrapper.execute(f"ALTER TABLE players ADD COLUMN IF NOT EXISTS {column} TEXT DEFAULT ''")
     wrapper.execute("""UPDATE users SET player_id=(
