@@ -129,3 +129,69 @@ def build_stock_report_pdf(rows, start_date, end_date, issued_on=None):
     document.build(story, onFirstPage=footer, onLaterPages=footer)
     output.seek(0)
     return output
+
+
+def low_stock_report_data(db):
+    rows = db.execute(
+        """SELECT name,stock,min_stock,supplier_email FROM products
+           WHERE active=1 AND stock<=min_stock ORDER BY stock,LOWER(name),name"""
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def build_low_stock_pdf(rows, issued_on=None):
+    issued_on = issued_on or local_today()
+    output = BytesIO()
+    document = SimpleDocTemplate(
+        output, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
+        topMargin=15 * mm, bottomMargin=18 * mm,
+        title="Relatório de Estoque Baixo", author="PELADEIROS GPCTA",
+    )
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="LowTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=19, leading=22, textColor=NAVY, alignment=TA_CENTER, spaceAfter=4))
+    styles.add(ParagraphStyle(name="LowSub", parent=styles["Normal"], fontSize=9, leading=12, textColor=colors.HexColor("#5E6B73"), alignment=TA_CENTER, spaceAfter=8))
+    styles.add(ParagraphStyle(name="LowCell", parent=styles["Normal"], fontSize=9, leading=11, textColor=colors.HexColor("#183042")))
+    styles.add(ParagraphStyle(name="LowCenter", parent=styles["LowCell"], alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name="LowHeader", parent=styles["LowCenter"], fontName="Helvetica-Bold", textColor=colors.white))
+    story = [
+        Paragraph("PELADEIROS GPCTA", styles["LowTitle"]),
+        Paragraph("Relatório de estoque baixo", styles["LowSub"]),
+        Paragraph(f"Emitido em {issued_on.strftime('%d/%m/%Y')}", styles["LowSub"]),
+        Spacer(1, 3 * mm),
+    ]
+    headers = ("Produto", "Estoque atual", "Limite", "Fornecedor")
+    table_rows = [[Paragraph(value, styles["LowHeader"]) for value in headers]]
+    for row in rows:
+        table_rows.append([
+            Paragraph(escape(str(row["name"])), styles["LowCell"]),
+            Paragraph(str(row["stock"]), styles["LowCenter"]),
+            Paragraph(str(row["min_stock"]), styles["LowCenter"]),
+            Paragraph(escape(str(row["supplier_email"] or "Não informado")), styles["LowCell"]),
+        ])
+    if not rows:
+        table_rows.append([Paragraph("Nenhum produto está abaixo do limite.", styles["LowCenter"])] + [""] * 3)
+    table = Table(table_rows, colWidths=[75 * mm, 30 * mm, 25 * mm, 50 * mm], repeatRows=1)
+    rules = [
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), .35, colors.HexColor("#CFD8DC")),
+        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]
+    for index in range(2, len(table_rows), 2):
+        rules.append(("BACKGROUND", (0, index), (-1, index), LIGHT_GRAY))
+    if not rows:
+        rules.append(("SPAN", (0, 1), (-1, 1)))
+    table.setStyle(TableStyle(rules))
+    story.extend([table, Spacer(1, 5 * mm), Paragraph(f"Produtos abaixo do limite: <b>{len(rows)}</b>", styles["LowSub"])])
+
+    def footer(canvas, doc):
+        canvas.saveState()
+        canvas.setStrokeColor(colors.HexColor("#D9E1E5")); canvas.line(15 * mm, 13 * mm, A4[0] - 15 * mm, 13 * mm)
+        canvas.setFont("Helvetica", 7.5); canvas.setFillColor(colors.HexColor("#6C757D"))
+        canvas.drawString(15 * mm, 9 * mm, "PELADEIROS GPCTA - Estoque baixo")
+        canvas.drawRightString(A4[0] - 15 * mm, 9 * mm, f"Página {doc.page}")
+        canvas.restoreState()
+
+    document.build(story, onFirstPage=footer, onLaterPages=footer)
+    output.seek(0)
+    return output

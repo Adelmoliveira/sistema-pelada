@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS products (
     cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents >= 0),
     stock INTEGER NOT NULL DEFAULT 0 CHECK(stock >= 0),
     min_stock INTEGER NOT NULL DEFAULT 5 CHECK(min_stock >= 0),
+    supplier_email TEXT DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -156,6 +157,12 @@ CREATE TABLE IF NOT EXISTS stock_adjustments (
     reason TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS stock_alert_states (
+    product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+    alerted INTEGER NOT NULL DEFAULT 0,
+    last_stock INTEGER NOT NULL DEFAULT 0,
+    last_notified_at TEXT
+);
 CREATE TABLE IF NOT EXISTS materials (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     description TEXT NOT NULL,
@@ -177,6 +184,9 @@ CREATE TABLE IF NOT EXISTS load_entries (
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged')),
     discharged_at TEXT,
     discharged_by INTEGER REFERENCES users(id),
+    last_checked_at TEXT,
+    last_checked_by INTEGER REFERENCES users(id),
+    next_check_due_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -504,6 +514,7 @@ def migrate_product_categories(connection):
         BEGIN;
         ALTER TABLE sale_items RENAME TO sale_items_category_old;
         ALTER TABLE restocks RENAME TO restocks_category_old;
+        ALTER TABLE stock_alert_states RENAME TO stock_alert_states_category_old;
         ALTER TABLE products RENAME TO products_category_old;
         CREATE TABLE products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -515,6 +526,7 @@ def migrate_product_categories(connection):
             cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents >= 0),
             stock INTEGER NOT NULL DEFAULT 0 CHECK(stock >= 0),
             min_stock INTEGER NOT NULL DEFAULT 5 CHECK(min_stock >= 0),
+            supplier_email TEXT DEFAULT '',
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -534,13 +546,22 @@ def migrate_product_categories(connection):
             notes TEXT DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-        INSERT INTO products(id,name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,active,created_at)
-        SELECT id,name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,active,created_at
+        CREATE TABLE stock_alert_states (
+            product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+            alerted INTEGER NOT NULL DEFAULT 0,
+            last_stock INTEGER NOT NULL DEFAULT 0,
+            last_notified_at TEXT
+        );
+        INSERT INTO products(id,name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,supplier_email,active,created_at)
+        SELECT id,name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,
+               COALESCE(supplier_email,''),active,created_at
         FROM products_category_old;
         INSERT INTO sale_items SELECT * FROM sale_items_category_old;
         INSERT INTO restocks SELECT * FROM restocks_category_old;
+        INSERT INTO stock_alert_states SELECT * FROM stock_alert_states_category_old;
         DROP TABLE sale_items_category_old;
         DROP TABLE restocks_category_old;
+        DROP TABLE stock_alert_states_category_old;
         DROP TABLE products_category_old;
         CREATE INDEX IF NOT EXISTS idx_items_sale ON sale_items(sale_id);
         COMMIT;
@@ -582,6 +603,8 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE products ADD COLUMN package_type TEXT NOT NULL DEFAULT ''")
     if "units_per_case" not in product_columns:
         conn.execute("ALTER TABLE products ADD COLUMN units_per_case INTEGER NOT NULL DEFAULT 0")
+    if "supplier_email" not in product_columns:
+        conn.execute("ALTER TABLE products ADD COLUMN supplier_email TEXT DEFAULT ''")
     conn.commit()
     migrate_product_categories(conn)
     
@@ -622,6 +645,9 @@ def init_sqlite(wrapper):
         "status": "TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged'))",
         "discharged_at": "TEXT",
         "discharged_by": "INTEGER REFERENCES users(id)",
+        "last_checked_at": "TEXT",
+        "last_checked_by": "INTEGER REFERENCES users(id)",
+        "next_check_due_at": "TEXT",
     }
     for column, definition in load_migrations.items():
         if column not in load_columns:
@@ -664,6 +690,7 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS gender TEXT NOT NULL DEFAULT 'male'")
+    wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
     for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
         wrapper.execute(f"ALTER TABLE players ADD COLUMN IF NOT EXISTS {column} TEXT DEFAULT ''")
     wrapper.execute("""UPDATE users SET player_id=(
@@ -684,6 +711,9 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS area_code TEXT NOT NULL DEFAULT 'BAR'")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_at TIMESTAMP")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_by INTEGER REFERENCES users(id)")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS last_checked_by INTEGER REFERENCES users(id)")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS next_check_due_at TIMESTAMP")
     wrapper.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")

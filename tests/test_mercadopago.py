@@ -19,6 +19,7 @@ from src.services.mercadopago import create_pix_order
 from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
 from src.services.cash_register import get_session, session_summary
 from src.services.monthly_sales_report import monthly_sales_data
+from src.services.stock_alerts import notify_low_stock
 from src.utils import alphabetical_key, brdate, local_today, month_bounds
 from werkzeug.security import check_password_hash
 
@@ -785,6 +786,19 @@ class MercadoPagoFlowTest(unittest.TestCase):
         detail = self.client.get(f"/infra/load-relation/{entry_id}").get_data(as_text=True)
         self.assertIn("Carga em bom estado.", detail)
         self.assertIn("SERIE-001", detail)
+        self.assertIn("Pendente", detail)
+        check_page = self.client.get("/infra/load-relation/check")
+        self.assertEqual(check_page.status_code, 200)
+        self.assertIn(f"BMP-{entry_id:06d} | COZ", check_page.get_data(as_text=True))
+        checked = self.client.post(f"/infra/load-relation/{entry_id}/check")
+        self.assertEqual(checked.status_code, 302)
+        with app.app_context():
+            checked_entry = get_db().execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+            self.assertIsNotNone(checked_entry["last_checked_at"])
+            self.assertEqual(checked_entry["last_checked_by"], self.user_id)
+            self.assertIsNotNone(checked_entry["next_check_due_at"])
+        checked_detail = self.client.get(f"/infra/load-relation/{entry_id}").get_data(as_text=True)
+        self.assertIn("Válida até", checked_detail)
 
         qr_page = self.client.get(f"/infra/load-relation/{entry_id}/qr-code")
         self.assertEqual(qr_page.status_code, 200)
@@ -1862,6 +1876,52 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("relatorio-estoque-", response.headers["Content-Disposition"])
         self.assertTrue(response.data.startswith(b"%PDF-"))
 
+    def test_low_stock_alert_consolidates_products_for_supplier_once(self):
+        with app.app_context(), patch.dict("os.environ", {
+            "GMAIL_SMTP_USER": "bar@example.com",
+            "GMAIL_APP_PASSWORD": "app-password",
+            "STOCK_ALERT_ATTENDANT_EMAIL": "atendente@example.com",
+            "STOCK_ALERT_MANAGER_EMAIL": "gerente@example.com",
+        }):
+            db = get_db()
+            db.execute("UPDATE products SET stock=2,min_stock=2,supplier_email='fornecedor@example.com' WHERE id=?", (self.product_id,))
+            sent = []
+            result = notify_low_stock(db, [self.product_id], send_func=lambda *args: sent.append(args[2]))
+            self.assertEqual(result["sent"], 1)
+            self.assertEqual(sent, ["fornecedor@example.com"])
+            again = notify_low_stock(db, [self.product_id], send_func=lambda *args: sent.append(args[2]))
+            self.assertEqual(again["skipped"], 1)
+            self.assertEqual(len(sent), 1)
+
+    def test_low_stock_alert_resets_after_replenishment(self):
+        with app.app_context(), patch.dict("os.environ", {
+            "GMAIL_SMTP_USER": "bar@example.com",
+            "GMAIL_APP_PASSWORD": "app-password",
+            "STOCK_ALERT_ATTENDANT_EMAIL": "atendente@example.com",
+        }):
+            db = get_db()
+            db.execute("UPDATE products SET stock=1,min_stock=2,supplier_email='fornecedor@example.com' WHERE id=?", (self.product_id,))
+            sent = []
+            notify_low_stock(db, [self.product_id], send_func=lambda *args: sent.append(args[2]))
+            db.execute("UPDATE products SET stock=5 WHERE id=?", (self.product_id,))
+            notify_low_stock(db, [self.product_id], send_func=lambda *args: sent.append(args[2]))
+            db.execute("UPDATE products SET stock=2 WHERE id=?", (self.product_id,))
+            result = notify_low_stock(db, [self.product_id], send_func=lambda *args: sent.append(args[2]))
+            self.assertEqual(result["sent"], 1)
+            self.assertEqual(len(sent), 2)
+
+    def test_staff_and_manager_can_generate_low_stock_pdf(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE products SET stock=1,min_stock=5,supplier_email='fornecedor@example.com' WHERE id=?", (self.product_id,))
+            db.commit()
+        response = self.client.get("/stock/low-report.pdf")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertIn("estoque-baixo-", response.headers["Content-Disposition"])
+        self.assertTrue(response.data.startswith(b"%PDF-"))
     def test_cash_transfer_history_filters_and_pdf(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id

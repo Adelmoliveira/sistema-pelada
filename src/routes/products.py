@@ -5,7 +5,8 @@ from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import cents
 from src.services.cash_register import create_movement, get_session
-from src.services.stock_report_pdf import build_stock_report_pdf, stock_report_data
+from src.services.stock_report_pdf import build_stock_report_pdf, stock_report_data, build_low_stock_pdf, low_stock_report_data
+from src.services.stock_alerts import notify_low_stock
 from src.utils import local_today
 
 bp = Blueprint("products", __name__)
@@ -25,9 +26,9 @@ def products():
                 raise ValueError("Informe quantas unidades vêm em cada caixa.")
             
             initial_stock = loose_units + cases * units_per_case
-            db.execute(
-                """INSERT INTO products(name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock)
-                VALUES(?,?,?,?,?,?,?,?)""",
+            created = db.execute(
+                """INSERT INTO products(name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,supplier_email)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
                 (
                     request.form["name"].strip(),
                     request.form["category"],
@@ -36,10 +37,12 @@ def products():
                     cents(request.form["price"]),
                     cents(request.form.get("cost", "0")),
                     initial_stock,
-                    int(request.form.get("min_stock", 5))
+                    int(request.form.get("min_stock", 5)),
+                    request.form.get("supplier_email", "").strip().lower(),
                 )
             )
             db.commit()
+            notify_low_stock(db, [created.lastrowid])
             flash("Produto cadastrado.", "success")
         except ValueError as exc:
             flash(str(exc), "danger")
@@ -96,7 +99,7 @@ def edit_product(product_id):
 
             db.execute(
                 """UPDATE products SET name=?,category=?,package_type=?,units_per_case=?,
-                price_cents=?,cost_cents=?,min_stock=?,stock=? WHERE id=?""",
+                price_cents=?,cost_cents=?,min_stock=?,stock=?,supplier_email=? WHERE id=?""",
                 (
                     request.form["name"].strip(),
                     request.form["category"],
@@ -106,6 +109,7 @@ def edit_product(product_id):
                     cents(request.form.get("cost", "0")),
                     min_stock,
                     new_stock,
+                    request.form.get("supplier_email", "").strip().lower(),
                     product_id
                 )
             )
@@ -115,6 +119,7 @@ def edit_product(product_id):
                     VALUES(?,?,?,?,?,?)""", (product_id, g.user["id"], product["stock"], new_stock,
                     new_stock - product["stock"], reason))
             db.commit()
+            notify_low_stock(db, [product_id])
             flash("Produto atualizado.", "success")
             return redirect(url_for("products.products"))
         except ValueError as exc:
@@ -184,6 +189,7 @@ def stock():
                         source_id=restock.lastrowid,
                     )
             flash("Reposição registrada e estoque atualizado.", "success")
+            notify_low_stock(db, [pid])
         except ValueError as exc:
             flash(str(exc), "danger")
         except Exception as exc:
@@ -240,6 +246,16 @@ def stock_report():
     return send_file(
         report, mimetype="application/pdf", as_attachment=True,
         download_name=f"relatorio-estoque-{local_today().isoformat()}.pdf",
+    )
+
+
+@bp.get("/stock/low-report.pdf")
+@roles_allowed("manager", "staff")
+def low_stock_report():
+    report = build_low_stock_pdf(low_stock_report_data(get_db()), local_today())
+    return send_file(
+        report, mimetype="application/pdf", as_attachment=False,
+        download_name=f"estoque-baixo-{local_today().isoformat()}.pdf",
     )
 
 

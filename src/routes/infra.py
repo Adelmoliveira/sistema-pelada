@@ -1,4 +1,6 @@
+import calendar
 import uuid
+from datetime import date
 
 from flask import Blueprint, current_app, flash, g, redirect, render_template, request, send_file, url_for
 
@@ -21,6 +23,15 @@ LOAD_AREAS = {
     "VES": "Vestiário",
     "BAN": "Banheiros",
 }
+
+
+def next_load_check_date(today=None):
+    today = today or local_today()
+    month_index = today.year * 12 + today.month - 1 + 6
+    year, month_zero = divmod(month_index, 12)
+    month = month_zero + 1
+    day = min(today.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day).isoformat()
 
 
 def bmp_code(entry_id, area_code):
@@ -236,10 +247,31 @@ def load_relation():
     pages = max(1, (len(rows) + per_page - 1) // per_page)
     page = min(page, pages)
     visible = rows[(page - 1) * per_page:page * per_page]
+    due_count = db.execute(
+        """SELECT COUNT(*) total FROM load_entries
+           WHERE status='active' AND (next_check_due_at IS NULL OR date(next_check_due_at)<=?)""",
+        (local_today().isoformat(),),
+    ).fetchone()["total"]
     return render_template(
         "load_relation.html", entries=visible, total=len(rows), query=query,
-        page=page, pages=pages, area_code=area_code, load_areas=LOAD_AREAS,
+        page=page, pages=pages, area_code=area_code, load_areas=LOAD_AREAS, due_count=due_count,
     )
+
+
+@bp.get("/load-relation/check")
+@roles_allowed("manager", "infra")
+def load_check():
+    db = get_db()
+    today = local_today().isoformat()
+    entries = db.execute(
+        """SELECT le.id,le.bmp,le.location,le.next_check_due_at,m.description material_description
+           FROM load_entries le JOIN materials m ON m.id=le.material_id
+           WHERE le.status='active' AND (le.next_check_due_at IS NULL OR date(le.next_check_due_at)<=?)
+           ORDER BY CASE WHEN le.next_check_due_at IS NULL THEN 0 ELSE 1 END,le.next_check_due_at,le.id""",
+        (today,),
+    ).fetchall()
+    total = db.execute("SELECT COUNT(*) total FROM load_entries WHERE status='active'").fetchone()["total"]
+    return render_template("load_check.html", entries=entries, total=total, today=today)
 
 
 @bp.get("/load-relation/qr-codes")
@@ -339,7 +371,30 @@ def load_entry_detail(entry_id):
     photos = db.execute(
         "SELECT * FROM load_entry_photos WHERE load_entry_id=? ORDER BY id", (entry_id,)
     ).fetchall()
-    return render_template("load_entry_detail.html", entry=entry, photos=photos)
+    check_due = entry["status"] == "active" and (
+        not entry["next_check_due_at"] or str(entry["next_check_due_at"])[:10] <= local_today().isoformat()
+    )
+    return render_template("load_entry_detail.html", entry=entry, photos=photos, check_due=check_due)
+
+
+@bp.post("/load-relation/<int:entry_id>/check")
+@roles_allowed("manager", "infra")
+def check_load_entry(entry_id):
+    db = get_db()
+    entry = db.execute("SELECT id,bmp,status FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+    if not entry:
+        flash("Carga não encontrada.", "warning")
+    elif entry["status"] != "active":
+        flash(f"A carga {entry['bmp']} está descarregada e não pode ser conferida.", "warning")
+    else:
+        db.execute(
+            """UPDATE load_entries SET last_checked_at=CURRENT_TIMESTAMP,last_checked_by=?,
+               next_check_due_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (g.user["id"], next_load_check_date(), entry_id),
+        )
+        db.commit()
+        flash(f"Conferência da carga {entry['bmp']} registrada. Próxima conferência em 6 meses.", "success")
+    return redirect(url_for("infra.load_entry_detail", entry_id=entry_id))
 
 
 @bp.get("/load-relation/<int:entry_id>/qr-code")
