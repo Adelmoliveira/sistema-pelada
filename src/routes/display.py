@@ -30,7 +30,7 @@ def feed():
     ).fetchall()
     today = local_today()
     birthday_rows = db.execute(
-        """SELECT name, war_name, birth_date, thumbnail_data FROM players
+        """SELECT name, war_name, gender, birth_date, thumbnail_data FROM players
            WHERE active=1 AND birth_date<>'' AND substr(birth_date,6,5)=?
            ORDER BY substr(birth_date,9,2), LOWER(COALESCE(war_name,name))""",
         (today.strftime("%m-%d"),),

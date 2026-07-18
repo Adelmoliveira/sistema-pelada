@@ -86,19 +86,23 @@ def players():
             membership_type = request.form.get("membership_type", "regular")
             if membership_type not in ("regular", "goalkeeper", "board", "veteran"):
                 raise ValueError("Classificação financeira inválida.")
+            gender = request.form.get("gender", "male")
+            if gender not in ("male", "female", "other"):
+                raise ValueError("Gênero inválido.")
             
             war_name = _validate_war_name(db, request.form.get("war_name", ""))
             processed_photo = process_material_photo(request.files.get("photo"))
             photo_data, thumbnail_data = processed_photo or ("", "")
             db.execute(
                 """INSERT INTO players
-                (name,war_name,cpf,phone,emergency_phone,email,membership_type,photo_data,thumbnail_data) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (name,war_name,cpf,phone,emergency_phone,gender,email,membership_type,photo_data,thumbnail_data) VALUES(?,?,?,?,?,?,?,?,?,?)""",
                 (
                     request.form["name"].strip(),
                     war_name,
                     normalize_cpf(request.form.get("cpf")),
                     request.form.get("phone", "").strip(),
                     request.form.get("emergency_phone", "").strip(),
+                    gender,
                     request.form.get("email", "").strip().lower(),
                     membership_type, photo_data, thumbnail_data
                 )
@@ -203,12 +207,15 @@ def edit_player(player_id):
         membership_type = request.form.get("membership_type", "regular")
         if membership_type not in ("regular", "goalkeeper", "board", "veteran"):
             flash("Classificação financeira inválida.", "danger")
+        elif request.form.get("gender", "male") not in ("male", "female", "other"):
+            flash("Gênero inválido.", "danger")
         else:
             try:
+                gender = request.form.get("gender", "male")
                 processed_photo = process_material_photo(request.files.get("photo"))
                 photo_fields = (processed_photo or (player["photo_data"], player["thumbnail_data"]))
                 db.execute(
-                    """UPDATE players SET name=?,war_name=?,cpf=?,email=?,phone=?,emergency_phone=?,membership_type=?,photo_data=?,thumbnail_data=?
+                    """UPDATE players SET name=?,war_name=?,cpf=?,email=?,phone=?,emergency_phone=?,gender=?,membership_type=?,photo_data=?,thumbnail_data=?
                     WHERE id=?""",
                     (
                         request.form["name"].strip(),
@@ -217,6 +224,7 @@ def edit_player(player_id):
                         request.form.get("email", "").strip().lower(),
                         request.form.get("phone", "").strip(),
                         request.form.get("emergency_phone", "").strip(),
+                        gender,
                         membership_type,
                         photo_fields[0], photo_fields[1],
                         player_id

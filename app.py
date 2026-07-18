@@ -204,7 +204,7 @@ def inject_user():
             db = get_db()
             if user["role"] == "client" and user["player_id"]:
                 player = db.execute("SELECT name, war_name, thumbnail_data FROM players WHERE id=?", (user["player_id"],)).fetchone()
-            today_birthdays = db.execute("""SELECT id, name, war_name, thumbnail_data
+            today_birthdays = db.execute("""SELECT id, name, war_name, gender, thumbnail_data
                 FROM players WHERE active=1 AND birth_date<>'' AND substr(birth_date,6,5)=?
                 ORDER BY LOWER(COALESCE(war_name, name))""",
                 (local_today().strftime("%m-%d"),)).fetchall()
