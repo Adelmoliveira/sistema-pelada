@@ -66,12 +66,7 @@ O e-mail do peladeiro é obrigatório para criar a cobrança Pix. Use primeiro a
 
 ## Alertas de estoque
 
-Cada produto possui um limite de alerta e um e-mail de fornecedor opcional. Quando o estoque atingir esse limite, o sistema envia um aviso uma única vez para o fornecedor e para os endereços configurados no ambiente:
-
-```env
-STOCK_ALERT_ATTENDANT_EMAIL=atendente@exemplo.com
-STOCK_ALERT_MANAGER_EMAIL=gerente@exemplo.com
-```
+Cada produto possui um limite de alerta e um e-mail de fornecedor opcional. Quando o estoque atingir esse limite, o sistema consolida todos os produtos baixos de cada fornecedor em um único aviso por e-mail.
 
 Os alertas usam a mesma conta Gmail configurada em `GMAIL_SMTP_USER` e `GMAIL_APP_PASSWORD`. Após uma reposição acima do limite, o produto fica apto a gerar um novo aviso quando voltar ao nível baixo.
 

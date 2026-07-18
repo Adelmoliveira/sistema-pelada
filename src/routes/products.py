@@ -5,7 +5,7 @@ from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import cents
 from src.services.cash_register import create_movement, get_session
-from src.services.stock_report_pdf import build_stock_report_pdf, stock_report_data
+from src.services.stock_report_pdf import build_stock_report_pdf, stock_report_data, build_low_stock_pdf, low_stock_report_data
 from src.services.stock_alerts import notify_low_stock
 from src.utils import local_today
 
@@ -246,6 +246,16 @@ def stock_report():
     return send_file(
         report, mimetype="application/pdf", as_attachment=True,
         download_name=f"relatorio-estoque-{local_today().isoformat()}.pdf",
+    )
+
+
+@bp.get("/stock/low-report.pdf")
+@roles_allowed("manager", "staff")
+def low_stock_report():
+    report = build_low_stock_pdf(low_stock_report_data(get_db()), local_today())
+    return send_file(
+        report, mimetype="application/pdf", as_attachment=False,
+        download_name=f"estoque-baixo-{local_today().isoformat()}.pdf",
     )
 
 

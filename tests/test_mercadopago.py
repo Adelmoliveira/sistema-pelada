@@ -1863,7 +1863,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("relatorio-estoque-", response.headers["Content-Disposition"])
         self.assertTrue(response.data.startswith(b"%PDF-"))
 
-    def test_low_stock_alert_notifies_supplier_attendant_and_manager_once(self):
+    def test_low_stock_alert_consolidates_products_for_supplier_once(self):
         with app.app_context(), patch.dict("os.environ", {
             "GMAIL_SMTP_USER": "bar@example.com",
             "GMAIL_APP_PASSWORD": "app-password",
@@ -1874,11 +1874,11 @@ class MercadoPagoFlowTest(unittest.TestCase):
             db.execute("UPDATE products SET stock=2,min_stock=2,supplier_email='fornecedor@example.com' WHERE id=?", (self.product_id,))
             sent = []
             result = notify_low_stock(db, [self.product_id], send_func=lambda *args: sent.append(args[2]))
-            self.assertEqual(result["sent"], 3)
-            self.assertEqual(sorted(sent), ["atendente@example.com", "fornecedor@example.com", "gerente@example.com"])
+            self.assertEqual(result["sent"], 1)
+            self.assertEqual(sent, ["fornecedor@example.com"])
             again = notify_low_stock(db, [self.product_id], send_func=lambda *args: sent.append(args[2]))
             self.assertEqual(again["skipped"], 1)
-            self.assertEqual(len(sent), 3)
+            self.assertEqual(len(sent), 1)
 
     def test_low_stock_alert_resets_after_replenishment(self):
         with app.app_context(), patch.dict("os.environ", {
@@ -1887,7 +1887,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             "STOCK_ALERT_ATTENDANT_EMAIL": "atendente@example.com",
         }):
             db = get_db()
-            db.execute("UPDATE products SET stock=1,min_stock=2,supplier_email='' WHERE id=?", (self.product_id,))
+            db.execute("UPDATE products SET stock=1,min_stock=2,supplier_email='fornecedor@example.com' WHERE id=?", (self.product_id,))
             sent = []
             notify_low_stock(db, [self.product_id], send_func=lambda *args: sent.append(args[2]))
             db.execute("UPDATE products SET stock=5 WHERE id=?", (self.product_id,))
@@ -1896,6 +1896,19 @@ class MercadoPagoFlowTest(unittest.TestCase):
             result = notify_low_stock(db, [self.product_id], send_func=lambda *args: sent.append(args[2]))
             self.assertEqual(result["sent"], 1)
             self.assertEqual(len(sent), 2)
+
+    def test_staff_and_manager_can_generate_low_stock_pdf(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE products SET stock=1,min_stock=5,supplier_email='fornecedor@example.com' WHERE id=?", (self.product_id,))
+            db.commit()
+        response = self.client.get("/stock/low-report.pdf")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertIn("estoque-baixo-", response.headers["Content-Disposition"])
+        self.assertTrue(response.data.startswith(b"%PDF-"))
     def test_cash_transfer_history_filters_and_pdf(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id

@@ -4,11 +4,11 @@
 <div class="card shadow-sm mb-4"><div class="card-body">
   <div class="d-flex flex-wrap align-items-end justify-content-between gap-3">
     <div><h2 class="h5 mb-1">Relatório de movimentação</h2><div class="text-muted small">Consulte o estoque atual e as entradas e saídas por produto.</div></div>
-    <form method="get" action="{{url_for('products.stock_report')}}" class="d-flex flex-wrap align-items-end gap-2">
+    <div class="d-flex flex-wrap align-items-end gap-2"><a class="btn btn-outline-danger" href="{{url_for('products.low_stock_report')}}" target="_blank" rel="noopener">PDF estoque baixo</a><form method="get" action="{{url_for('products.stock_report')}}" class="d-flex flex-wrap align-items-end gap-2">
       <div><label class="form-label small mb-1">De</label><input type="date" name="start" value="{{report_start}}" class="form-control"></div>
       <div><label class="form-label small mb-1">Até</label><input type="date" name="end" value="{{report_end}}" class="form-control"></div>
       <button class="btn btn-outline-primary">Gerar relatório PDF</button>
-    </form>
+    </form></div>
   </div>
 </div></div>
 <div class="row g-4">

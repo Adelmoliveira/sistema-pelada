@@ -3,82 +3,61 @@ import os
 from src.services.email_reminders import send_gmail
 
 
-def _recipients(product):
-    values = [
-        product["supplier_email"] if product and "supplier_email" in product.keys() else "",
-        os.environ.get("STOCK_ALERT_ATTENDANT_EMAIL", ""),
-        os.environ.get("STOCK_ALERT_MANAGER_EMAIL", ""),
-    ]
-    recipients = []
-    for value in values:
-        for email in str(value or "").replace(";", ",").split(","):
-            email = email.strip().lower()
-            if email and "@" in email and email not in recipients:
-                recipients.append(email)
-    return recipients
+def _supplier_email(product):
+    email = str(product["supplier_email"] or "").strip().lower()
+    return email if "@" in email else ""
 
 
-def notify_low_stock(db, product_ids, send_func=send_gmail):
-    """Notify configured recipients when products cross their low-stock limit.
+def notify_low_stock(db, product_ids=None, send_func=send_gmail):
+    """Send one consolidated low-stock message per supplier.
 
-    A state row prevents repeated messages while the product remains below the
-    limit. A later replenishment above the limit resets that state.
+    Every active low-stock product is considered. A state row prevents repeat
+    messages until that product is replenished above its configured limit.
     """
-    result = {"sent": 0, "skipped": 0, "without_recipients": 0, "failed": 0}
-    for product_id in set(product_ids or []):
-        product = db.execute(
-            "SELECT id,name,stock,min_stock,supplier_email,active FROM products WHERE id=?",
-            (product_id,),
-        ).fetchone()
-        if not product or not product["active"]:
+    result = {"sent": 0, "skipped": 0, "without_supplier": 0, "failed": 0}
+    products = db.execute(
+        """SELECT id,name,stock,min_stock,supplier_email,active FROM products
+           WHERE active=1 AND stock<=min_stock ORDER BY LOWER(name),name"""
+    ).fetchall()
+    groups = {}
+    for product in products:
+        supplier = _supplier_email(product)
+        if not supplier:
+            result["without_supplier"] += 1
             continue
-        state = db.execute(
-            "SELECT alerted FROM stock_alert_states WHERE product_id=?", (product_id,)
-        ).fetchone()
-        if product["stock"] > product["min_stock"]:
-            db.execute(
-                "INSERT INTO stock_alert_states(product_id,alerted,last_stock) VALUES(?,0,?) "
-                "ON CONFLICT(product_id) DO UPDATE SET alerted=0,last_stock=excluded.last_stock",
-                (product_id, product["stock"]),
-            )
-            continue
+        state = db.execute("SELECT alerted FROM stock_alert_states WHERE product_id=?", (product["id"],)).fetchone()
         if state and state["alerted"]:
             result["skipped"] += 1
-            db.execute(
-                "UPDATE stock_alert_states SET last_stock=? WHERE product_id=?",
-                (product["stock"], product_id),
-            )
             continue
-        recipients = _recipients(product)
-        if not recipients:
-            result["without_recipients"] += 1
-            continue
-        subject = f"Estoque baixo: {product['name']}"
-        body = (
-            "Olá,\n\n"
-            f"O produto {product['name']} atingiu o nível mínimo de estoque.\n\n"
-            f"Quantidade atual: {product['stock']} unidade(s)\n"
-            f"Limite configurado: {product['min_stock']} unidade(s)\n\n"
-            "Verifique a necessidade de reposição.\n\n"
-            "PELADEIROS GPCTA"
-        )
-        sender = os.environ.get("GMAIL_SMTP_USER", "")
-        password = os.environ.get("GMAIL_APP_PASSWORD", "")
+        groups.setdefault(supplier, []).append(product)
+
+    sender = os.environ.get("GMAIL_SMTP_USER", "")
+    password = os.environ.get("GMAIL_APP_PASSWORD", "")
+    for supplier, supplier_products in groups.items():
+        lines = ["Olá,", "", "Os seguintes produtos atingiram o nível mínimo de estoque:", ""]
+        for product in supplier_products:
+            lines.append(f"- {product['name']}: {product['stock']} unidade(s) (limite: {product['min_stock']})")
+        lines.extend(["", "Verifique a necessidade de reposição.", "", "PELADEIROS GPCTA"])
         try:
             if not sender or not password:
-                result["without_recipients"] += 1
+                result["failed"] += 1
                 continue
-            for recipient in recipients:
-                send_func(sender, password, recipient, subject, body)
-            db.execute(
-                """INSERT INTO stock_alert_states(product_id,alerted,last_stock,last_notified_at)
-                   VALUES(?,1,?,CURRENT_TIMESTAMP)
-                   ON CONFLICT(product_id) DO UPDATE SET alerted=1,last_stock=excluded.last_stock,
-                   last_notified_at=CURRENT_TIMESTAMP""",
-                (product_id, product["stock"]),
-            )
-            result["sent"] += len(recipients)
+            send_func(sender, password, supplier, "Alerta de estoque baixo - PELADEIROS GPCTA", "\n".join(lines))
+            for product in supplier_products:
+                db.execute(
+                    """INSERT INTO stock_alert_states(product_id,alerted,last_stock,last_notified_at)
+                       VALUES(?,1,?,CURRENT_TIMESTAMP)
+                       ON CONFLICT(product_id) DO UPDATE SET alerted=1,last_stock=excluded.last_stock,
+                       last_notified_at=CURRENT_TIMESTAMP""",
+                    (product["id"], product["stock"]),
+                )
+            result["sent"] += 1
         except Exception:
             result["failed"] += 1
+
+    db.execute(
+        """UPDATE stock_alert_states SET alerted=0,last_stock=(SELECT p.stock FROM products p WHERE p.id=stock_alert_states.product_id)
+           WHERE alerted=1 AND EXISTS (SELECT 1 FROM products p WHERE p.id=stock_alert_states.product_id AND p.stock>p.min_stock)"""
+    )
     db.commit()
     return result
