@@ -43,6 +43,21 @@ def _history_filters():
     return start.isoformat(), end.isoformat(), account, direction, category, query
 
 
+def _history_page(name):
+    try:
+        return max(1, int(request.args.get(name, 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _paginate_history(rows, requested_page, page_size):
+    total = len(rows)
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(requested_page, pages)
+    start = (page - 1) * page_size
+    return rows[start : start + page_size], page, pages, total
+
+
 @bp.get("")
 @roles_allowed("manager", "staff")
 def dashboard():
@@ -423,10 +438,23 @@ def reopen_register(session_id):
 def history():
     start, end, account, direction, category, query = _history_filters()
     data = history_rows(get_db(), start, end, account, direction, category, query)
+    data["movements"], movements_page, movements_pages, movements_total = _paginate_history(
+        data["movements"], _history_page("movements_page"), 5
+    )
+    data["sessions"], sessions_page, sessions_pages, sessions_total = _paginate_history(
+        data["sessions"], _history_page("sessions_page"), 5
+    )
+    data["sales"], sales_page, sales_pages, sales_total = _paginate_history(
+        data["sales"], _history_page("sales_page"), 10
+    )
     return render_template(
         "cash_history.html", data=data, start=start, end=end, account=account,
         direction=direction, category=category, query=query,
         account_labels=ACCOUNT_LABELS, category_labels=CATEGORY_LABELS,
+        movements_page=movements_page, movements_pages=movements_pages,
+        movements_total=movements_total, sessions_page=sessions_page,
+        sessions_pages=sessions_pages, sessions_total=sessions_total,
+        sales_page=sales_page, sales_pages=sales_pages, sales_total=sales_total,
     )
 
 
