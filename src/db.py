@@ -184,6 +184,9 @@ CREATE TABLE IF NOT EXISTS load_entries (
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged')),
     discharged_at TEXT,
     discharged_by INTEGER REFERENCES users(id),
+    last_checked_at TEXT,
+    last_checked_by INTEGER REFERENCES users(id),
+    next_check_due_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -642,6 +645,9 @@ def init_sqlite(wrapper):
         "status": "TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged'))",
         "discharged_at": "TEXT",
         "discharged_by": "INTEGER REFERENCES users(id)",
+        "last_checked_at": "TEXT",
+        "last_checked_by": "INTEGER REFERENCES users(id)",
+        "next_check_due_at": "TEXT",
     }
     for column, definition in load_migrations.items():
         if column not in load_columns:
@@ -705,6 +711,9 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS area_code TEXT NOT NULL DEFAULT 'BAR'")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_at TIMESTAMP")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_by INTEGER REFERENCES users(id)")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS last_checked_by INTEGER REFERENCES users(id)")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS next_check_due_at TIMESTAMP")
     wrapper.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")

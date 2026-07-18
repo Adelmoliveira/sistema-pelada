@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block title %}Conferência de carga · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+  <div><a class="btn btn-sm btn-outline-secondary mb-2" href="{{url_for('infra.load_relation')}}">← Voltar para Relação de Carga</a><h1 class="h3 mb-1">Conferência de carga</h1><p class="text-muted mb-0">Leia o QR Code fixado em cada carga e confirme a conferência no cadastro.</p></div>
+  <div class="text-end"><div class="fs-4 fw-bold text-danger">{{entries|length}}</div><small class="text-muted">pendente(s) de {{total}}</small></div>
+</div>
+<div class="alert alert-info">Cada carga deve ser conferida a cada 6 meses. Ao ler o QR Code, abra a página da carga e toque em <strong>Validar conferência</strong>.</div>
+<div class="card shadow-sm"><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>BMP</th><th>Material</th><th>Localização</th><th>Vencimento</th><th></th></tr></thead><tbody>
+{% for entry in entries %}<tr><td><strong>{{entry.bmp}}</strong></td><td>{{entry.material_description}}</td><td>{{entry.location or '—'}}</td><td>{{entry.next_check_due_at|brdate if entry.next_check_due_at else 'Nunca conferida'}}</td><td><a class="btn btn-sm btn-outline-primary" href="{{url_for('infra.load_entry_detail',entry_id=entry.id)}}">Abrir carga</a></td></tr>{% else %}<tr><td colspan="5" class="text-center py-4 text-success">Todas as cargas estão conferidas dentro do prazo.</td></tr>{% endfor %}
+</tbody></table></div></div>
+{% endblock %}

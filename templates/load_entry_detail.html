@@ -14,6 +14,7 @@
       <dt class="col-sm-4">Nº de série</dt><dd class="col-sm-8">{{entry.serial_number or '—'}}</dd>
       <dt class="col-sm-4">Localização</dt><dd class="col-sm-8">{{entry.location or '—'}}</dd>
       <dt class="col-sm-4">Situação</dt><dd class="col-sm-8"><span class="badge {{'text-bg-success' if entry.status == 'active' else 'text-bg-secondary'}}">{{'Em carga' if entry.status == 'active' else 'Descarregado'}}</span></dd>
+      {% if entry.status == 'active' %}<dt class="col-sm-4">Conferência</dt><dd class="col-sm-8">{% if check_due %}<span class="text-danger fw-bold">Pendente</span>{% else %}<span class="text-success">Válida até {{entry.next_check_due_at|brdate}}</span>{% endif %}</dd>{% endif %}
       {% if entry.status == 'discharged' %}<dt class="col-sm-4">Descarregado em</dt><dd class="col-sm-8">{{entry.discharged_at|brdate}}</dd><dt class="col-sm-4">Descarregado por</dt><dd class="col-sm-8">{{entry.discharged_by_name or '—'}}</dd>{% endif %}
       <dt class="col-sm-4">Cadastro</dt><dd class="col-sm-8">{{entry.created_at|brdate}}</dd>
       <dt class="col-sm-4">Última atualização</dt><dd class="col-sm-8">{{entry.updated_at|brdate}}</dd>
@@ -24,4 +25,5 @@
     {% if photos %}<div class="load-gallery">{% for photo in photos %}<a href="{{photo.photo_data}}" target="_blank" rel="noopener"><img src="{{photo.thumbnail_data}}" alt="Foto {{loop.index}} de {{entry.bmp}}"></a>{% endfor %}</div>{% else %}<div class="material-photo-placeholder">Nenhuma foto cadastrada</div>{% endif %}
   </div></div></div>
 </div>
+{% if entry.status == 'active' %}<div class="card shadow-sm mt-4 border-primary"><div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3"><div><h2 class="h5 mb-1">Conferência semestral</h2><p class="text-muted mb-0">Use esta ação depois de ler o QR Code e verificar fisicamente a carga.</p></div><form method="post" action="{{url_for('infra.check_load_entry',entry_id=entry.id)}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-primary">Validar conferência</button></form></div></div>{% endif %}
 {% endblock %}
