@@ -1462,31 +1462,39 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("R$ 103,00", page)
         self.assertIn("Estornado", page)
 
-        closed = self.client.post(
-            "/cash/close",
-            data={"counted_cash": "103,00", "counted_bank": "504,00", "closing_notes": "Conferido."},
-        )
+        closed = self.client.post("/cash/close", data={"counted_cash": "103,00", "counted_bank": "504,00", "closing_notes": "Conferido."})
         self.assertEqual(closed.status_code, 303)
         with app.app_context():
             db = get_db()
             cash_session = get_session(db)
             self.assertEqual(cash_session["status"], "closed")
-            self.assertEqual(
-                (cash_session["expected_cash_cents"], cash_session["expected_bank_cents"], cash_session["cash_difference_cents"], cash_session["bank_difference_cents"]),
-                (10300, 50500, 0, -100),
-            )
+            self.assertEqual((cash_session["expected_cash_cents"], cash_session["expected_bank_cents"], cash_session["cash_difference_cents"], cash_session["bank_difference_cents"]), (10300, 50500, 0, -100))
             movement_count = db.execute("SELECT COUNT(*) total FROM cash_movements").fetchone()["total"]
-
-        rejected = self.client.post(
-            "/cash/movements",
-            data={"account": "cash", "direction": "in", "category": "other", "amount": "1,00", "description": "Tardio"},
-        )
+        rejected = self.client.post("/cash/movements", data={"account": "cash", "direction": "in", "category": "other", "amount": "1,00", "description": "Tardio"})
         self.assertEqual(rejected.status_code, 303)
         with app.app_context():
-            self.assertEqual(
-                get_db().execute("SELECT COUNT(*) total FROM cash_movements").fetchone()["total"],
-                movement_count,
-            )
+            self.assertEqual(get_db().execute("SELECT COUNT(*) total FROM cash_movements").fetchone()["total"], movement_count)
+
+    def test_cash_sales_are_paginated_by_ten(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        self.client.post("/cash/open", data={"opening_cash": "0,00", "opening_bank": "0,00"})
+        with app.app_context():
+            db = get_db()
+            today = local_today().isoformat()
+            for amount in range(1, 13):
+                db.execute(
+                    """INSERT INTO sales(player_id,payment_method,total_cents,paid,paid_at)
+                       VALUES(?, 'Dinheiro', ?, 1, ?)""",
+                    (self.player_id, amount * 100, f"{today} 10:{amount:02d}:00"),
+                )
+            db.commit()
+        first = self.client.get("/cash").get_data(as_text=True)
+        second = self.client.get("/cash?sales_page=2").get_data(as_text=True)
+        self.assertIn("12 venda(s)", first)
+        self.assertIn('aria-label="Paginação das vendas"', first)
+        self.assertIn("#12", first)
+        self.assertIn("#2", second)
 
     def test_staff_operates_cash_register_without_receiving_financial_balances(self):
         yesterday = (local_today() - timedelta(days=1)).isoformat()

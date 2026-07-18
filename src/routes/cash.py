@@ -66,9 +66,19 @@ def dashboard():
             (selected_date,),
         ).fetchone()
         summary, history, previous_session = None, [], None
+        sales_page_rows, sales_page, sales_pages, sales_total = [], 1, 1, 0
     else:
         session = get_session(db, selected_date)
         summary = session_summary(db, session) if session else None
+        all_sales = summary["sales"] if summary else []
+        sales_total = len(all_sales)
+        try:
+            sales_page = max(1, int(request.args.get("sales_page", 1)))
+        except ValueError:
+            sales_page = 1
+        sales_pages = max(1, (sales_total + 9) // 10)
+        sales_page = min(sales_page, sales_pages)
+        sales_page_rows = all_sales[(sales_page - 1) * 10:sales_page * 10]
         history = db.execute(
             """SELECT s.*,op.name opened_by_name,cl.name closed_by_name
             FROM cash_sessions s
@@ -92,6 +102,10 @@ def dashboard():
         selected_date=selected_date,
         previous_session=previous_session,
         staff_limited=staff_limited,
+        sales_page_rows=sales_page_rows,
+        sales_page=sales_page,
+        sales_pages=sales_pages,
+        sales_total=sales_total,
     )
 
 
