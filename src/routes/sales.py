@@ -12,6 +12,7 @@ from src.services.mercadopago import (
     get_order,
     validate_webhook_signature,
 )
+from src.services.stock_alerts import notify_low_stock
 
 bp = Blueprint("sales", __name__)
 PIX_TOKEN_MAX_AGE = 60 * 60
@@ -159,6 +160,7 @@ def sale():
                     )
                     if updated.rowcount != 1:
                         raise ValueError("O estoque mudou durante a venda. Tente novamente.")
+            notify_low_stock(db, requested.keys())
             
             if cash_pending:
                 flash(
@@ -212,6 +214,7 @@ def delete_sale(sale_id):
                         (item["quantity"], item["product_id"]),
                     )
             db.execute("DELETE FROM sales WHERE id=?", (sale_id,))
+        notify_low_stock(db, [item["product_id"] for item in items])
         flash(f"Venda #{sale_id} apagada e itens devolvidos ao estoque.", "success")
     except Exception as exc:
         current_app.logger.error(f"Erro ao deletar venda {sale_id}: {exc}")
@@ -308,6 +311,7 @@ def deliver_order(sale_id):
 def cancel_cash_order(sale_id):
     db = get_db()
     try:
+        items = db.execute("SELECT product_id FROM sale_items WHERE sale_id=?", (sale_id,)).fetchall()
         with db:
             updated = db.execute(
                 """UPDATE sales SET payment_status='canceled',ready_for_delivery=0
@@ -318,6 +322,7 @@ def cancel_cash_order(sale_id):
             if updated.rowcount != 1:
                 return jsonify(error="Pedido em dinheiro não encontrado ou já finalizado."), 409
             restore_reserved_stock(db, sale_id)
+        notify_low_stock(db, [item["product_id"] for item in items])
     except Exception as exc:
         current_app.logger.error(f"Erro ao cancelar pedido em dinheiro {sale_id}: {exc}")
         return jsonify(error="Não foi possível cancelar o pedido."), 500
@@ -434,6 +439,7 @@ def mercadopago_create_order():
             (order_id, order_payment_id(order), sale_id),
         )
         db.commit()
+        notify_low_stock(db, requested.keys())
         encoded_image = generate_qrcode_base64(qr_data)
         return jsonify(
             sale_id=sale_id,

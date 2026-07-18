@@ -64,6 +64,17 @@ https://SEU-DOMINIO/webhooks/mercadopago
 
 O e-mail do peladeiro é obrigatório para criar a cobrança Pix. Use primeiro as credenciais de teste e o simulador de Webhooks. Troque pelo Access Token de produção somente depois de validar criação, aprovação, expiração e cancelamento das cobranças.
 
+## Alertas de estoque
+
+Cada produto possui um limite de alerta e um e-mail de fornecedor opcional. Quando o estoque atingir esse limite, o sistema envia um aviso uma única vez para o fornecedor e para os endereços configurados no ambiente:
+
+```env
+STOCK_ALERT_ATTENDANT_EMAIL=atendente@exemplo.com
+STOCK_ALERT_MANAGER_EMAIL=gerente@exemplo.com
+```
+
+Os alertas usam a mesma conta Gmail configurada em `GMAIL_SMTP_USER` e `GMAIL_APP_PASSWORD`. Após uma reposição acima do limite, o produto fica apto a gerar um novo aviso quando voltar ao nível baixo.
+
 Para recuperar a senha de um Gerente ou Staff no Supabase, configure a mesma `DATABASE_URL` em `.env.local` e execute `python scripts/reset_postgres_password.py`. A senha é solicitada de forma oculta e não fica salva no projeto.
 
 ## Backup
