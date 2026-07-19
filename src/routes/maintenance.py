@@ -13,6 +13,9 @@ from src.utils import cents, local_today
 
 bp = Blueprint("maintenance", __name__, url_prefix="/infra/maintenance")
 MAX_PHASE_PHOTOS = 6
+# Áreas disponíveis para chamados. "EXT" é exclusiva de manutenção e não
+# altera as áreas usadas para os códigos patrimoniais da Relação de Carga.
+MAINTENANCE_AREAS = {**LOAD_AREAS, "EXT": "Área externa"}
 CATEGORIES = {
     "electrical": "Elétrica", "plumbing": "Hidráulica", "civil": "Civil",
     "painting": "Pintura", "equipment": "Equipamentos", "cleaning": "Limpeza",
@@ -47,7 +50,7 @@ def _form_values():
         raise ValueError("O título do problema é obrigatório.")
     if not description:
         raise ValueError("A descrição do problema é obrigatória.")
-    if area_code not in LOAD_AREAS:
+    if area_code not in MAINTENANCE_AREAS:
         raise ValueError("Selecione uma área válida.")
     if category not in CATEGORIES:
         raise ValueError("Selecione um tipo de manutenção válido.")
@@ -95,7 +98,7 @@ def _request_rows(db):
              FROM maintenance_requests mr"""
     conditions, params = [], []
     filters = {
-        "area": ("mr.area_code=?", LOAD_AREAS),
+        "area": ("mr.area_code=?", MAINTENANCE_AREAS),
         "category": ("mr.category=?", CATEGORIES),
         "priority": ("mr.priority=?", PRIORITIES),
         "status": ("mr.status=?", STATUSES),
@@ -120,7 +123,7 @@ def _request_rows(db):
 
 def _template_context():
     return dict(
-        areas=LOAD_AREAS, categories=CATEGORIES, priorities=PRIORITIES,
+        areas=MAINTENANCE_AREAS, categories=CATEGORIES, priorities=PRIORITIES,
         statuses=STATUSES, max_phase_photos=MAX_PHASE_PHOTOS,
     )
 
@@ -181,7 +184,7 @@ def dashboard():
     ).fetchall()
     return render_template(
         "maintenance_dashboard.html", metrics=metrics, by_status=by_status,
-        recent=recent, statuses=STATUSES, priorities=PRIORITIES, areas=LOAD_AREAS,
+        recent=recent, statuses=STATUSES, priorities=PRIORITIES, areas=MAINTENANCE_AREAS,
         today=today,
     )
 
