@@ -568,11 +568,68 @@ def migrate_product_categories(connection):
     """)
     connection.execute("PRAGMA foreign_keys = ON")
 
+
+def migrate_maintenance_areas(connection):
+    """Allow the external area in databases created before that option existed."""
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='maintenance_requests'"
+    ).fetchone()
+    if not row or "'EXT'" in (row[0] or ""):
+        return
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.executescript("""
+        BEGIN;
+        ALTER TABLE maintenance_photos RENAME TO maintenance_photos_area_old;
+        ALTER TABLE maintenance_requests RENAME TO maintenance_requests_area_old;
+        CREATE TABLE maintenance_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            area_code TEXT NOT NULL CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','EXT')),
+            location TEXT DEFAULT '',
+            category TEXT NOT NULL CHECK(category IN ('electrical','plumbing','civil','painting','equipment','cleaning','other')),
+            priority TEXT NOT NULL CHECK(priority IN ('low','medium','high','urgent')),
+            description TEXT NOT NULL,
+            responsible TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','analysis','in_progress','waiting_material','completed')),
+            occurred_on TEXT NOT NULL,
+            due_on TEXT,
+            resolution TEXT DEFAULT '',
+            completed_on TEXT,
+            cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents >= 0),
+            notes TEXT DEFAULT '',
+            created_by INTEGER REFERENCES users(id),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO maintenance_requests
+        SELECT * FROM maintenance_requests_area_old;
+        CREATE TABLE maintenance_photos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL REFERENCES maintenance_requests(id) ON DELETE CASCADE,
+            phase TEXT NOT NULL CHECK(phase IN ('problem','resolution')),
+            photo_data TEXT NOT NULL,
+            thumbnail_data TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO maintenance_photos
+        SELECT * FROM maintenance_photos_area_old;
+        DROP TABLE maintenance_photos_area_old;
+        DROP TABLE maintenance_requests_area_old;
+        CREATE INDEX IF NOT EXISTS idx_maintenance_status ON maintenance_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_maintenance_area ON maintenance_requests(area_code);
+        CREATE INDEX IF NOT EXISTS idx_maintenance_photos_request ON maintenance_photos(request_id);
+        COMMIT;
+    """)
+    connection.execute("PRAGMA foreign_keys = ON")
+
 def init_sqlite(wrapper):
     conn = wrapper.conn
     migrate_user_roles(conn)
     migrate_payment_method(conn)
     conn.executescript(SCHEMA)
+    migrate_maintenance_areas(conn)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(players)")}
     if "email" not in columns:
         conn.execute("ALTER TABLE players ADD COLUMN email TEXT DEFAULT ''")
@@ -714,6 +771,8 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMP")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS last_checked_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS next_check_due_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE maintenance_requests DROP CONSTRAINT IF EXISTS maintenance_requests_area_code_check")
+    wrapper.execute("ALTER TABLE maintenance_requests ADD CONSTRAINT maintenance_requests_area_code_check CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','EXT'))")
     wrapper.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
