@@ -13,7 +13,9 @@ import android.webkit.WebViewClient;
 
 public class MainActivity extends Activity {
     private static final String PANEL_URL = "https://sistema-pelada-one.vercel.app/login?next=%2Fpainel";
+    private static final String PANEL_USERNAME = "painel";
     private WebView webView;
+    private boolean autoLoginAttempted;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -29,7 +31,22 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        webView.setWebViewClient(new WebViewClient());
+        webView.setWebViewClient(new WebViewClient() {
+            @Override public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                if (url.contains("/login") && !autoLoginAttempted) {
+                    autoLoginAttempted = true;
+                    String username = PANEL_USERNAME.replace("'", "\\'");
+                    view.evaluateJavascript(
+                        "(function(){var u=document.querySelector('input[name=username]');" +
+                        "if(!u)return;u.value='" + username + "';" +
+                        "var p=document.querySelector('input[name=password]');if(p)p.value='';" +
+                        "var f=u.form;if(f)f.submit();})()", null);
+                } else if (!url.contains("/login")) {
+                    autoLoginAttempted = false;
+                }
+            }
+        });
         webView.setWebChromeClient(new WebChromeClient());
         setContentView(webView);
         webView.loadUrl(PANEL_URL);

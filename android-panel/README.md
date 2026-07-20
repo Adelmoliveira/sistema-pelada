@@ -12,6 +12,6 @@ Abra esta pasta no Android Studio com o SDK Android instalado e execute:
 
 O APK será gerado em `app/build/outputs/apk/debug/app-debug.apk`.
 
-Na primeira execução, informe o usuário sem senha do perfil **Painel**. A sessão fica salva no aplicativo.
+O aplicativo preenche automaticamente o usuário `painel`. Cadastre esse usuário com o perfil **Painel** e sem senha em Administração → Usuários. A sessão fica salva no aplicativo.
 
 O Fire TV 3ª geração pode receber o APK por ADB para teste. Para publicação, gere uma versão assinada (`assembleRelease`) com um keystore permanente.
