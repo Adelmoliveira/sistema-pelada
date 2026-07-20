@@ -7,6 +7,7 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.WebChromeClient;
+import android.webkit.CookieManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -31,17 +32,17 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
+        CookieManager.getInstance().setAcceptCookie(true);
         webView.setWebViewClient(new WebViewClient() {
             @Override public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 if (url.contains("/login") && !autoLoginAttempted) {
                     autoLoginAttempted = true;
                     String username = PANEL_USERNAME.replace("'", "\\'");
-                    view.evaluateJavascript(
-                        "(function(){var u=document.querySelector('input[name=username]');" +
+                    view.loadUrl("javascript:(function(){var u=document.querySelector('input[name=username]');" +
                         "if(!u)return;u.value='" + username + "';" +
                         "var p=document.querySelector('input[name=password]');if(p)p.value='';" +
-                        "var f=u.form;if(f)f.submit();})()", null);
+                        "var f=u.form;if(f)f.submit();})()");
                 } else if (!url.contains("/login")) {
                     autoLoginAttempted = false;
                 }
