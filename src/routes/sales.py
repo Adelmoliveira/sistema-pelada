@@ -13,6 +13,7 @@ from src.services.mercadopago import (
     validate_webhook_signature,
 )
 from src.services.stock_alerts import notify_low_stock
+from src.services.purchase_receipts import send_purchase_receipt
 
 bp = Blueprint("sales", __name__)
 PIX_TOKEN_MAX_AGE = 60 * 60
@@ -304,7 +305,11 @@ def deliver_order(sale_id):
     db.commit()
     if updated.rowcount != 1:
         return jsonify(error="Pedido não encontrado ou já entregue."), 409
-    return jsonify(ok=True, sale_id=sale_id)
+    receipt_status = send_purchase_receipt(
+        db, sale_id, current_app.config.get("GMAIL_SMTP_USER", ""),
+        current_app.config.get("GMAIL_APP_PASSWORD", ""),
+    )
+    return jsonify(ok=True, sale_id=sale_id, receipt_status=receipt_status)
 
 @bp.post("/orders/<int:sale_id>/cancel")
 @roles_allowed("manager", "staff")
