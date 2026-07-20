@@ -9,12 +9,16 @@ from src.utils import local_today
 bp = Blueprint("players", __name__)
 
 
-def _player_report_rows(db, query=""):
+def _player_report_rows(db, query="", address_filter=""):
     rows = db.execute("SELECT * FROM players WHERE active=1").fetchall()
     query = (query or "").strip()
     if query:
         folded = query.casefold()
         rows = [row for row in rows if folded in (row["war_name"] or "").casefold() or folded in (row["name"] or "").casefold()]
+    if address_filter == "registered":
+        rows = [row for row in rows if (row["address_street"] or "").strip() or (row["postal_code"] or "").strip()]
+    elif address_filter == "missing":
+        rows = [row for row in rows if not (row["address_street"] or "").strip() and not (row["postal_code"] or "").strip()]
     return sorted(rows, key=lambda row: alphabetical_key(row["war_name"] or row["name"]))
 
 
@@ -22,7 +26,10 @@ def _player_report_rows(db, query=""):
 @roles_allowed("manager")
 def players_report():
     query = request.args.get("q", "").strip()
-    all_players = _player_report_rows(get_db(), query)
+    address_filter = request.args.get("address", "")
+    if address_filter not in {"", "registered", "missing"}:
+        address_filter = ""
+    all_players = _player_report_rows(get_db(), query, address_filter)
     per_page = 10
     try:
         page = max(1, int(request.args.get("page", 1)))
@@ -31,14 +38,17 @@ def players_report():
     pages = max(1, (len(all_players) + per_page - 1) // per_page)
     page = min(page, pages)
     players = all_players[(page - 1) * per_page:page * per_page]
-    return render_template("players_report.html", players=players, query=query, page=page, pages=pages, total=len(all_players))
+    return render_template("players_report.html", players=players, query=query, address_filter=address_filter, page=page, pages=pages, total=len(all_players))
 
 
 @bp.get("/players/report.pdf")
 @roles_allowed("manager")
 def players_report_pdf():
     query = request.args.get("q", "").strip()
-    report = build_players_pdf(_player_report_rows(get_db(), query), local_today(), query)
+    address_filter = request.args.get("address", "")
+    if address_filter not in {"", "registered", "missing"}:
+        address_filter = ""
+    report = build_players_pdf(_player_report_rows(get_db(), query, address_filter), local_today(), query)
     return send_file(report, mimetype="application/pdf", as_attachment=True, download_name="cadastro-completo-peladeiros.pdf")
 
 
