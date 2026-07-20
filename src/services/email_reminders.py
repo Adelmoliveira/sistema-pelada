@@ -114,6 +114,21 @@ def send_gmail(sender, app_password, recipient, subject, body):
         smtp.send_message(message)
 
 
+def send_gmail_html(sender, app_password, recipient, subject, body, html_body):
+    """Send a message with a custom HTML layout and a plain-text fallback."""
+    sender = sender.strip()
+    app_password = app_password.replace(" ", "").strip()
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = recipient
+    message["Subject"] = subject
+    message.set_content(body)
+    message.add_alternative(html_body, subtype="html")
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=20) as smtp:
+        smtp.login(sender, app_password)
+        smtp.send_message(message)
+
+
 def dispatch_reminders(db, settings, sender, app_password, today, send_func=send_gmail):
     result = {"sent": 0, "failed": 0, "skipped": 0, "without_email": 0}
     period = today.strftime("%Y-%m")
