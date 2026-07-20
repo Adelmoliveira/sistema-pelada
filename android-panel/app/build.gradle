@@ -1,0 +1,5 @@
+plugins { id "com.android.application" }
+
+android { namespace "br.com.gpcta.painel"; compileSdk 35
+    defaultConfig { applicationId "br.com.gpcta.painel"; minSdk 23; targetSdk 28; versionCode 3; versionName "1.2.0" }
+}

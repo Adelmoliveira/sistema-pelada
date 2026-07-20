@@ -5,3 +5,9 @@ bar.db
 .env
 .env.local
 
+# Android/Gradle local and generated files
+.DS_Store
+android-panel/.gradle/
+android-panel/.idea/
+android-panel/**/build/
+android-panel/local.properties

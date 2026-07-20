@@ -198,6 +198,14 @@ def stock():
         return redirect(url_for("products.stock"))
 
     product_rows = db.execute("SELECT * FROM products WHERE active=1 ORDER BY stock, name").fetchall()
+    history_total = db.execute("SELECT COUNT(*) total FROM restocks").fetchone()["total"]
+    try:
+        history_page = max(1, int(request.args.get("history_page", 1)))
+    except (TypeError, ValueError):
+        history_page = 1
+    history_pages = max(1, (history_total + 5) // 6)
+    history_page = min(history_page, history_pages)
+    history_offset = (history_page - 1) * 6
     history = db.execute(
         """SELECT r.*,p.name product_name,m.account payment_account,m.amount_cents paid_amount_cents,
         c.corrected_quantity,c.corrected_unit_cost_cents,
@@ -208,7 +216,8 @@ def stock():
             SELECT MAX(c2.id) FROM restock_corrections c2 WHERE c2.restock_id=r.id
         )
         LEFT JOIN users u ON u.id=c.created_by
-        ORDER BY r.id DESC LIMIT 30"""
+        ORDER BY r.id DESC LIMIT ? OFFSET ?""",
+        (6, history_offset),
     ).fetchall()
     adjustments = db.execute(
         """SELECT a.*,p.name product_name,u.name user_name FROM stock_adjustments a
@@ -216,7 +225,9 @@ def stock():
         ORDER BY a.id DESC LIMIT 30"""
     ).fetchall()
     return render_template("stock.html", products=product_rows, history=history, adjustments=adjustments,
-                           report_start=request.args.get("start", ""), report_end=request.args.get("end", ""))
+                           history_total=history_total, history_page=history_page,
+                           history_pages=history_pages, report_start=request.args.get("start", ""),
+                           report_end=request.args.get("end", ""))
 
 
 @bp.get("/stock/report.pdf")
