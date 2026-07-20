@@ -688,6 +688,8 @@ def init_sqlite(wrapper):
         "ready_for_delivery": "INTEGER NOT NULL DEFAULT 0",
         "delivered_at": "TEXT",
         "delivered_by": "INTEGER REFERENCES users(id)",
+        "receipt_sent_at": "TEXT",
+        "receipt_error": "TEXT DEFAULT ''",
     }
     for column, definition in sale_migrations.items():
         if column not in sale_columns:
@@ -764,6 +766,8 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS ready_for_delivery INTEGER NOT NULL DEFAULT 0")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_by INTEGER REFERENCES users(id)")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_sent_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_error TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS area_code TEXT NOT NULL DEFAULT 'BAR'")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_at TIMESTAMP")
