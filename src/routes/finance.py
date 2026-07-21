@@ -113,6 +113,30 @@ def dashboard():
            GROUP BY direction""",
         (start, end),
     ).fetchall()
+    product_rows = db.execute(
+        """SELECT p.name,COALESCE(SUM(i.quantity),0) quantity
+           FROM sale_items i JOIN sales s ON s.id=i.sale_id
+           JOIN products p ON p.id=i.product_id
+           WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=?
+             AND COALESCE(s.paid_at,s.created_at)<?
+           GROUP BY p.id,p.name ORDER BY quantity DESC,p.name LIMIT 8""",
+        (start, end),
+    ).fetchall()
+    courtesy = db.execute(
+        """SELECT COALESCE(SUM(i.quantity),0) quantity
+           FROM sale_items i JOIN sales s ON s.id=i.sale_id
+           WHERE s.paid=1 AND s.payment_method='Cortesia'
+             AND COALESCE(s.paid_at,s.created_at)>=?
+             AND COALESCE(s.paid_at,s.created_at)<?""",
+        (start, end),
+    ).fetchone()
+    total_items = db.execute(
+        """SELECT COALESCE(SUM(i.quantity),0)
+           FROM sale_items i JOIN sales s ON s.id=i.sale_id
+           WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=?
+             AND COALESCE(s.paid_at,s.created_at)<?""",
+        (start, end),
+    ).fetchone()
     chart_data = {
         "trend_labels": [day.strftime("%d/%m") for day in chart_days],
         "trend_values": [trend_values.get(day.isoformat(), 0) for day in chart_days],
@@ -122,6 +146,10 @@ def dashboard():
             int(next((row["total"] for row in finance_flow if row["direction"] == direction), 0) or 0)
             for direction in ("in", "out")
         ],
+        "product_labels": [row["name"] for row in product_rows],
+        "product_values": [int(row["quantity"] or 0) for row in product_rows],
+        "courtesy_items": int(courtesy["quantity"] or 0),
+        "total_items": int(total_items[0] or 0),
     }
     return render_template(
         "dashboard.html", metrics=metrics, low=low, recent=recent, month=month,
