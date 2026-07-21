@@ -330,7 +330,15 @@ def users():
                 flash("Não foi possível criar o usuário devido a um erro interno.", "danger")
         return redirect(url_for("auth.users"))
     
-    rows = db.execute("SELECT * FROM users ORDER BY active DESC, name").fetchall()
+    rows = db.execute(
+        """SELECT u.*,
+                  CASE WHEN u.role='client' AND u.player_id IS NOT NULL
+                       THEN COALESCE(p.name, u.name)
+                       ELSE u.name END AS display_name
+           FROM users u
+           LEFT JOIN players p ON p.id=u.player_id
+           ORDER BY u.active DESC, display_name"""
+    ).fetchall()
     return render_template("users.html", users=rows)
 
 @bp.post("/users/<int:user_id>/password")
