@@ -1,5 +1,5 @@
 import hmac
-from datetime import date
+from datetime import date, timedelta
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify, send_file, g
 from src.db import get_db
@@ -68,12 +68,65 @@ def dashboard():
                   COUNT(CASE WHEN membership_type IN ('goalkeeper','board','veteran') THEN 1 END) exempt
            FROM players WHERE active=1"""
     ).fetchone()
+    contributors = db.execute(
+        "SELECT id FROM players WHERE active=1 AND membership_type='regular'"
+    ).fetchall()
+    due_month = local_today().month
+    paid_rows = db.execute(
+        "SELECT player_id,COUNT(*) paid_count FROM membership_months WHERE month>=? AND month<=? GROUP BY player_id",
+        (f"{local_today().year}-01", f"{local_today().year}-{due_month:02d}"),
+    ).fetchall()
+    paid_counts = {row["player_id"]: int(row["paid_count"] or 0) for row in paid_rows}
+    debts = [max(0, due_month - paid_counts.get(player["id"], 0)) for player in contributors]
+    membership_chart = {
+        "up_to_date": sum(debt == 0 for debt in debts),
+        "owing": sum(debt > 0 for debt in debts),
+        "over_2": sum(debt > 2 for debt in debts),
+        "over_4": sum(debt > 4 for debt in debts),
+        "over_6": sum(debt > 6 for debt in debts),
+    }
     maintenance = db.execute(
         "SELECT COUNT(*) FROM maintenance_requests WHERE status!='completed'"
     ).fetchone()[0]
+    trend_start = local_today() - timedelta(days=6)
+    trend_rows = db.execute(
+        """SELECT date(COALESCE(paid_at,created_at)) business_date,
+                  COALESCE(SUM(total_cents),0) total
+           FROM sales
+           WHERE paid=1 AND payment_method!='Cortesia'
+             AND date(COALESCE(paid_at,created_at)) BETWEEN ? AND ?
+           GROUP BY date(COALESCE(paid_at,created_at)) ORDER BY business_date""",
+        (trend_start.isoformat(), today),
+    ).fetchall()
+    trend_values = {str(row["business_date"]): int(row["total"] or 0) for row in trend_rows}
+    chart_days = [trend_start + timedelta(days=index) for index in range(7)]
+    payment_rows = db.execute(
+        """SELECT payment_method,COALESCE(SUM(total_cents),0) total
+           FROM sales WHERE paid=1 AND payment_method!='Cortesia'
+             AND COALESCE(paid_at,created_at)>=? AND COALESCE(paid_at,created_at)<?
+           GROUP BY payment_method ORDER BY total DESC""",
+        (start, end),
+    ).fetchall()
+    finance_flow = db.execute(
+        """SELECT direction,COALESCE(SUM(amount_cents),0) total
+           FROM finance_movements WHERE date(created_at) BETWEEN ? AND ?
+           GROUP BY direction""",
+        (start, end),
+    ).fetchall()
+    chart_data = {
+        "trend_labels": [day.strftime("%d/%m") for day in chart_days],
+        "trend_values": [trend_values.get(day.isoformat(), 0) for day in chart_days],
+        "payment_labels": [row["payment_method"] for row in payment_rows],
+        "payment_values": [int(row["total"] or 0) for row in payment_rows],
+        "flow_values": [
+            int(next((row["total"] for row in finance_flow if row["direction"] == direction), 0) or 0)
+            for direction in ("in", "out")
+        ],
+    }
     return render_template(
         "dashboard.html", metrics=metrics, low=low, recent=recent, month=month,
         finance=finance, bar=bar, membership=membership, maintenance_open=maintenance,
+        chart_data=chart_data, membership_chart=membership_chart,
     )
 
 @bp.route("/reports")
