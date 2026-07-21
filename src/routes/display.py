@@ -31,9 +31,9 @@ def feed():
     today = local_today()
     birthday_rows = db.execute(
         """SELECT name, war_name, gender, birth_date, thumbnail_data FROM players
-           WHERE active=1 AND birth_date<>'' AND substr(birth_date,6,5)=?
+           WHERE active=1 AND birth_date<>'' AND substr(birth_date,6,2)=?
            ORDER BY substr(birth_date,9,2), LOWER(COALESCE(war_name,name))""",
-        (today.strftime("%m-%d"),),
+        (today.strftime("%m"),),
     ).fetchall()
     return jsonify(
         orders=[delivery_order_data(db, sale) for sale in pending_rows],
