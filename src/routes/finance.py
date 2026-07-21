@@ -61,7 +61,20 @@ def dashboard():
     low = db.execute("SELECT * FROM products WHERE active=1 AND stock<=min_stock ORDER BY stock, name").fetchall()
     recent = db.execute("""SELECT s.*, p.name player_name FROM sales s JOIN players p ON p.id=s.player_id
                             WHERE s.paid=1 ORDER BY s.id DESC LIMIT 8""").fetchall()
-    return render_template("dashboard.html", metrics=metrics, low=low, recent=recent, month=month)
+    finance = finance_summary(db)
+    bar = latest_bar_balances(db)
+    membership = db.execute(
+        """SELECT COUNT(*) total,
+                  COUNT(CASE WHEN membership_type IN ('goalkeeper','board','veteran') THEN 1 END) exempt
+           FROM players WHERE active=1"""
+    ).fetchone()
+    maintenance = db.execute(
+        "SELECT COUNT(*) FROM maintenance_requests WHERE status!='completed'"
+    ).fetchone()[0]
+    return render_template(
+        "dashboard.html", metrics=metrics, low=low, recent=recent, month=month,
+        finance=finance, bar=bar, membership=membership, maintenance_open=maintenance,
+    )
 
 @bp.route("/reports")
 @roles_allowed("manager")
