@@ -58,8 +58,16 @@ def memberships():
     start, end = _period()
     player_id, payment_method = request.args.get("player_id", ""), request.args.get("payment_method", "")
     rows, summary = _membership_data(db, start, end, player_id, payment_method)
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    per_page = 5
+    pages = max(1, (len(rows) + per_page - 1) // per_page)
+    page = min(page, pages)
+    page_rows = rows[(page - 1) * per_page:page * per_page]
     players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 ORDER BY LOWER(name)").fetchall()
-    return render_template("report_memberships.html", rows=rows, summary=summary, players=players, start=start, end=end, player_id=player_id, payment_method=payment_method)
+    return render_template("report_memberships.html", rows=page_rows, summary=summary, players=players, start=start, end=end, player_id=player_id, payment_method=payment_method, page=page, pages=pages)
 
 
 @bp.get("/mensalidades.pdf")
@@ -94,8 +102,16 @@ def sales_report():
     start, end = _period()
     player_id, payment_method = request.args.get("player_id", ""), request.args.get("payment_method", "")
     rows, by_payment, by_product, by_player = _sales_data(db, start, end, player_id, payment_method)
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    per_page = 5
+    pages = max(1, (len(rows) + per_page - 1) // per_page)
+    page = min(page, pages)
+    page_rows = rows[(page - 1) * per_page:page * per_page]
     players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 ORDER BY LOWER(name)").fetchall()
-    return render_template("report_sales.html", rows=rows, by_payment=by_payment, by_product=by_product, by_player=by_player, players=players, start=start, end=end, player_id=player_id, payment_method=payment_method)
+    return render_template("report_sales.html", rows=page_rows, total_rows=len(rows), by_payment=by_payment, by_product=by_product, by_player=by_player, players=players, start=start, end=end, player_id=player_id, payment_method=payment_method, page=page, pages=pages)
 
 
 @bp.get("/vendas/<int:sale_id>")
@@ -137,8 +153,16 @@ def stock_report():
     db = get_db()
     start, end = _period()
     rows = stock_report_data(db, start, end)
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    per_page = 5
+    pages = max(1, (len(rows) + per_page - 1) // per_page)
+    page = min(page, pages)
+    page_rows = rows[(page - 1) * per_page:page * per_page]
     low_stock = db.execute("SELECT name,stock,min_stock FROM products WHERE active=1 AND stock<=min_stock ORDER BY stock,LOWER(name)").fetchall()
-    return render_template("report_stock.html", rows=rows, low_stock=low_stock, start=start, end=end)
+    return render_template("report_stock.html", rows=page_rows, total_rows=len(rows), low_stock=low_stock, start=start, end=end, page=page, pages=pages)
 
 
 @bp.get("/manutencao")
@@ -156,4 +180,12 @@ def maintenance_report():
         FROM maintenance_requests mr LEFT JOIN users u ON u.id=mr.created_by
         WHERE {' AND '.join(conditions)} ORDER BY mr.id DESC""", tuple(params)).fetchall()
     summary = {"total": len(rows), "open": sum(row["status"] != "completed" for row in rows), "completed": sum(row["status"] == "completed" for row in rows), "urgent": sum(row["priority"] == "urgent" for row in rows)}
-    return render_template("report_maintenance.html", rows=rows, summary=summary, areas=MAINTENANCE_AREAS, categories=CATEGORIES, priorities=PRIORITIES, statuses=STATUSES, start=start, end=end, area=area, category=category, status=status)
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    per_page = 5
+    pages = max(1, (len(rows) + per_page - 1) // per_page)
+    page = min(page, pages)
+    page_rows = rows[(page - 1) * per_page:page * per_page]
+    return render_template("report_maintenance.html", rows=page_rows, total_rows=len(rows), summary=summary, areas=MAINTENANCE_AREAS, categories=CATEGORIES, priorities=PRIORITIES, statuses=STATUSES, start=start, end=end, area=area, category=category, status=status, page=page, pages=pages)
