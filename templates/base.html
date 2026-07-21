@@ -19,7 +19,8 @@
 {% set endpoint=request.endpoint or '' %}
 {% set cash_active=endpoint.startswith('cash.') %}
 {% set bar_active=endpoint.startswith('sales.') or endpoint.startswith('products.') or cash_active %}
-{% set finance_active=endpoint.startswith('finance.') and endpoint != 'finance.dashboard' %}
+{% set finance_active=endpoint.startswith('finance.') %}
+{% set reports_active=endpoint.startswith('reports.') %}
 {% set infra_active=endpoint.startswith('infra.') or endpoint.startswith('maintenance.') %}
 {% set urgent_active=endpoint == 'players.urgent' %}
 {% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) %}
@@ -41,13 +42,17 @@
         </div>{% elif current_user.role == 'client' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'sales.sale'}}" href="{{url_for('sales.sale')}}"><span class="sidebar-module-icon">B</span><span>Venda rápida</span></a>{% endif %}
         {% if current_user.role == 'manager' %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if finance_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-finance" aria-expanded="{{'true' if finance_active else 'false'}}" aria-controls="sidebar-finance"><span class="sidebar-module-icon">$</span><span>Financeiro</span><span class="sidebar-chevron">⌄</span></button>
-          <div class="collapse {{'show' if finance_active}}" id="sidebar-finance"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'finance.finance'}}" href="{{url_for('finance.finance')}}">Mensalidades</a><a class="{{'active' if endpoint == 'finance.finance_ledger'}}" href="{{url_for('finance.finance_ledger')}}">Livro-caixa</a><a class="{{'active' if endpoint == 'finance.reminders'}}" href="{{url_for('finance.reminders')}}">Lembretes</a><a class="{{'active' if endpoint == 'finance.reports'}}" href="{{url_for('finance.reports')}}">Relatórios</a></div></div>
+          <div class="collapse {{'show' if finance_active}}" id="sidebar-finance"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'finance.dashboard'}}" href="{{url_for('finance.dashboard')}}">Dashboard</a><a class="{{'active' if endpoint == 'finance.finance'}}" href="{{url_for('finance.finance')}}">Mensalidades</a><a class="{{'active' if endpoint == 'finance.finance_ledger'}}" href="{{url_for('finance.finance_ledger')}}">Livro-caixa</a><a class="{{'active' if endpoint == 'finance.reminders'}}" href="{{url_for('finance.reminders')}}">Lembretes</a></div></div>
         </div>{% endif %}
         {% if current_user.role in ['manager','staff','infra'] %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if infra_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-infra" aria-expanded="{{'true' if infra_active else 'false'}}" aria-controls="sidebar-infra"><span class="sidebar-module-icon">I</span><span>Infra-Estrutura</span><span class="sidebar-chevron">⌄</span></button>
           <div class="collapse {{'show' if infra_active}}" id="sidebar-infra"><div class="sidebar-submenu">
             {% if current_user.role == 'staff' %}<a class="{{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}">Novo chamado</a>{% else %}<a class="{{'active' if endpoint.startswith('maintenance.')}}" href="{{url_for('maintenance.requests_list')}}">Manutenção</a><a class="{{'active' if endpoint.startswith('infra.material')}}" href="{{url_for('infra.materials')}}">Materiais</a><a class="{{'active' if endpoint.startswith('infra.load_')}}" href="{{url_for('infra.load_relation')}}">Relação de Carga</a>{% endif %}
           </div></div>
+        </div>{% endif %}
+        {% if current_user.role == 'manager' %}<div class="sidebar-group">
+          <button class="sidebar-module {{'active' if reports_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-reports" aria-expanded="{{'true' if reports_active else 'false'}}" aria-controls="sidebar-reports"><span class="sidebar-module-icon">R</span><span>Relatórios</span><span class="sidebar-chevron">⌄</span></button>
+          <div class="collapse {{'show' if reports_active}}" id="sidebar-reports"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'reports.memberships'}}" href="{{url_for('reports.memberships')}}">Mensalidades</a><a class="{{'active' if endpoint == 'reports.sales_report'}}" href="{{url_for('reports.sales_report')}}">Bar e vendas</a><a class="{{'active' if endpoint == 'reports.stock_report'}}" href="{{url_for('reports.stock_report')}}">Compras e estoque</a><a class="{{'active' if endpoint == 'reports.maintenance_report'}}" href="{{url_for('reports.maintenance_report')}}">Manutenção</a><a class="{{'active' if endpoint == 'reports.consolidated'}}" href="{{url_for('reports.consolidated')}}">Consolidado</a></div></div>
         </div>{% endif %}
         {% if current_user.role == 'client' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}"><span class="sidebar-module-icon">M</span><span>Novo chamado</span></a>{% endif %}
         {% if current_user.role == 'maintenance' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}"><span class="sidebar-module-icon">M</span><span>Novo chamado</span></a>{% endif %}

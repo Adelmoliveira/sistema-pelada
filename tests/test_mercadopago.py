@@ -460,18 +460,21 @@ class MercadoPagoFlowTest(unittest.TestCase):
             session["user_id"] = self.user_id
         page = self.client.get("/players").get_data(as_text=True)
         self.assertIn('id="app-sidebar"', page)
-        modules = ["Bar", "Financeiro", "Infra-Estrutura", "Urgente", "Administração"]
+        modules = ["Bar", "Financeiro", "Infra-Estrutura", "Relatórios", "Urgente", "Administração"]
         positions = [page.index(f"<span>{label}</span>") for label in modules]
         self.assertEqual(positions, sorted(positions))
         for links in (
             ["Caixa", "Conferir Pix", "Estoque", "Produtos", "Pedidos", "Venda rápida"],
-            ["Mensalidades", "Livro-caixa", "Lembretes", "Relatórios"],
+            ["Mensalidades", "Livro-caixa", "Lembretes"],
             ["Manutenção", "Materiais", "Relação de Carga"],
             ["Peladeiros", "Cadastro completo / PDF", "Usuários"],
         ):
             link_positions = [page.index(f">{label}</a>") for label in links]
             self.assertEqual(link_positions, sorted(link_positions))
         self.assertIn('data-bs-target="#sidebar-bar"', page)
+        self.assertIn(">Bar e vendas</a>", page)
+        self.assertIn(">Compras e estoque</a>", page)
+        self.assertIn(">Consolidado</a>", page)
         self.assertIn('class="offcanvas-lg offcanvas-start app-sidebar"', page)
         self.assertIn('alt="Logo GPCTA"', page)
         self.assertNotIn('class="navbar ', page)
@@ -479,7 +482,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('class="topbar-account"', page)
         self.assertIn('<strong>Teste</strong><small>Gerente</small>', page)
         self.assertEqual(page.count('<strong>Teste</strong>'), 1)
-        self.assertEqual(page.count('>Relatórios</a>'), 1)
+        self.assertEqual(page.count('>Relatórios</a>'), 0)
         finance_page = self.client.get("/finance").get_data(as_text=True)
         self.assertIn('<input type="month" name="start_month"', finance_page)
         self.assertIn('value="2026-07"', finance_page)
