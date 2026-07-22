@@ -7,6 +7,7 @@ from src.services.players_pdf import build_players_pdf
 from src.utils import local_today
 
 bp = Blueprint("players", __name__)
+FOOTBALL_POSITIONS = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque"}
 
 
 def _player_report_rows(db, query="", address_filter=""):
@@ -99,13 +100,16 @@ def players():
             gender = request.form.get("gender", "male")
             if gender not in ("male", "female", "other"):
                 raise ValueError("Gênero inválido.")
+            football_position = request.form.get("football_position", "").strip().upper()
+            if football_position and football_position not in FOOTBALL_POSITIONS:
+                raise ValueError("Posição de futebol inválida.")
             
             war_name = _validate_war_name(db, request.form.get("war_name", ""))
             processed_photo = process_material_photo(request.files.get("photo"))
             photo_data, thumbnail_data = processed_photo or ("", "")
             db.execute(
                 """INSERT INTO players
-                (name,war_name,cpf,phone,emergency_phone,gender,email,membership_type,photo_data,thumbnail_data) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (name,war_name,cpf,phone,emergency_phone,gender,email,membership_type,photo_data,thumbnail_data,football_position) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     request.form["name"].strip(),
                     war_name,
@@ -114,7 +118,7 @@ def players():
                     request.form.get("emergency_phone", "").strip(),
                     gender,
                     request.form.get("email", "").strip().lower(),
-                    membership_type, photo_data, thumbnail_data
+                    membership_type, photo_data, thumbnail_data, football_position
                 )
             )
             db.commit()
@@ -149,6 +153,7 @@ def players():
         players=items,
         player_filter=player_filter,
         players_count=len(items),
+        football_positions=FOOTBALL_POSITIONS,
     )
 
 @bp.post("/players/<int:player_id>/membership-type")
@@ -167,6 +172,26 @@ def player_membership_type(player_id):
             current_app.logger.error(f"Erro ao atualizar classificação do jogador {player_id}: {exc}")
             flash("Erro interno ao atualizar classificação financeira.", "danger")
     return redirect(url_for("players.players"))
+
+
+@bp.route("/players/positions", methods=["GET", "POST"])
+@roles_allowed("manager", "football_manager")
+def football_positions():
+    db = get_db()
+    if request.method == "POST":
+        try:
+            player_id = int(request.form["player_id"])
+            position = request.form.get("football_position", "").strip().upper()
+            if position and position not in FOOTBALL_POSITIONS:
+                raise ValueError("Posição inválida.")
+            db.execute("UPDATE players SET football_position=? WHERE id=? AND active=1", (position, player_id))
+            db.commit()
+            flash("Posição de futebol atualizada.", "success")
+        except (ValueError, KeyError):
+            flash("Não foi possível atualizar a posição.", "danger")
+        return redirect(url_for("players.football_positions"))
+    players = db.execute("SELECT id,name,war_name,football_position FROM players WHERE active=1 ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
+    return render_template("football_positions.html", players=players, football_positions=FOOTBALL_POSITIONS)
 
 
 @bp.post("/players/<int:player_id>/password")
@@ -222,10 +247,13 @@ def edit_player(player_id):
         else:
             try:
                 gender = request.form.get("gender", "male")
+                football_position = request.form.get("football_position", "").strip().upper()
+                if football_position and football_position not in FOOTBALL_POSITIONS:
+                    raise ValueError("Posição de futebol inválida.")
                 processed_photo = process_material_photo(request.files.get("photo"))
                 photo_fields = (processed_photo or (player["photo_data"], player["thumbnail_data"]))
                 db.execute(
-                    """UPDATE players SET name=?,war_name=?,cpf=?,email=?,phone=?,emergency_phone=?,gender=?,membership_type=?,photo_data=?,thumbnail_data=?
+                    """UPDATE players SET name=?,war_name=?,cpf=?,email=?,phone=?,emergency_phone=?,gender=?,membership_type=?,photo_data=?,thumbnail_data=?,football_position=?
                     WHERE id=?""",
                     (
                         request.form["name"].strip(),
@@ -236,7 +264,7 @@ def edit_player(player_id):
                         request.form.get("emergency_phone", "").strip(),
                         gender,
                         membership_type,
-                        photo_fields[0], photo_fields[1],
+                        photo_fields[0], photo_fields[1], football_position,
                         player_id
                     )
                 )
@@ -252,7 +280,7 @@ def edit_player(player_id):
                 else:
                     flash("Erro interno ao atualizar cadastro do peladeiro.", "danger")
         player = db.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
-    return render_template("edit_player.html", player=player)
+    return render_template("edit_player.html", player=player, football_positions=FOOTBALL_POSITIONS)
 
 @bp.post("/players/<int:player_id>/toggle-active")
 @roles_allowed("manager")

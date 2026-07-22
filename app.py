@@ -24,6 +24,7 @@ from src.routes.maintenance import bp as maintenance_bp
 from src.routes.cash import bp as cash_bp
 from src.routes.display import bp as display_bp
 from src.routes.reports import bp as reports_bp
+from src.routes.football import bp as football_bp
 
 app = Flask(__name__)
 
@@ -92,6 +93,7 @@ app.register_blueprint(maintenance_bp)
 app.register_blueprint(cash_bp)
 app.register_blueprint(display_bp)
 app.register_blueprint(reports_bp)
+app.register_blueprint(football_bp)
 
 
 @app.get("/service-worker.js")

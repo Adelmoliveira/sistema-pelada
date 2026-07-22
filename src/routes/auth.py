@@ -20,6 +20,8 @@ def home_endpoint(role):
         return "maintenance.new_request"
     if role == "display":
         return "display.panel"
+    if role == "football_manager":
+        return "football.dashboard"
     return "finance.dashboard"
 
 def safe_next_url(value):
@@ -310,7 +312,7 @@ def users():
             passwordless = role in ("maintenance", "display") or (role == "client" and request.form.get("passwordless") == "1")
             if len(username) < 3:
                 raise ValueError("O usuário deve ter ao menos 3 caracteres.")
-            if role not in ("manager", "staff", "client", "infra", "maintenance", "display"):
+            if role not in ("manager", "staff", "client", "infra", "maintenance", "display", "football_manager"):
                 raise ValueError("Perfil inválido.")
             if not passwordless and len(password) < 8:
                 raise ValueError("A senha deve ter ao menos 8 caracteres.")
@@ -349,7 +351,7 @@ def reset_user_password(user_id):
     password = request.form.get("new_password", "")
     if not target:
         flash("Usuário não encontrado.", "warning")
-    elif target["role"] not in ("manager", "staff", "client", "infra"):
+    elif target["role"] not in ("manager", "staff", "client", "infra", "football_manager"):
         flash("Este usuário não utiliza senha redefinível.", "danger")
     elif len(password) < 8:
         flash("A nova senha deve ter ao menos 8 caracteres.", "danger")
