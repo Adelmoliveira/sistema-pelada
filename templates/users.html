@@ -18,6 +18,7 @@
                         <option value="infra">Infra — somente Materiais e Relação de Carga</option>
                         <option value="maintenance">Manutenção — somente novo chamado, sem senha</option>
                         <option value="display">Painel — exibição de pedidos e aniversariantes</option>
+                        <option value="football_manager">Gestor do Futebol — somente o módulo Futebol</option>
                         <option value="staff">Staff — sem peladeiros e relatórios</option>
                         <option value="manager">Gerente — acesso completo</option>
                     </select>
@@ -46,7 +47,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {% set labels={'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção','display':'Painel'} %}
+                        {% set labels={'manager':'Gerente','staff':'Staff','client':'Cliente','infra':'Infra','maintenance':'Manutenção','display':'Painel','football_manager':'Gestor do Futebol'} %}
                         {% for u in users %}
                         <tr class="{{'text-muted' if not u.active}}">
                             <td>{{u.display_name}}</td>

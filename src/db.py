@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     password_required INTEGER NOT NULL DEFAULT 1,
-    role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra','maintenance','display')),
+    role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra','maintenance','display','football_manager')),
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS players (
     membership_type TEXT NOT NULL DEFAULT 'regular',
     photo_data TEXT DEFAULT '',
     thumbnail_data TEXT DEFAULT '',
+    football_position TEXT DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -302,6 +303,133 @@ CREATE TABLE IF NOT EXISTS reminder_dispatches (
 );
 CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_items_sale ON sale_items(sale_id);
+
+-- Módulo Futebol: súmulas digitais e histórico auditável.
+CREATE TABLE IF NOT EXISTS football_sumulas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_date TEXT NOT NULL,
+    day_pelada TEXT NOT NULL CHECK(day_pelada IN ('QUARTA','SABADO')),
+    local TEXT NOT NULL DEFAULT '',
+    horario TEXT NOT NULL DEFAULT '',
+    situacao TEXT NOT NULL DEFAULT 'RASCUNHO' CHECK(situacao IN ('RASCUNHO','ABERTA','EM_ANDAMENTO','FINALIZADA','CANCELADA')),
+    observacoes TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finalized_at TEXT,
+    canceled_at TEXT,
+    canceled_by INTEGER REFERENCES users(id),
+    reopen_justification TEXT DEFAULT '',
+    UNIQUE(match_date)
+);
+CREATE TABLE IF NOT EXISTS football_participants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
+    player_id INTEGER NOT NULL REFERENCES players(id),
+    status TEXT NOT NULL DEFAULT 'CONFIRMADO' CHECK(status IN ('CONFIRMADO','AUSENTE','DESISTENTE','RESERVA')),
+    preferred_position TEXT DEFAULT '',
+    draw_order INTEGER,
+    observation TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(sumula_id, player_id)
+);
+CREATE TABLE IF NOT EXISTS football_responsibles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
+    player_id INTEGER REFERENCES players(id),
+    responsibility_type TEXT NOT NULL CHECK(responsibility_type IN ('SORTEIO','SUMULA','QUADRO','GOLEIRO_VOLUNTARIO','ARBITRO_VOLUNTARIO','OUTRO')),
+    observation TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS football_matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
+    number INTEGER NOT NULL CHECK(number BETWEEN 1 AND 3),
+    starts_at TEXT,
+    ends_at TEXT,
+    blue_score INTEGER NOT NULL DEFAULT 0 CHECK(blue_score >= 0),
+    white_score INTEGER NOT NULL DEFAULT 0 CHECK(white_score >= 0),
+    status TEXT NOT NULL DEFAULT 'PLANEJADA' CHECK(status IN ('PLANEJADA','EM_ANDAMENTO','ENCERRADA','CANCELADA')),
+    observation TEXT DEFAULT '',
+    UNIQUE(sumula_id, number)
+);
+CREATE TABLE IF NOT EXISTS football_lineups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id INTEGER NOT NULL REFERENCES football_matches(id) ON DELETE CASCADE,
+    player_id INTEGER NOT NULL REFERENCES players(id),
+    team TEXT NOT NULL CHECK(team IN ('AZUL','BRANCO')),
+    position TEXT NOT NULL CHECK(position IN ('GOLEIRO','DEFENSOR','MEIO_CAMPO','ATACANTE')),
+    slot TEXT DEFAULT '',
+    titular INTEGER NOT NULL DEFAULT 1,
+    draw_order INTEGER,
+    observation TEXT DEFAULT '',
+    UNIQUE(match_id, player_id)
+);
+CREATE TABLE IF NOT EXISTS football_goalkeepers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id INTEGER NOT NULL REFERENCES football_matches(id) ON DELETE CASCADE,
+    player_id INTEGER NOT NULL REFERENCES players(id),
+    team TEXT NOT NULL CHECK(team IN ('AZUL','BRANCO')),
+    principal INTEGER NOT NULL DEFAULT 1,
+    observation TEXT DEFAULT '',
+    UNIQUE(match_id, player_id, team)
+);
+CREATE TABLE IF NOT EXISTS football_referees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id INTEGER NOT NULL REFERENCES football_matches(id) ON DELETE CASCADE,
+    player_id INTEGER REFERENCES players(id),
+    function TEXT NOT NULL CHECK(function IN ('PRINCIPAL','AUXILIAR','MESARIO')),
+    observation TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS football_goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id INTEGER NOT NULL REFERENCES football_matches(id) ON DELETE CASCADE,
+    author_player_id INTEGER REFERENCES players(id),
+    benefited_team TEXT NOT NULL CHECK(benefited_team IN ('AZUL','BRANCO')),
+    assist_player_id INTEGER REFERENCES players(id),
+    minute INTEGER,
+    own_goal INTEGER NOT NULL DEFAULT 0,
+    observation TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS football_incidents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
+    match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL,
+    type TEXT NOT NULL CHECK(type IN ('DISCIPLINAR','LESAO','ATRASO','ABANDONO_PARTIDA','DISCUSSAO','FALHA_ORGANIZACAO','PROBLEMA_ESTRUTURAL','OUTRO')),
+    level TEXT NOT NULL DEFAULT 'INFORMATIVO' CHECK(level IN ('INFORMATIVO','ATENCAO','GRAVE')),
+    player_id INTEGER REFERENCES players(id),
+    description TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ABERTA' CHECK(status IN ('ABERTA','EM_ANALISE','RESOLVIDA','ARQUIVADA')),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS football_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id),
+    action TEXT NOT NULL,
+    details TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS football_historical_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id),
+    stat_date TEXT NOT NULL,
+    goals INTEGER NOT NULL DEFAULT 0 CHECK(goals >= 0),
+    assists INTEGER NOT NULL DEFAULT 0 CHECK(assists >= 0),
+    notes TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK(goals > 0 OR assists > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_football_sumulas_date ON football_sumulas(match_date);
+CREATE INDEX IF NOT EXISTS idx_football_participants_sumula ON football_participants(sumula_id);
+CREATE INDEX IF NOT EXISTS idx_football_matches_sumula ON football_matches(sumula_id,number);
+CREATE INDEX IF NOT EXISTS idx_football_incidents_sumula ON football_incidents(sumula_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_football_historical_player ON football_historical_stats(player_id,stat_date);
 """
 
 class CursorWrapper:
@@ -479,7 +607,7 @@ def migrate_user_roles(connection):
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
     ).fetchone()
-    if not row or "'display'" in (row[0] or ""):
+    if not row or "'football_manager'" in (row[0] or ""):
         return
     connection.commit()
     connection.execute("PRAGMA foreign_keys = OFF")
@@ -491,7 +619,7 @@ def migrate_user_roles(connection):
             name TEXT NOT NULL,
             password_hash TEXT NOT NULL,
             password_required INTEGER NOT NULL DEFAULT 1,
-            role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra','maintenance','display')),
+            role TEXT NOT NULL CHECK(role IN ('manager','staff','client','infra','maintenance','display','football_manager')),
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -652,6 +780,8 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE players ADD COLUMN photo_data TEXT DEFAULT ''")
     if "thumbnail_data" not in columns:
         conn.execute("ALTER TABLE players ADD COLUMN thumbnail_data TEXT DEFAULT ''")
+    if "football_position" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN football_position TEXT DEFAULT ''")
     conn.commit()
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_players_cpf ON players(cpf) WHERE cpf<>''")
     conn.commit()
@@ -748,6 +878,7 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS player_id INTEGER REFERENCES players(id)")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS football_position TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS gender TEXT NOT NULL DEFAULT 'male'")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
     for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
@@ -756,7 +887,7 @@ def init_postgres(wrapper):
         SELECT p.id FROM players p WHERE p.active=1 AND p.war_name<>'' AND LOWER(p.war_name)=LOWER(users.username)
     ) WHERE role='client' AND player_id IS NULL""")
     wrapper.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
-    wrapper.execute("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('manager','staff','client','infra','maintenance','display'))")
+    wrapper.execute("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK(role IN ('manager','staff','client','infra','maintenance','display','football_manager'))")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'approved'")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_order_id TEXT")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS mercadopago_payment_id TEXT")
