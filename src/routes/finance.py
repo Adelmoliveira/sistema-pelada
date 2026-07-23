@@ -65,7 +65,7 @@ def dashboard():
     bar = latest_bar_balances(db)
     membership = db.execute(
         """SELECT COUNT(*) total,
-                  COUNT(CASE WHEN membership_type IN ('goalkeeper','board','veteran') THEN 1 END) exempt
+                  COUNT(CASE WHEN membership_type IN ('goalkeeper','board','veteran','collaborator') THEN 1 END) exempt
            FROM players WHERE active=1"""
     ).fetchone()
     contributors = db.execute(
@@ -244,7 +244,7 @@ def reports():
         "over_6": sum(debt > 6 for debt in debts),
         "active": db.execute("SELECT COUNT(*) FROM players WHERE active=1").fetchone()[0],
         "inactive": db.execute("SELECT COUNT(*) FROM players WHERE active=0").fetchone()[0],
-        "exempt": db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board','veteran')").fetchone()[0],
+        "exempt": db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board','veteran','collaborator')").fetchone()[0],
     }
     
     return render_template("reports.html", month=month, summary=summary, by_product=by_product,
@@ -312,7 +312,7 @@ def finance():
         
     players_rows = db.execute("SELECT * FROM players WHERE active=1 AND membership_type='regular'").fetchall()
     players_rows = sorted(players_rows, key=lambda player: alphabetical_key(player["name"]))
-    exempt_count = db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board','veteran')").fetchone()[0]
+    exempt_count = db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board','veteran','collaborator')").fetchone()[0]
     paid_rows = db.execute("SELECT player_id, month FROM membership_months WHERE month LIKE ?", (f"{year}-%",)).fetchall()
     
     paid_by_player = {}

@@ -95,7 +95,7 @@ def players():
     if request.method == "POST":
         try:
             membership_type = request.form.get("membership_type", "regular")
-            if membership_type not in ("regular", "goalkeeper", "board", "veteran"):
+            if membership_type not in ("regular", "goalkeeper", "board", "veteran", "collaborator"):
                 raise ValueError("Classificação financeira inválida.")
             gender = request.form.get("gender", "male")
             if gender not in ("male", "female", "other"):
@@ -140,6 +140,7 @@ def players():
         "board": ("active=1 AND membership_type=?", ("board",)),
         "goalkeeper": ("active=1 AND membership_type=?", ("goalkeeper",)),
         "veteran": ("active=1 AND membership_type=?", ("veteran",)),
+        "collaborator": ("active=1 AND membership_type=?", ("collaborator",)),
         "inactive": ("active=0", ()),
         "all": ("1=1", ()),
     }
@@ -160,7 +161,7 @@ def players():
 @roles_allowed("manager")
 def player_membership_type(player_id):
     membership_type = request.form.get("membership_type")
-    if membership_type not in ("regular", "goalkeeper", "board", "veteran"):
+    if membership_type not in ("regular", "goalkeeper", "board", "veteran", "collaborator"):
         flash("Classificação inválida.", "danger")
     else:
         try:
@@ -240,7 +241,7 @@ def edit_player(player_id):
     
     if request.method == "POST":
         membership_type = request.form.get("membership_type", "regular")
-        if membership_type not in ("regular", "goalkeeper", "board", "veteran"):
+        if membership_type not in ("regular", "goalkeeper", "board", "veteran", "collaborator"):
             flash("Classificação financeira inválida.", "danger")
         elif request.form.get("gender", "male") not in ("male", "female", "other"):
             flash("Gênero inválido.", "danger")
