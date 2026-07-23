@@ -15,6 +15,7 @@ PLAYER_POSITION_TO_LINEUP = {"GOL": "GOLEIRO", "DEFESA": "DEFENSOR", "MEIO": "ME
 TEAMS = {"AZUL": "Azul", "BRANCO": "Branco"}
 INCIDENT_TYPES = {"DISCIPLINAR": "Disciplinar", "LESAO": "Lesão", "ATRASO": "Atraso", "ABANDONO_PARTIDA": "Abandono de partida", "DISCUSSAO": "Discussão", "FALHA_ORGANIZACAO": "Falha de organização", "PROBLEMA_ESTRUTURAL": "Problema estrutural", "OUTRO": "Outro"}
 INCIDENT_LEVELS = {"INFORMATIVO": "Informativo", "ATENCAO": "Atenção", "GRAVE": "Grave"}
+CARD_TYPES = {"AMARELO": "Amarelo", "AZUL": "Azul", "VERMELHO": "Vermelho"}
 
 
 def _audit(db, sumula_id, action, details=""):
@@ -234,8 +235,15 @@ def detail(sumula_id):
                 db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?)", (int(request.form["match_id"]), int(request.form["author_player_id"]) if request.form.get("author_player_id") else None, request.form["benefited_team"], int(request.form["assist_player_id"]) if request.form.get("assist_player_id") else None, int(request.form["minute"]) if request.form.get("minute") else None, 1 if request.form.get("own_goal") else 0, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
             elif action == "incident":
                 description = request.form.get("description", "").strip()
-                if not description: raise ValueError("Descreva a ocorrência.")
-                db.execute("INSERT INTO football_incidents(sumula_id,match_id,type,level,player_id,description,created_by) VALUES(?,?,?,?,?,?,?)", (sumula_id, int(request.form["match_id"]) if request.form.get("match_id") else None, request.form["type"], request.form["level"], int(request.form["player_id"]) if request.form.get("player_id") else None, description, g.user["id"])); _audit(db, sumula_id, "OCORRENCIA_REGISTRADA")
+                card = request.form.get("card", "").strip().upper()
+                if card and card not in CARD_TYPES: raise ValueError("Cartão inválido.")
+                if card:
+                    description = description or f"Cartão {CARD_TYPES[card]}"
+                    level = "INFORMATIVO"
+                else:
+                    if not description: raise ValueError("Descreva a ocorrência.")
+                    level = request.form["level"]
+                db.execute("INSERT INTO football_incidents(sumula_id,match_id,type,level,player_id,card,description,created_by) VALUES(?,?,?,?,?,?,?,?)", (sumula_id, int(request.form["match_id"]) if request.form.get("match_id") else None, request.form["type"], level, int(request.form["player_id"]) if request.form.get("player_id") else None, card, description, g.user["id"])); _audit(db, sumula_id, "OCORRENCIA_REGISTRADA")
             elif action == "responsible":
                 responsibility_type = request.form.get("responsibility_type", "")
                 if responsibility_type not in ("SORTEIO", "SUMULA", "QUADRO", "GOLEIRO_VOLUNTARIO", "ARBITRO_VOLUNTARIO", "OUTRO"):
@@ -276,7 +284,7 @@ def detail(sumula_id):
         return redirect(url_for("football.detail", sumula_id=sumula_id))
     players = db.execute("SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
     player_positions = {str(player["id"]): _lineup_position(player["football_position"]) for player in players}
-    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS)
+    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES)
 
 
 @bp.get("/sumulas/<int:sumula_id>/imprimir")
@@ -286,4 +294,4 @@ def print_sumula(sumula_id):
     if not data:
         flash("Súmula não encontrada.", "danger")
         return redirect(url_for("football.sumulas"))
-    return render_template("football_print.html", data=data, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES)
+    return render_template("football_print.html", data=data, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, card_types=CARD_TYPES)
