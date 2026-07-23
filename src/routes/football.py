@@ -319,7 +319,9 @@ def detail(sumula_id):
         return redirect(url_for("football.detail", sumula_id=sumula_id))
     players = db.execute("SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
     player_positions = {str(player["id"]): _lineup_position(player["football_position"]) for player in players}
-    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES)
+    used_orders = {int(row["draw_order"]) for row in db.execute("SELECT draw_order FROM football_participants WHERE sumula_id=? AND draw_order IS NOT NULL", (sumula_id,)).fetchall()}
+    next_draw_order = next((number for number in range(1, 45) if number not in used_orders), 44)
+    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, next_draw_order=next_draw_order, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES)
 
 
 @bp.get("/sumulas/<int:sumula_id>/imprimir")
