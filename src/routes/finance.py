@@ -145,6 +145,15 @@ def dashboard():
            GROUP BY p.id,p.name,p.war_name ORDER BY total DESC LIMIT 8""",
         (start, end),
     ).fetchall()
+    player_product_rows = db.execute(
+        """SELECT p.war_name,p.name player_name,pr.name product_name,COALESCE(SUM(i.quantity),0) quantity
+           FROM sale_items i JOIN sales s ON s.id=i.sale_id
+           JOIN players p ON p.id=s.player_id JOIN products pr ON pr.id=i.product_id
+           WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)< ?
+           GROUP BY p.id,p.war_name,p.name,pr.id,pr.name
+           ORDER BY quantity DESC,player_name,product_name LIMIT 12""",
+        (start, end),
+    ).fetchall()
     chart_data = {
         "trend_labels": [day.strftime("%d/%m") for day in chart_days],
         "trend_values": [trend_values.get(day.isoformat(), 0) for day in chart_days],
@@ -160,6 +169,8 @@ def dashboard():
         "total_items": int(total_items[0] or 0),
         "player_labels": [row["war_name"] or row["name"] for row in player_rows],
         "player_values": [int(row["total"] or 0) for row in player_rows],
+        "player_product_labels": [f"{row['war_name'] or row['player_name']} — {row['product_name']}" for row in player_product_rows],
+        "player_product_values": [int(row["quantity"] or 0) for row in player_product_rows],
     }
     return render_template(
         "dashboard.html", metrics=metrics, low=low, recent=recent, month=month,
