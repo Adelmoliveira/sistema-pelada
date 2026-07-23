@@ -47,7 +47,7 @@ def _membership_data(db, start, end, player_id="", payment_method=""):
     paid_players = {row["player_id"] for row in db.execute("SELECT DISTINCT player_id FROM membership_payments WHERE date(created_at) BETWEEN ? AND ?", (start, end)).fetchall()}
     pending = db.execute("SELECT id,name,war_name FROM players WHERE active=1 AND membership_type='regular' ORDER BY LOWER(name)").fetchall()
     pending = [row for row in pending if row["id"] not in paid_players]
-    exempt = db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board','veteran')").fetchone()[0]
+    exempt = db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board','veteran','collaborator')").fetchone()[0]
     return rows, {"count": len(rows), "received": sum(int(row["amount_cents"] or 0) for row in rows), "exempt": int(exempt), "pending": pending}
 
 
