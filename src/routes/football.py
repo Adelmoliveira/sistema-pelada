@@ -20,6 +20,10 @@ def _audit(db, sumula_id, action, details=""):
     db.execute("INSERT INTO football_audit(sumula_id,user_id,action,details) VALUES(?,?,?,?)", (sumula_id, g.user["id"], action, details))
 
 
+def _eligible_player(db, player_id):
+    return db.execute("SELECT id FROM players WHERE id=? AND active=1 AND gender!='female' AND membership_type!='veteran'", (player_id,)).fetchone()
+
+
 def _match_day(value):
     try:
         parsed = date.fromisoformat((value or "").strip())
@@ -34,7 +38,7 @@ def _sumula(db, sumula_id):
     row = db.execute("SELECT fs.*,u.name created_by_name FROM football_sumulas fs LEFT JOIN users u ON u.id=fs.created_by WHERE fs.id=?", (sumula_id,)).fetchone()
     if not row:
         return None
-    participants = db.execute("SELECT fp.*,p.name,p.war_name,p.photo_data,p.thumbnail_data FROM football_participants fp JOIN players p ON p.id=fp.player_id WHERE fp.sumula_id=? ORDER BY COALESCE(fp.draw_order,999999),LOWER(p.war_name),LOWER(p.name)", (sumula_id,)).fetchall()
+    participants = db.execute("SELECT fp.*,p.name,p.war_name,p.photo_data,p.thumbnail_data,p.football_position FROM football_participants fp JOIN players p ON p.id=fp.player_id WHERE fp.sumula_id=? ORDER BY COALESCE(fp.draw_order,999999),LOWER(p.war_name),LOWER(p.name)", (sumula_id,)).fetchall()
     matches = []
     for match in db.execute("SELECT * FROM football_matches WHERE sumula_id=? ORDER BY number", (sumula_id,)).fetchall():
         lineups = db.execute("SELECT fl.*,p.name,p.war_name FROM football_lineups fl JOIN players p ON p.id=fl.player_id WHERE fl.match_id=? ORDER BY fl.team,fl.position,COALESCE(fl.draw_order,999999),LOWER(p.name)", (match["id"],)).fetchall()
@@ -104,7 +108,7 @@ def historical_stats():
         except (ValueError, KeyError):
             db.rollback(); flash("Informe peladeiro, data e pelo menos um gol ou assistência válidos.", "danger")
         return redirect(url_for("football.historical_stats"))
-    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 ORDER BY LOWER(COALESCE(war_name,name))").fetchall()
+    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name))").fetchall()
     rows = db.execute("SELECT hs.*,p.name,p.war_name FROM football_historical_stats hs JOIN players p ON p.id=hs.player_id ORDER BY hs.stat_date DESC,hs.id DESC").fetchall()
     return render_template("football_historical_stats.html", players=players, rows=rows, today=local_today().isoformat())
 
@@ -200,11 +204,19 @@ def detail(sumula_id):
                 raise ValueError("A súmula está bloqueada para alterações. Reabra-a antes de editar.")
             if action == "participant":
                 player_id = int(request.form.get("player_id", ""))
+                if not _eligible_player(db, player_id):
+                    raise ValueError("Veteranos e mulheres não participam das partidas de futebol.")
                 if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND player_id=?", (sumula_id, player_id)).fetchone(): raise ValueError("Este peladeiro já está na súmula.")
-                db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), request.form.get("preferred_position", ""), request.form.get("draw_order") or None, request.form.get("observation", "").strip()))
+                preferred_position = request.form.get("preferred_position", "").strip().upper()
+                if not preferred_position:
+                    player_position = db.execute("SELECT football_position FROM players WHERE id=?", (player_id,)).fetchone()
+                    preferred_position = (player_position["football_position"] or "") if player_position else ""
+                db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, request.form.get("draw_order") or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
             elif action == "lineup":
                 match_id, player_id = int(request.form["match_id"]), int(request.form["player_id"])
+                if not _eligible_player(db, player_id):
+                    raise ValueError("Veteranos e mulheres não podem ser escalados nas partidas de futebol.")
                 if db.execute("SELECT 1 FROM football_lineups WHERE match_id=? AND player_id=?", (match_id, player_id)).fetchone(): raise ValueError("O peladeiro já está escalado nesta partida.")
                 db.execute("INSERT INTO football_lineups(match_id,player_id,team,position,slot,draw_order,observation) VALUES(?,?,?,?,?,?,?)", (match_id, player_id, request.form["team"], request.form["position"], request.form.get("slot", ""), request.form.get("draw_order") or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "ESCALACAO_ADICIONADA", str(player_id))
@@ -255,7 +267,7 @@ def detail(sumula_id):
         except (ValueError, KeyError) as exc:
             db.rollback(); flash(str(exc), "danger")
         return redirect(url_for("football.detail", sumula_id=sumula_id))
-    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
+    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
     return render_template("football_detail.html", data=data, players=players, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS)
 
 
