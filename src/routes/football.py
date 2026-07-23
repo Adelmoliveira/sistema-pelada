@@ -10,7 +10,8 @@ bp = Blueprint("football", __name__, url_prefix="/futebol")
 
 SITUATIONS = {"RASCUNHO": "Rascunho", "ABERTA": "Aberta", "EM_ANDAMENTO": "Em andamento", "FINALIZADA": "Finalizada", "CANCELADA": "Cancelada"}
 PARTICIPANT_STATUSES = {"CONFIRMADO": "Confirmado", "AUSENTE": "Ausente", "DESISTENTE": "Desistente", "RESERVA": "Reserva"}
-POSITIONS = {"GOLEIRO": "Goleiro", "DEFENSOR": "Defensor", "MEIO_CAMPO": "Meio-campo", "ATACANTE": "Atacante"}
+POSITIONS = {"GOLEIRO": "Goleiro", "DEFENSOR": "Defensor", "MEIO_CAMPO": "Meio-campo", "ATACANTE": "Atacante", "GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque"}
+PLAYER_POSITION_TO_LINEUP = {"GOL": "GOLEIRO", "DEFESA": "DEFENSOR", "MEIO": "MEIO_CAMPO", "ATAQUE": "ATACANTE"}
 TEAMS = {"AZUL": "Azul", "BRANCO": "Branco"}
 INCIDENT_TYPES = {"DISCIPLINAR": "Disciplinar", "LESAO": "Lesão", "ATRASO": "Atraso", "ABANDONO_PARTIDA": "Abandono de partida", "DISCUSSAO": "Discussão", "FALHA_ORGANIZACAO": "Falha de organização", "PROBLEMA_ESTRUTURAL": "Problema estrutural", "OUTRO": "Outro"}
 INCIDENT_LEVELS = {"INFORMATIVO": "Informativo", "ATENCAO": "Atenção", "GRAVE": "Grave"}
@@ -22,6 +23,12 @@ def _audit(db, sumula_id, action, details=""):
 
 def _eligible_player(db, player_id):
     return db.execute("SELECT id FROM players WHERE id=? AND active=1 AND gender!='female' AND membership_type!='veteran'", (player_id,)).fetchone()
+
+
+def _lineup_position(value):
+    """Converte a posição do cadastro do peladeiro para a súmula."""
+    normalized = (value or "").strip().upper()
+    return PLAYER_POSITION_TO_LINEUP.get(normalized, normalized if normalized in POSITIONS else "")
 
 
 def _match_day(value):
@@ -210,7 +217,7 @@ def detail(sumula_id):
                 preferred_position = request.form.get("preferred_position", "").strip().upper()
                 if not preferred_position:
                     player_position = db.execute("SELECT football_position FROM players WHERE id=?", (player_id,)).fetchone()
-                    preferred_position = (player_position["football_position"] or "") if player_position else ""
+                    preferred_position = _lineup_position(player_position["football_position"]) if player_position else ""
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, request.form.get("draw_order") or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
             elif action == "lineup":
@@ -268,7 +275,7 @@ def detail(sumula_id):
             db.rollback(); flash(str(exc), "danger")
         return redirect(url_for("football.detail", sumula_id=sumula_id))
     players = db.execute("SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
-    player_positions = {str(player["id"]): (player["football_position"] or "") for player in players}
+    player_positions = {str(player["id"]): _lineup_position(player["football_position"]) for player in players}
     return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS)
 
 
