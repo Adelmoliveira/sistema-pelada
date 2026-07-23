@@ -26,6 +26,10 @@ def _eligible_player(db, player_id):
     return db.execute("SELECT id FROM players WHERE id=? AND active=1 AND gender!='female' AND membership_type!='veteran'", (player_id,)).fetchone()
 
 
+def _participant_player(db, sumula_id, player_id):
+    return db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND player_id=?", (sumula_id, player_id)).fetchone()
+
+
 def _lineup_position(value):
     """Converte a posição do cadastro do peladeiro para a súmula."""
     normalized = (value or "").strip().upper()
@@ -225,6 +229,8 @@ def detail(sumula_id):
                 match_id, player_id = int(request.form["match_id"]), int(request.form["player_id"])
                 if not _eligible_player(db, player_id):
                     raise ValueError("Veteranos e mulheres não podem ser escalados nas partidas de futebol.")
+                if not _participant_player(db, sumula_id, player_id):
+                    raise ValueError("Escale somente peladeiros participantes desta súmula.")
                 if db.execute("SELECT 1 FROM football_lineups WHERE match_id=? AND player_id=?", (match_id, player_id)).fetchone(): raise ValueError("O peladeiro já está escalado nesta partida.")
                 db.execute("INSERT INTO football_lineups(match_id,player_id,team,position,slot,draw_order,observation) VALUES(?,?,?,?,?,?,?)", (match_id, player_id, request.form["team"], request.form["position"], request.form.get("slot", ""), request.form.get("draw_order") or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "ESCALACAO_ADICIONADA", str(player_id))
@@ -232,7 +238,10 @@ def detail(sumula_id):
                 match_id = int(request.form["match_id"]); blue, white = max(0, int(request.form.get("blue_score", 0))), max(0, int(request.form.get("white_score", 0)))
                 db.execute("UPDATE football_matches SET blue_score=?,white_score=?,status='ENCERRADA' WHERE id=? AND sumula_id=?", (blue, white, match_id, sumula_id)); _audit(db, sumula_id, "RESULTADO_ATUALIZADO", f"{blue} x {white}")
             elif action == "goal":
-                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?)", (int(request.form["match_id"]), int(request.form["author_player_id"]) if request.form.get("author_player_id") else None, request.form["benefited_team"], int(request.form["assist_player_id"]) if request.form.get("assist_player_id") else None, int(request.form["minute"]) if request.form.get("minute") else None, 1 if request.form.get("own_goal") else 0, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
+                author_player_id = int(request.form["author_player_id"]) if request.form.get("author_player_id") else None
+                if author_player_id and not _participant_player(db, sumula_id, author_player_id):
+                    raise ValueError("Registre gols somente para peladeiros participantes desta súmula.")
+                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?)", (int(request.form["match_id"]), author_player_id, request.form["benefited_team"], int(request.form["assist_player_id"]) if request.form.get("assist_player_id") else None, int(request.form["minute"]) if request.form.get("minute") else None, 1 if request.form.get("own_goal") else 0, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
             elif action == "incident":
                 description = request.form.get("description", "").strip()
                 card = request.form.get("card", "").strip().upper()
