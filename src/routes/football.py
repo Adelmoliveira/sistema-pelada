@@ -226,6 +226,9 @@ def detail(sumula_id):
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, request.form.get("draw_order") or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
             elif action == "lineup":
+                if not request.form.get("player_id"):
+                    flash("Nenhum jogador selecionado. A escalação é opcional.", "info")
+                    return redirect(url_for("football.detail", sumula_id=sumula_id))
                 match_id, player_id = int(request.form["match_id"]), int(request.form["player_id"])
                 if not _eligible_player(db, player_id):
                     raise ValueError("Veteranos e mulheres não podem ser escalados nas partidas de futebol.")
@@ -234,6 +237,10 @@ def detail(sumula_id):
                 if db.execute("SELECT 1 FROM football_lineups WHERE match_id=? AND player_id=?", (match_id, player_id)).fetchone(): raise ValueError("O peladeiro já está escalado nesta partida.")
                 db.execute("INSERT INTO football_lineups(match_id,player_id,team,position,slot,draw_order,observation) VALUES(?,?,?,?,?,?,?)", (match_id, player_id, request.form["team"], request.form["position"], request.form.get("slot", ""), request.form.get("draw_order") or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "ESCALACAO_ADICIONADA", str(player_id))
+            elif action == "remove_lineup":
+                lineup_id = int(request.form["lineup_id"])
+                db.execute("DELETE FROM football_lineups WHERE id=? AND match_id IN (SELECT id FROM football_matches WHERE sumula_id=?)", (lineup_id, sumula_id))
+                _audit(db, sumula_id, "ESCALACAO_REMOVIDA", str(lineup_id))
             elif action == "score":
                 match_id = int(request.form["match_id"]); blue, white = max(0, int(request.form.get("blue_score", 0))), max(0, int(request.form.get("white_score", 0)))
                 db.execute("UPDATE football_matches SET blue_score=?,white_score=?,status='ENCERRADA' WHERE id=? AND sumula_id=?", (blue, white, match_id, sumula_id)); _audit(db, sumula_id, "RESULTADO_ATUALIZADO", f"{blue} x {white}")
@@ -241,7 +248,10 @@ def detail(sumula_id):
                 author_player_id = int(request.form["author_player_id"]) if request.form.get("author_player_id") else None
                 if author_player_id and not _participant_player(db, sumula_id, author_player_id):
                     raise ValueError("Registre gols somente para peladeiros participantes desta súmula.")
-                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?)", (int(request.form["match_id"]), author_player_id, request.form["benefited_team"], int(request.form["assist_player_id"]) if request.form.get("assist_player_id") else None, int(request.form["minute"]) if request.form.get("minute") else None, 1 if request.form.get("own_goal") else 0, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
+                assist_player_id = int(request.form["assist_player_id"]) if request.form.get("assist_player_id") else None
+                if assist_player_id and not _participant_player(db, sumula_id, assist_player_id):
+                    raise ValueError("Registre assistências somente para peladeiros participantes desta súmula.")
+                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?)", (int(request.form["match_id"]), author_player_id, request.form["benefited_team"], assist_player_id, int(request.form["minute"]) if request.form.get("minute") else None, 1 if request.form.get("own_goal") else 0, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
             elif action == "incident":
                 description = request.form.get("description", "").strip()
                 card = request.form.get("card", "").strip().upper()
