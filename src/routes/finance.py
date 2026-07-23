@@ -137,6 +137,14 @@ def dashboard():
              AND COALESCE(s.paid_at,s.created_at)<?""",
         (start, end),
     ).fetchone()
+    player_rows = db.execute(
+        """SELECT p.name,p.war_name,COALESCE(SUM(s.total_cents),0) total
+           FROM sales s JOIN players p ON p.id=s.player_id
+           WHERE s.paid=1 AND s.payment_method!='Cortesia'
+             AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)< ?
+           GROUP BY p.id,p.name,p.war_name ORDER BY total DESC LIMIT 8""",
+        (start, end),
+    ).fetchall()
     chart_data = {
         "trend_labels": [day.strftime("%d/%m") for day in chart_days],
         "trend_values": [trend_values.get(day.isoformat(), 0) for day in chart_days],
@@ -150,6 +158,8 @@ def dashboard():
         "product_values": [int(row["quantity"] or 0) for row in product_rows],
         "courtesy_items": int(courtesy["quantity"] or 0),
         "total_items": int(total_items[0] or 0),
+        "player_labels": [row["war_name"] or row["name"] for row in player_rows],
+        "player_values": [int(row["total"] or 0) for row in player_rows],
     }
     return render_template(
         "dashboard.html", metrics=metrics, low=low, recent=recent, month=month,

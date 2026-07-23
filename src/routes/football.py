@@ -267,8 +267,9 @@ def detail(sumula_id):
         except (ValueError, KeyError) as exc:
             db.rollback(); flash(str(exc), "danger")
         return redirect(url_for("football.detail", sumula_id=sumula_id))
-    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
-    return render_template("football_detail.html", data=data, players=players, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS)
+    players = db.execute("SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
+    player_positions = {str(player["id"]): (player["football_position"] or "") for player in players}
+    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS)
 
 
 @bp.get("/sumulas/<int:sumula_id>/imprimir")
