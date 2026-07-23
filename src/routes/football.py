@@ -223,7 +223,14 @@ def detail(sumula_id):
                 if not preferred_position:
                     player_position = db.execute("SELECT football_position FROM players WHERE id=?", (player_id,)).fetchone()
                     preferred_position = _lineup_position(player_position["football_position"]) if player_position else ""
-                db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, request.form.get("draw_order") or None, request.form.get("observation", "").strip()))
+                draw_order = request.form.get("draw_order", "").strip()
+                if draw_order:
+                    draw_order = int(draw_order)
+                    if draw_order < 1 or draw_order > 44:
+                        raise ValueError("A ordem do sorteio deve estar entre 1 e 44.")
+                    if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND draw_order=?", (sumula_id, draw_order)).fetchone():
+                        raise ValueError("Esta ordem de sorteio já está ocupada.")
+                db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, draw_order or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
             elif action == "lineup":
                 if not request.form.get("player_id"):
@@ -241,6 +248,15 @@ def detail(sumula_id):
                 lineup_id = int(request.form["lineup_id"])
                 db.execute("DELETE FROM football_lineups WHERE id=? AND match_id IN (SELECT id FROM football_matches WHERE sumula_id=?)", (lineup_id, sumula_id))
                 _audit(db, sumula_id, "ESCALACAO_REMOVIDA", str(lineup_id))
+            elif action == "update_participant_order":
+                participant_id = int(request.form["participant_id"])
+                draw_order = int(request.form.get("draw_order", "0"))
+                if draw_order < 1 or draw_order > 44:
+                    raise ValueError("A ordem do sorteio deve estar entre 1 e 44.")
+                if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND draw_order=? AND id!=?", (sumula_id, draw_order, participant_id)).fetchone():
+                    raise ValueError("Esta ordem de sorteio já está ocupada.")
+                db.execute("UPDATE football_participants SET draw_order=? WHERE id=? AND sumula_id=?", (draw_order, participant_id, sumula_id))
+                _audit(db, sumula_id, "ORDEM_PARTICIPANTE_ATUALIZADA", f"{participant_id}:{draw_order}")
             elif action == "score":
                 match_id = int(request.form["match_id"]); blue, white = max(0, int(request.form.get("blue_score", 0))), max(0, int(request.form.get("white_score", 0)))
                 db.execute("UPDATE football_matches SET blue_score=?,white_score=?,status='ENCERRADA' WHERE id=? AND sumula_id=?", (blue, white, match_id, sumula_id)); _audit(db, sumula_id, "RESULTADO_ATUALIZADO", f"{blue} x {white}")
