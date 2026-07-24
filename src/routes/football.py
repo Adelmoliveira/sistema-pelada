@@ -92,12 +92,7 @@ def _sumula(db, sumula_id):
     return row, participants, matches, incidents, responsibles, audits
 
 
-@bp.get("")
-@roles_allowed("manager", "football_manager")
-def dashboard():
-    db = get_db()
-    metrics = db.execute("SELECT COUNT(*) total,COUNT(CASE WHEN situacao='FINALIZADA' THEN 1 END) finalized,COUNT(CASE WHEN situacao IN ('ABERTA','EM_ANDAMENTO') THEN 1 END) active,COUNT(CASE WHEN match_date>=? AND situacao!='CANCELADA' THEN 1 END) upcoming FROM football_sumulas", (local_today().isoformat(),)).fetchone()
-    recent = db.execute("SELECT * FROM football_sumulas WHERE situacao!='CANCELADA' ORDER BY match_date DESC,id DESC LIMIT 8").fetchall()
+def _position_distribution(db):
     eligible_players = db.execute(
         "SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name))"
     ).fetchall()
@@ -105,7 +100,6 @@ def dashboard():
     position_players = {key: [] for key in distribution}
     for player in eligible_players:
         position = (player["football_position"] or "").strip().upper()
-        # Goleiros entram na linha defensiva para a conferência de equilíbrio.
         category = position if position in ("ATAQUE", "MEIO") else "DEFESA" if position in ("DEFESA", "GOL") else "SEM_POSICAO"
         distribution[category] += 1
         position_players[category].append(player)
@@ -115,7 +109,25 @@ def dashboard():
         count = distribution[key]
         percentage = round((count / positioned_total) * 100, 2) if positioned_total else 0
         position_summary.append({"key": key, "label": label, "count": count, "percentage": percentage, "target": target, "difference": round(percentage - target, 2)})
-    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, position_players=position_players, eligible_total=len(eligible_players), positioned_total=positioned_total)
+    return position_summary, len(eligible_players), positioned_total
+
+
+@bp.get("")
+@roles_allowed("manager", "football_manager")
+def dashboard():
+    db = get_db()
+    metrics = db.execute("SELECT COUNT(*) total,COUNT(CASE WHEN situacao='FINALIZADA' THEN 1 END) finalized,COUNT(CASE WHEN situacao IN ('ABERTA','EM_ANDAMENTO') THEN 1 END) active,COUNT(CASE WHEN match_date>=? AND situacao!='CANCELADA' THEN 1 END) upcoming FROM football_sumulas", (local_today().isoformat(),)).fetchone()
+    recent = db.execute("SELECT * FROM football_sumulas WHERE situacao!='CANCELADA' ORDER BY match_date DESC,id DESC LIMIT 8").fetchall()
+    position_summary, eligible_total, positioned_total = _position_distribution(db)
+    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total)
+
+
+@bp.get("/gestao/posicoes")
+@roles_allowed("manager", "football_manager")
+def position_distribution():
+    db = get_db()
+    position_summary, eligible_total, positioned_total = _position_distribution(db)
+    return render_template("football_dashboard.html", metrics=None, recent=[], situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, management_view=True)
 
 
 @bp.get("/estatisticas")
@@ -147,6 +159,38 @@ def statistics():
     team_results = db.execute("""SELECT fm.*,fs.match_date FROM football_matches fm JOIN football_sumulas fs ON fs.id=fm.sumula_id
         WHERE fm.status='ENCERRADA' ORDER BY fs.match_date DESC,fm.number DESC LIMIT 20""").fetchall()
     return render_template("football_statistics.html", totals=totals, player_stats=player_stats, team_results=team_results)
+
+
+@bp.get("/frequencia")
+@roles_allowed("manager", "football_manager")
+def attendance():
+    db = get_db()
+    total_sumulas = int(db.execute(
+        "SELECT COUNT(*) FROM football_sumulas WHERE situacao='FINALIZADA'"
+    ).fetchone()[0] or 0)
+    players = db.execute(
+        """SELECT p.id,p.name,p.war_name,p.football_position,
+                  COUNT(DISTINCT CASE WHEN fp.status='CONFIRMADO' AND fs.id IS NOT NULL THEN fp.sumula_id END) participacoes
+           FROM players p
+           LEFT JOIN football_participants fp ON fp.player_id=p.id
+           LEFT JOIN football_sumulas fs ON fs.id=fp.sumula_id AND fs.situacao='FINALIZADA'
+           WHERE p.active=1
+           GROUP BY p.id,p.name,p.war_name,p.football_position
+           ORDER BY participacoes DESC,LOWER(COALESCE(p.war_name,p.name)),LOWER(p.name)"""
+    ).fetchall()
+    rows = []
+    for player in players:
+        participacoes = int(player["participacoes"] or 0)
+        rows.append({
+            "id": player["id"],
+            "name": player["name"],
+            "war_name": player["war_name"],
+            "football_position": player["football_position"],
+            "participacoes": participacoes,
+            "ausencias": max(0, total_sumulas - participacoes),
+            "frequencia": round((participacoes / total_sumulas) * 100, 2) if total_sumulas else 0,
+        })
+    return render_template("football_attendance.html", rows=rows, total_sumulas=total_sumulas)
 
 
 @bp.route("/lancamentos", methods=["GET", "POST"])
