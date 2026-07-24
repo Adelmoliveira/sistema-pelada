@@ -185,13 +185,20 @@ def football_positions():
             position = request.form.get("football_position", "").strip().upper()
             if position and position not in FOOTBALL_POSITIONS:
                 raise ValueError("Posição inválida.")
-            db.execute("UPDATE players SET football_position=? WHERE id=? AND active=1", (position, player_id))
+            updated = db.execute(
+                "UPDATE players SET football_position=? WHERE id=? AND active=1 AND gender!='female' AND membership_type!='veteran'",
+                (position, player_id),
+            )
+            if updated.rowcount == 0:
+                raise ValueError("Veteranos e mulheres não possuem posição de futebol.")
             db.commit()
             flash("Posição de futebol atualizada.", "success")
         except (ValueError, KeyError):
             flash("Não foi possível atualizar a posição.", "danger")
         return redirect(url_for("players.football_positions"))
-    players = db.execute("SELECT id,name,war_name,football_position FROM players WHERE active=1 ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
+    players = db.execute(
+        "SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)"
+    ).fetchall()
     return render_template("football_positions.html", players=players, football_positions=FOOTBALL_POSITIONS)
 
 

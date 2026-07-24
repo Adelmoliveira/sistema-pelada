@@ -163,13 +163,7 @@ def sale():
                         raise ValueError("O estoque mudou durante a venda. Tente novamente.")
             notify_low_stock(db, requested.keys())
             
-            if cash_pending:
-                flash(
-                    f"Pedido #{cur.lastrowid} enviado. Pague {money(total)} em dinheiro para a atendente retirar os produtos.",
-                    "success",
-                )
-            else:
-                flash(f"Venda #{cur.lastrowid} registrada: {money(total)}.", "success")
+            flash(f"Pedido registrado com sucesso! Pedido #{cur.lastrowid}.", "success")
             return redirect(url_for("sales.sale"), code=303)
         except ValueError as exc:
             flash(str(exc), "danger")
@@ -177,10 +171,13 @@ def sale():
             current_app.logger.error(f"Erro ao processar venda: {exc}")
             flash("Erro interno ao processar a venda. Tente novamente.", "danger")
 
+    player_select = """SELECT p.*, COALESCE((SELECT SUM(s.total_cents) FROM sales s
+                         WHERE s.player_id=p.id AND s.paid=1), 0) accumulated_total_cents
+                      FROM players p WHERE p.active=1"""
     if g.user["role"] == "client":
-        player_rows = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchall()
+        player_rows = db.execute(f"{player_select} AND p.id=?", (g.user["player_id"],)).fetchall()
     else:
-        player_rows = db.execute("SELECT * FROM players WHERE active=1").fetchall()
+        player_rows = db.execute(player_select).fetchall()
     player_rows = sorted(
         player_rows,
         key=lambda player: alphabetical_key(player["war_name"] or player["name"]),
@@ -210,6 +207,13 @@ def sale():
         products=product_rows,
         product_data=product_data,
         product_groups=product_groups,
+        player_data=[{
+            "id": player["id"],
+            "full_name": player["name"],
+            "war_name": player["war_name"] or "",
+            "photo": player["thumbnail_data"] or "",
+            "accumulated_total_cents": int(player["accumulated_total_cents"] or 0),
+        } for player in player_rows],
         pix_token=pix_access_token(g.user),
         mercadopago_enabled=mercadopago_enabled(),
     )
@@ -277,6 +281,8 @@ def delivery_order_data(db, sale):
     return {
         "id": sale["id"],
         "player_name": sale["war_name"] or sale["player_name"],
+        "player_full_name": sale["player_name"],
+        "player_war_name": sale["war_name"] or "",
         "player_photo": sale["player_thumbnail_data"] or "",
         "total_cents": sale["total_cents"],
         "payment_method": sale["payment_method"],
