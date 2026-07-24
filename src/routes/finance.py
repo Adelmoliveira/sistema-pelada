@@ -1,11 +1,12 @@
 import hmac
 from datetime import date, timedelta
+from email.utils import parseaddr
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify, send_file, g
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.services.debtors_pdf import build_debtors_pdf
-from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
+from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players, reminder_context, render_template_text, send_gmail
 from src.services.cash_register import create_movement, get_session, session_summary
 from src.services.finance_accounts import (
     ALL_CATEGORY_LABELS,
@@ -738,6 +739,40 @@ def send_reminders_now():
         f"{result['without_email']} sem e-mail e {result['failed']} falha(s).",
         category,
     )
+    return redirect(url_for("finance.reminders"))
+
+
+@bp.post("/finance/reminders/send-test")
+@roles_allowed("manager")
+def send_test_reminder():
+    recipient = request.form.get("test_email", "").strip().lower()
+    _, parsed = parseaddr(recipient)
+    if not parsed or parsed != recipient or recipient.count("@") != 1 or any(char.isspace() for char in recipient):
+        flash("Informe um endereço de e-mail válido para o teste.", "danger")
+        return redirect(url_for("finance.reminders"))
+
+    sender, password = smtp_configuration()
+    if not sender or not password:
+        flash("Configure GMAIL_SMTP_USER e GMAIL_APP_PASSWORD na Vercel antes de testar o envio.", "danger")
+        return redirect(url_for("finance.reminders"))
+
+    today = local_today()
+    settings = get_reminder_settings(get_db())
+    sample_debtor = {
+        "name": "Peladeiro de teste",
+        "amount_cents": 1500,
+        "missing_month_names": "mês de teste",
+    }
+    context = reminder_context(sample_debtor, today)
+    subject = render_template_text(settings["subject"], context)
+    body = render_template_text(settings["body"], context)
+    try:
+        send_gmail(sender, password, recipient, subject, body)
+    except Exception as exc:
+        current_app.logger.error("Erro ao enviar e-mail de teste: %s", exc)
+        flash("Não foi possível enviar o e-mail de teste. Verifique as credenciais do Gmail.", "danger")
+    else:
+        flash(f"E-mail de teste enviado para {recipient}. Verifique também a pasta de spam.", "success")
     return redirect(url_for("finance.reminders"))
 
 
