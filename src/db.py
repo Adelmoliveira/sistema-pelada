@@ -336,6 +336,7 @@ CREATE TABLE IF NOT EXISTS football_participants (
 CREATE TABLE IF NOT EXISTS football_responsibles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
+    match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL,
     player_id INTEGER REFERENCES players(id),
     responsibility_type TEXT NOT NULL CHECK(responsibility_type IN ('SORTEIO','SUMULA','QUADRO','GOLEIRO_VOLUNTARIO','ARBITRO_VOLUNTARIO','OUTRO')),
     observation TEXT DEFAULT '',
@@ -789,6 +790,10 @@ def init_sqlite(wrapper):
     if "card" not in incident_columns:
         conn.execute("ALTER TABLE football_incidents ADD COLUMN card TEXT DEFAULT ''")
         conn.commit()
+    responsible_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_responsibles)")}
+    if "match_id" not in responsible_columns:
+        conn.execute("ALTER TABLE football_responsibles ADD COLUMN match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL")
+        conn.commit()
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_players_cpf ON players(cpf) WHERE cpf<>''")
     conn.commit()
     product_columns = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
@@ -913,6 +918,7 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS last_checked_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS next_check_due_at TIMESTAMP")
     wrapper.execute("ALTER TABLE football_incidents ADD COLUMN IF NOT EXISTS card TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE football_responsibles ADD COLUMN IF NOT EXISTS match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL")
     wrapper.execute("ALTER TABLE maintenance_requests DROP CONSTRAINT IF EXISTS maintenance_requests_area_code_check")
     wrapper.execute("ALTER TABLE maintenance_requests ADD CONSTRAINT maintenance_requests_area_code_check CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','EXT'))")
     wrapper.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
