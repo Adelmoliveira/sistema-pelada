@@ -162,7 +162,7 @@ def statistics():
     totals = db.execute(f"SELECT COUNT(DISTINCT fs.id) sumulas,COUNT(DISTINCT fm.id) partidas,COUNT(DISTINCT fg.id) gols FROM football_sumulas fs LEFT JOIN football_matches fm ON fm.sumula_id=fs.id AND fm.status='ENCERRADA' LEFT JOIN football_goals fg ON fg.match_id=fm.id WHERE fs.situacao='FINALIZADA'{fs_filter}", tuple(fs_params)).fetchone()
     finalized_sumulas = int(totals["sumulas"] or 0)
     player_stats = []
-    player_where = "WHERE active=1"
+    player_where = "WHERE active=1 AND gender!='female' AND membership_type!='veteran'"
     player_params = []
     if player_int:
         player_where += " AND id=?"; player_params.append(player_int)
@@ -211,7 +211,7 @@ def attendance():
            FROM players p
            LEFT JOIN football_participants fp ON fp.player_id=p.id
            LEFT JOIN football_sumulas fs ON fs.id=fp.sumula_id AND fs.situacao='FINALIZADA'
-           WHERE p.active=1
+           WHERE p.active=1 AND p.gender!='female' AND p.membership_type!='veteran'
            GROUP BY p.id,p.name,p.war_name,p.football_position
            ORDER BY participacoes DESC,LOWER(COALESCE(p.war_name,p.name)),LOWER(p.name)"""
     ).fetchall()
