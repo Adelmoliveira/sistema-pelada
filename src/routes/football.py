@@ -31,6 +31,39 @@ def _participant_player(db, sumula_id, player_id):
     return db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND player_id=?", (sumula_id, player_id)).fetchone()
 
 
+def _fallback_roles(db, sumula_id):
+    """Calcula os papéis de emergência da segunda partida pela ordem do sorteio."""
+    match = db.execute("SELECT id FROM football_matches WHERE sumula_id=? AND number=2", (sumula_id,)).fetchone()
+    if not match or db.execute(
+        "SELECT 1 FROM football_responsibles WHERE sumula_id=? AND match_id=? AND responsibility_type='GOLEIRO_VOLUNTARIO'",
+        (sumula_id, match["id"]),
+    ).fetchone() or db.execute(
+        "SELECT 1 FROM football_responsibles WHERE sumula_id=? AND observation LIKE 'REGRA_AUTOMATICA_%'",
+        (sumula_id,),
+    ).fetchone():
+        return []
+    players = {
+        int(row["draw_order"]): row
+        for row in db.execute(
+            """SELECT fp.player_id,fp.draw_order,p.name,p.war_name
+               FROM football_participants fp JOIN players p ON p.id=fp.player_id
+               WHERE fp.sumula_id=? AND fp.status='CONFIRMADO' AND fp.draw_order IN (1,8,14,20)""",
+            (sumula_id,),
+        ).fetchall()
+    }
+    roles = []
+    if players.get(1):
+        player = players[1]
+        roles.append({"player_id": player["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": 1, "name": player["war_name"] or player["name"]})
+    candidates = [players[order] for order in (8, 14, 20) if players.get(order)]
+    if candidates:
+        goalkeeper = candidates[0]
+        roles.append({"player_id": goalkeeper["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": goalkeeper["draw_order"], "name": goalkeeper["war_name"] or goalkeeper["name"]})
+        for referee in candidates[1:]:
+            roles.append({"player_id": referee["player_id"], "match_id": match["id"], "role": "Juiz", "draw_order": referee["draw_order"], "name": referee["war_name"] or referee["name"]})
+    return roles
+
+
 def _lineup_position(value):
     """Converte a posição do cadastro do peladeiro para a súmula."""
     normalized = (value or "").strip().upper()
@@ -408,6 +441,7 @@ def detail(sumula_id):
                 if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND draw_order=? AND id!=?", (sumula_id, draw_order, participant_id)).fetchone():
                     raise ValueError("Esta ordem de sorteio já está ocupada.")
                 db.execute("UPDATE football_participants SET draw_order=? WHERE id=? AND sumula_id=?", (draw_order, participant_id, sumula_id))
+                db.execute("DELETE FROM football_responsibles WHERE sumula_id=? AND observation LIKE 'REGRA_AUTOMATICA_%'", (sumula_id,))
                 _audit(db, sumula_id, "ORDEM_PARTICIPANTE_ATUALIZADA", f"{participant_id}:{draw_order}")
             elif action == "score":
                 match_id = int(request.form["match_id"]); blue, white = max(0, int(request.form.get("blue_score", 0))), max(0, int(request.form.get("white_score", 0)))
@@ -481,7 +515,18 @@ def detail(sumula_id):
                 if match_id and not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
                     raise ValueError("Partida inválida para esta súmula.")
                 db.execute("INSERT INTO football_responsibles(sumula_id,match_id,player_id,responsibility_type,observation) VALUES(?,?,?,?,?)", (sumula_id, match_id, int(request.form["player_id"]) if request.form.get("player_id") else None, responsibility_type, request.form.get("observation", "").strip()))
+                if responsibility_type == "GOLEIRO_VOLUNTARIO" and match_id:
+                    db.execute("DELETE FROM football_responsibles WHERE sumula_id=? AND match_id=? AND observation LIKE 'REGRA_AUTOMATICA_%'", (sumula_id, match_id))
                 _audit(db, sumula_id, "RESPONSAVEL_REGISTRADO", responsibility_type)
+            elif action == "apply_fallback_roles":
+                roles = _fallback_roles(db, sumula_id)
+                if not roles:
+                    flash("A regra não pode ser aplicada: já há um goleiro voluntário, ela já foi aplicada ou faltam participantes confirmados.", "info")
+                    return redirect(url_for("football.detail", sumula_id=sumula_id))
+                for role in roles:
+                    observation = f"REGRA_AUTOMATICA_{role['role'].upper()}_ORDEM_{role['draw_order']}"
+                    db.execute("INSERT INTO football_responsibles(sumula_id,match_id,player_id,responsibility_type,observation) VALUES(?,?,?,?,?)", (sumula_id, role["match_id"], role["player_id"], "OUTRO", observation))
+                _audit(db, sumula_id, "REGRA_AUTOMATICA_APLICADA", ", ".join(f"{role['role']}: {role['name']}" for role in roles))
             elif action == "third_match":
                 if db.execute("SELECT 1 FROM football_matches WHERE sumula_id=? AND number=3", (sumula_id,)).fetchone():
                     raise ValueError("A terceira partida já existe.")
@@ -522,7 +567,12 @@ def detail(sumula_id):
     next_draw_order = next((number for number in range(1, 45) if number not in used_orders), 44)
     audit_total = int(db.execute("SELECT COUNT(*) FROM football_audit WHERE sumula_id=?", (sumula_id,)).fetchone()[0] or 0)
     audit_pages = max(1, (audit_total + 4) // 5)
-    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, next_draw_order=next_draw_order, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=audit_pages)
+    auto_roles = []
+    for responsible in data[4]:
+        observation = responsible["observation"] or ""
+        if observation.startswith("REGRA_AUTOMATICA_"):
+            auto_roles.append({"role": "Goleiro" if "_GOLEIRO_" in observation else "Juiz", "name": responsible["war_name"] or responsible["name"] or "Não informado"})
+    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=audit_pages)
 
 
 @bp.get("/sumulas/<int:sumula_id>/imprimir")
