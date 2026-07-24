@@ -77,7 +77,7 @@ def _match_day(value):
     return parsed
 
 
-def _sumula(db, sumula_id):
+def _sumula(db, sumula_id, audit_page=None):
     row = db.execute("SELECT fs.*,u.name created_by_name FROM football_sumulas fs LEFT JOIN users u ON u.id=fs.created_by WHERE fs.id=?", (sumula_id,)).fetchone()
     if not row:
         return None
@@ -89,7 +89,10 @@ def _sumula(db, sumula_id):
         matches.append({"row": match, "lineups": lineups, "goals": goals})
     incidents = db.execute("SELECT fi.*,p.name,p.war_name FROM football_incidents fi LEFT JOIN players p ON p.id=fi.player_id WHERE fi.sumula_id=? ORDER BY fi.id DESC", (sumula_id,)).fetchall()
     responsibles = db.execute("SELECT fr.*,p.name,p.war_name,fm.number match_number FROM football_responsibles fr LEFT JOIN players p ON p.id=fr.player_id LEFT JOIN football_matches fm ON fm.id=fr.match_id WHERE fr.sumula_id=? ORDER BY fr.id", (sumula_id,)).fetchall()
-    audits = db.execute("SELECT fa.*,u.name user_name FROM football_audit fa LEFT JOIN users u ON u.id=fa.user_id WHERE fa.sumula_id=? ORDER BY fa.id DESC LIMIT 30", (sumula_id,)).fetchall()
+    if audit_page is None:
+        audits = db.execute("SELECT fa.*,u.name user_name FROM football_audit fa LEFT JOIN users u ON u.id=fa.user_id WHERE fa.sumula_id=? ORDER BY fa.id DESC LIMIT 30", (sumula_id,)).fetchall()
+    else:
+        audits = db.execute("SELECT fa.*,u.name user_name FROM football_audit fa LEFT JOIN users u ON u.id=fa.user_id WHERE fa.sumula_id=? ORDER BY fa.id DESC LIMIT 5 OFFSET ?", (sumula_id, max(0, audit_page - 1) * 5)).fetchall()
     return row, participants, matches, incidents, responsibles, audits
 
 
@@ -343,7 +346,11 @@ def new_sumula():
 @roles_allowed("manager", "football_manager")
 def detail(sumula_id):
     db = get_db()
-    data = _sumula(db, sumula_id)
+    try:
+        audit_page = max(1, int(request.args.get("audit_page", "1")))
+    except ValueError:
+        audit_page = 1
+    data = _sumula(db, sumula_id, audit_page=audit_page)
     if not data:
         flash("Súmula não encontrada.", "danger")
         return redirect(url_for("football.sumulas"))
@@ -509,7 +516,9 @@ def detail(sumula_id):
     player_positions = {str(player["id"]): _lineup_position(player["football_position"]) for player in players}
     used_orders = {int(row["draw_order"]) for row in db.execute("SELECT draw_order FROM football_participants WHERE sumula_id=? AND draw_order IS NOT NULL", (sumula_id,)).fetchall()}
     next_draw_order = next((number for number in range(1, 45) if number not in used_orders), 44)
-    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, next_draw_order=next_draw_order, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES)
+    audit_total = int(db.execute("SELECT COUNT(*) FROM football_audit WHERE sumula_id=?", (sumula_id,)).fetchone()[0] or 0)
+    audit_pages = max(1, (audit_total + 4) // 5)
+    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, next_draw_order=next_draw_order, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=audit_pages)
 
 
 @bp.get("/sumulas/<int:sumula_id>/imprimir")
