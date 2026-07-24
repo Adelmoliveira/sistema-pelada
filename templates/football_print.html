@@ -1,1 +1,93 @@
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Súmula {{data[0]['match_date']|brdate}}</title><style>body{font-family:Arial,sans-serif;color:#172b3a;margin:28px}h1{margin-bottom:4px}.meta{color:#667}.box{border:1px solid #ccd5dc;border-radius:8px;padding:14px;margin:14px 0}table{width:100%;border-collapse:collapse}th,td{padding:7px;border-bottom:1px solid #ddd;text-align:left}.team{display:inline-block;width:48%;vertical-align:top}@media print{.no-print{display:none}}</style></head><body><button class="no-print" onclick="window.print()">Imprimir</button><h1>GRUPO DE PELADAS - GPCTA</h1><h2>Súmula de futebol · {{data[0]['match_date']|brdate}} ({{data[1]|length}} peladeiro{% if data[1]|length != 1 %}s{% endif %})</h2><div class="meta">{{data[0]['day_pelada']}}{% if data[0]['local'] %} · {{data[0]['local']}}{% endif %}{% if data[0]['horario'] %} · {{data[0]['horario']}}{% endif %}</div><div class="box"><h3>Participantes ({{data[1]|length}})</h3><table><tr><th>Peladeiro</th><th>Status</th><th>Posição</th></tr>{% for p in data[1] %}<tr><td>{{p['war_name'] or p['name']}}</td><td>{{p['status']}}</td><td>{{positions.get(p['preferred_position'],'')}}</td></tr>{% endfor %}</table></div>{% for item in data[2] %}<div class="box"><h3>{{item['row']['number']}}ª partida — Azul {{item['row']['blue_score']}} × {{item['row']['white_score']}} Branco</h3><div class="team"><strong>Azul</strong>{% for l in item['lineups'] if l['team']=='AZUL' %}<div>{{l['war_name'] or l['name']}} · {{positions[l['position']]}}</div>{% endfor %}</div><div class="team"><strong>Branco</strong>{% for l in item['lineups'] if l['team']=='BRANCO' %}<div>{{l['war_name'] or l['name']}} · {{positions[l['position']]}}</div>{% endfor %}</div></div>{% endfor %}{% if data[3] %}<div class="box"><h3>Ocorrências</h3>{% for i in data[3] %}<p><strong>{{incident_types[i['type']]}}</strong>{% if i['card'] %} — Cartão {{card_types[i['card']]}}{% endif %}{% if i['war_name'] %} — {{i['war_name']}}{% endif %} — {{i['description']}}</p>{% endfor %}</div>{% endif %}</body></html>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Súmula {{ data[0]['match_date']|brdate }}</title>
+  <style>
+    @page { size: A4; margin: 12mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; color: #172b3a; margin: 0; font-size: 10px; }
+    .no-print { margin-bottom: 12px; padding: 7px 14px; }
+    .header { display: flex; align-items: center; gap: 14px; border-bottom: 2px solid #172b3a; padding-bottom: 8px; }
+    .header img { width: 54px; height: 54px; object-fit: contain; }
+    h1 { font-size: 18px; margin: 0; }
+    h2 { font-size: 13px; margin: 4px 0; }
+    .meta { color: #536574; }
+    .box { border: 1px solid #9aa8b2; border-radius: 5px; padding: 8px; margin: 10px 0; }
+    .box h3 { margin: 0 0 6px; font-size: 12px; }
+    .participants { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+    .part-column { border: 1px solid #9aa8b2; }
+    .part-title { text-align: center; font-weight: bold; background: #e8edf1; padding: 4px; font-size: 11px; }
+    .part-row { display: grid; grid-template-columns: 28px 1fr; border-top: 1px solid #d4dbe0; padding: 3px 4px; min-height: 18px; }
+    .slot { font-weight: bold; }
+    .muted { color: #71808c; }
+    .match { page-break-inside: avoid; border: 1px solid #737f87; margin: 10px 0; }
+    .match-title { text-align: center; font-weight: bold; font-size: 13px; padding: 5px; background: #e8edf1; }
+    .score { text-align: center; font-size: 14px; font-weight: bold; padding: 4px; }
+    .teams { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 8px 6px; }
+    .team { border: 1px solid #aab5bc; min-height: 44px; }
+    .team-title { text-align: center; font-weight: bold; padding: 4px; background: #f1f3f5; }
+    .goalkeeper { padding: 3px 5px; border-bottom: 1px solid #d4dbe0; }
+    .goal-list { padding: 4px 5px; min-height: 46px; }
+    .goal-row { display: grid; grid-template-columns: 23px 1fr 1fr; border-top: 1px solid #e0e4e7; padding: 2px 0; }
+    .officials { border-top: 1px solid #aab5bc; padding: 5px 8px; }
+    .responsibles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .responsible { border-bottom: 1px solid #737f87; min-height: 24px; padding: 4px; }
+    .occurrence { border-bottom: 1px solid #d4dbe0; padding: 4px 0; }
+    @media print { .no-print { display: none; } }
+  </style>
+</head>
+<body>
+  <button class="no-print" onclick="window.print()">Imprimir</button>
+  <header class="header">
+    <img src="{{ url_for('static', filename='logo-gpcta.jpeg') }}" alt="GPCTA">
+    <div>
+      <h1>GRUPO DE PELADAS - GPCTA</h1>
+      <h2>SÚMULA DO DIA: {{ data[0]['match_date']|brdate }}</h2>
+      <div class="meta">{{ data[0]['day_pelada'] }}{% if data[0]['local'] %} · {{ data[0]['local'] }}{% endif %}{% if data[0]['horario'] %} · {{ data[0]['horario'] }}{% endif %}</div>
+    </div>
+  </header>
+
+  <section class="box">
+    <h3>Participantes ({{ data[1]|length }})</h3>
+    <div class="participants">
+      {% for match_number in (1, 2, 3) %}
+      <div class="part-column">
+        <div class="part-title">{{ match_number }}ª PARTIDA{% if match_number == 1 %} (ordens 1 a 22){% elif match_number == 2 %} (ordens 23 a 44){% endif %}</div>
+        {% set ns = namespace(count=0) %}
+        {% for p in data[1] if ((match_number == 1 and p['draw_order'] and p['draw_order'] >= 21 and p['draw_order'] <= 22) or (match_number == 2 and p['draw_order'] and p['draw_order'] >= 43 and p['draw_order'] <= 44)) %}{% set order = p['draw_order'] if match_number == 1 else p['draw_order'] - 22 %}<div class="part-row"><span class="slot">G{{ order - 20 }}</span><span>{{ p['war_name'] or p['name'] }}</span></div>{% set ns.count = ns.count + 1 %}{% endfor %}
+        {% for p in data[1] if ((match_number == 1 and p['draw_order'] and p['draw_order'] >= 1 and p['draw_order'] <= 8) or (match_number == 2 and p['draw_order'] and p['draw_order'] >= 23 and p['draw_order'] <= 30)) %}{% set order = p['draw_order'] if match_number == 1 else p['draw_order'] - 22 %}<div class="part-row"><span class="slot">D{{ order }}</span><span>{{ p['war_name'] or p['name'] }}</span></div>{% set ns.count = ns.count + 1 %}{% endfor %}
+        {% for p in data[1] if ((match_number == 1 and p['draw_order'] and p['draw_order'] >= 9 and p['draw_order'] <= 14) or (match_number == 2 and p['draw_order'] and p['draw_order'] >= 31 and p['draw_order'] <= 36)) %}{% set order = p['draw_order'] if match_number == 1 else p['draw_order'] - 22 %}<div class="part-row"><span class="slot">M{{ order - 8 }}</span><span>{{ p['war_name'] or p['name'] }}</span></div>{% set ns.count = ns.count + 1 %}{% endfor %}
+        {% for p in data[1] if ((match_number == 1 and p['draw_order'] and p['draw_order'] >= 15 and p['draw_order'] <= 20) or (match_number == 2 and p['draw_order'] and p['draw_order'] >= 37 and p['draw_order'] <= 42)) %}{% set order = p['draw_order'] if match_number == 1 else p['draw_order'] - 22 %}<div class="part-row"><span class="slot">A{{ order - 14 }}</span><span>{{ p['war_name'] or p['name'] }}</span></div>{% set ns.count = ns.count + 1 %}{% endfor %}
+        {% if ns.count == 0 %}<div class="part-row muted"><span>—</span><span>Sem participantes</span></div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  {% for item in data[2] %}
+  <section class="match">
+    <div class="match-title">{{ item['row']['number'] }}ª PARTIDA</div>
+    <div class="score">AZUL {{ item['row']['blue_score'] }} × {{ item['row']['white_score'] }} BRANCO</div>
+    <div class="teams">
+      {% for team_code, team_label in (('AZUL', 'TIME AZUL'), ('BRANCO', 'TIME BRANCO')) %}
+      <div class="team">
+        <div class="team-title">{{ team_label }}</div>
+        <div class="goalkeeper"><strong>Goleiro:</strong> {% for l in item['lineups'] if l['team'] == team_code and l['position'] in ('GOLEIRO', 'GOL') %}{{ l['war_name'] or l['name'] }}{% else %}—{% endfor %}</div>
+        <div class="goal-list">
+          <div class="goal-row"><strong>Min.</strong><strong>Gols</strong><strong>Assistência</strong></div>
+          {% for goal in item['goals'] if goal['benefited_team'] == team_code %}
+          <div class="goal-row"><span>{{ goal['minute'] or '' }}</span><span>{{ goal['author_war'] or goal['author_name'] or 'Sem autor' }}</span><span>{{ goal['assist_war'] or goal['assist_name'] or '—' }}</span></div>
+          {% else %}<div class="muted">Nenhum gol registrado.</div>{% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="officials"><strong>Juízes:</strong> {% for r in data[4] if r['responsibility_type'] == 'ARBITRO_VOLUNTARIO' and r['match_number'] == item['row']['number'] %}{{ r['war_name'] or r['name'] or 'Não informado' }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</div>
+  </section>
+  {% endfor %}
+
+  {% if data[4] %}<section class="box"><h3>Responsáveis</h3><div class="responsibles">{% for kind, label in (('SORTEIO', 'Sorteio'), ('SUMULA', 'Súmula'), ('QUADRO', 'Quadro')) %}<div><strong>{{ label }}</strong><div class="responsible">{% for r in data[4] if r['responsibility_type'] == kind %}{{ r['war_name'] or r['name'] or 'Não informado' }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</div></div>{% endfor %}</div></section>{% endif %}
+  {% if data[3] %}<section class="box"><h3>OCORRÊNCIAS</h3>{% for i in data[3] %}<div class="occurrence"><strong>{{ incident_types[i['type']] }}</strong>{% if i['card'] %} · Cartão {{ card_types[i['card']] }}{% endif %}{% if i['war_name'] %} · {{ i['war_name'] }}{% endif %}{% if i['description'] %} · {{ i['description'] }}{% endif %}</div>{% endfor %}</section>{% endif %}
+</body>
+</html>

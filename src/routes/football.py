@@ -57,7 +57,7 @@ def _sumula(db, sumula_id):
         goals = db.execute("SELECT fg.*,pa.name author_name,pa.war_name author_war,ps.name assist_name,ps.war_name assist_war FROM football_goals fg LEFT JOIN players pa ON pa.id=fg.author_player_id LEFT JOIN players ps ON ps.id=fg.assist_player_id WHERE fg.match_id=? ORDER BY fg.id", (match["id"],)).fetchall()
         matches.append({"row": match, "lineups": lineups, "goals": goals})
     incidents = db.execute("SELECT fi.*,p.name,p.war_name FROM football_incidents fi LEFT JOIN players p ON p.id=fi.player_id WHERE fi.sumula_id=? ORDER BY fi.id DESC", (sumula_id,)).fetchall()
-    responsibles = db.execute("SELECT fr.*,p.name,p.war_name FROM football_responsibles fr LEFT JOIN players p ON p.id=fr.player_id WHERE fr.sumula_id=? ORDER BY fr.id", (sumula_id,)).fetchall()
+    responsibles = db.execute("SELECT fr.*,p.name,p.war_name,fm.number match_number FROM football_responsibles fr LEFT JOIN players p ON p.id=fr.player_id LEFT JOIN football_matches fm ON fm.id=fr.match_id WHERE fr.sumula_id=? ORDER BY fr.id", (sumula_id,)).fetchall()
     audits = db.execute("SELECT fa.*,u.name user_name FROM football_audit fa LEFT JOIN users u ON u.id=fa.user_id WHERE fa.sumula_id=? ORDER BY fa.id DESC LIMIT 30", (sumula_id,)).fetchall()
     return row, participants, matches, incidents, responsibles, audits
 
@@ -283,7 +283,12 @@ def detail(sumula_id):
                 responsibility_type = request.form.get("responsibility_type", "")
                 if responsibility_type not in ("SORTEIO", "SUMULA", "QUADRO", "GOLEIRO_VOLUNTARIO", "ARBITRO_VOLUNTARIO", "OUTRO"):
                     raise ValueError("Tipo de responsável inválido.")
-                db.execute("INSERT INTO football_responsibles(sumula_id,player_id,responsibility_type,observation) VALUES(?,?,?,?)", (sumula_id, int(request.form["player_id"]) if request.form.get("player_id") else None, responsibility_type, request.form.get("observation", "").strip()))
+                match_id = int(request.form["match_id"]) if request.form.get("match_id") else None
+                if responsibility_type == "ARBITRO_VOLUNTARIO" and not match_id:
+                    raise ValueError("Selecione a partida do árbitro.")
+                if match_id and not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
+                    raise ValueError("Partida inválida para esta súmula.")
+                db.execute("INSERT INTO football_responsibles(sumula_id,match_id,player_id,responsibility_type,observation) VALUES(?,?,?,?,?)", (sumula_id, match_id, int(request.form["player_id"]) if request.form.get("player_id") else None, responsibility_type, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "RESPONSAVEL_REGISTRADO", responsibility_type)
             elif action == "third_match":
                 if db.execute("SELECT 1 FROM football_matches WHERE sumula_id=? AND number=3", (sumula_id,)).fetchone():
