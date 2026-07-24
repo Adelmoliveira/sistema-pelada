@@ -36,6 +36,22 @@ def _lineup_position(value):
     return PLAYER_POSITION_TO_LINEUP.get(normalized, normalized if normalized in POSITIONS else "")
 
 
+def _ensure_goal_fits_score(db, match_id, team, exclude_goal_id=None):
+    """Impede gols adicionais quando o placar encerrado já foi atingido."""
+    match = db.execute("SELECT status,blue_score,white_score FROM football_matches WHERE id=?", (match_id,)).fetchone()
+    if not match or match["status"] != "ENCERRADA":
+        return
+    score = int(match["blue_score"] or 0) if team == "AZUL" else int(match["white_score"] or 0)
+    sql = "SELECT COUNT(*) FROM football_goals WHERE match_id=? AND benefited_team=?"
+    params = [match_id, team]
+    if exclude_goal_id:
+        sql += " AND id!=?"
+        params.append(exclude_goal_id)
+    current = int(db.execute(sql, tuple(params)).fetchone()[0] or 0)
+    if current >= score:
+        raise ValueError(f"O placar do {team.title()} já atingiu {score} gol(s). Atualize o placar antes de registrar outro gol.")
+
+
 def _match_day(value):
     try:
         parsed = date.fromisoformat((value or "").strip())
@@ -259,6 +275,12 @@ def detail(sumula_id):
                 _audit(db, sumula_id, "ORDEM_PARTICIPANTE_ATUALIZADA", f"{participant_id}:{draw_order}")
             elif action == "score":
                 match_id = int(request.form["match_id"]); blue, white = max(0, int(request.form.get("blue_score", 0))), max(0, int(request.form.get("white_score", 0)))
+                if not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
+                    raise ValueError("Partida inválida para esta súmula.")
+                for team, score in (("AZUL", blue), ("BRANCO", white)):
+                    goals_count = int(db.execute("SELECT COUNT(*) FROM football_goals WHERE match_id=? AND benefited_team=?", (match_id, team)).fetchone()[0] or 0)
+                    if goals_count > score:
+                        raise ValueError(f"O placar do {team.title()} não pode ser menor que os gols já registrados ({goals_count}).")
                 db.execute("UPDATE football_matches SET blue_score=?,white_score=?,status='ENCERRADA' WHERE id=? AND sumula_id=?", (blue, white, match_id, sumula_id)); _audit(db, sumula_id, "RESULTADO_ATUALIZADO", f"{blue} x {white}")
             elif action == "goal":
                 author_player_id = int(request.form["author_player_id"]) if request.form.get("author_player_id") else None
@@ -267,7 +289,41 @@ def detail(sumula_id):
                 assist_player_id = int(request.form["assist_player_id"]) if request.form.get("assist_player_id") else None
                 if assist_player_id and not _participant_player(db, sumula_id, assist_player_id):
                     raise ValueError("Registre assistências somente para peladeiros participantes desta súmula.")
-                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?)", (int(request.form["match_id"]), author_player_id, request.form["benefited_team"], assist_player_id, int(request.form["minute"]) if request.form.get("minute") else None, 1 if request.form.get("own_goal") else 0, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
+                match_id = int(request.form["match_id"])
+                benefited_team = request.form["benefited_team"]
+                if benefited_team not in TEAMS or not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
+                    raise ValueError("Partida ou time inválido para esta súmula.")
+                _ensure_goal_fits_score(db, match_id, benefited_team)
+                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?)", (match_id, author_player_id, benefited_team, assist_player_id, int(request.form["minute"]) if request.form.get("minute") else None, 1 if request.form.get("own_goal") else 0, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
+            elif action in ("update_goal", "move_goal", "delete_goal"):
+                goal_id = int(request.form["goal_id"])
+                goal = db.execute("SELECT fg.id,fg.match_id,fm.sumula_id FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id WHERE fg.id=? AND fm.sumula_id=?", (goal_id, sumula_id)).fetchone()
+                if not goal:
+                    raise ValueError("Gol não encontrado nesta súmula.")
+                if action == "delete_goal":
+                    db.execute("DELETE FROM football_goals WHERE id=?", (goal_id,))
+                    _audit(db, sumula_id, "GOL_EXCLUIDO", str(goal_id))
+                else:
+                    target_match_id = int(request.form["match_id"])
+                    if not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (target_match_id, sumula_id)).fetchone():
+                        raise ValueError("Partida inválida para esta súmula.")
+                    if action == "move_goal":
+                        _ensure_goal_fits_score(db, target_match_id, db.execute("SELECT benefited_team FROM football_goals WHERE id=?", (goal_id,)).fetchone()[0], goal_id)
+                        db.execute("UPDATE football_goals SET match_id=? WHERE id=?", (target_match_id, goal_id))
+                        _audit(db, sumula_id, "GOL_MOVIDO", f"{goal['match_id']}->{target_match_id}")
+                    else:
+                        author_player_id = int(request.form["author_player_id"]) if request.form.get("author_player_id") else None
+                        assist_player_id = int(request.form["assist_player_id"]) if request.form.get("assist_player_id") else None
+                        for player_id, label in ((author_player_id, "autor"), (assist_player_id, "assistência")):
+                            if player_id and not _participant_player(db, sumula_id, player_id):
+                                raise ValueError(f"Selecione um participante válido para {label}.")
+                        benefited_team = request.form.get("benefited_team", "")
+                        if benefited_team not in TEAMS:
+                            raise ValueError("Time inválido.")
+                        minute = int(request.form["minute"]) if request.form.get("minute") else None
+                        _ensure_goal_fits_score(db, target_match_id, benefited_team, goal_id)
+                        db.execute("UPDATE football_goals SET match_id=?,author_player_id=?,benefited_team=?,assist_player_id=?,minute=? WHERE id=?", (target_match_id, author_player_id, benefited_team, assist_player_id, minute, goal_id))
+                        _audit(db, sumula_id, "GOL_EDITADO", str(goal_id))
             elif action == "incident":
                 description = request.form.get("description", "").strip()
                 card = request.form.get("card", "").strip().upper()
