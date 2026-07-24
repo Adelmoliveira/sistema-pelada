@@ -79,6 +79,14 @@ CREATE TABLE IF NOT EXISTS sale_items (
     unit_price_cents INTEGER NOT NULL,
     unit_cost_cents INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS sale_cancellations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id INTEGER NOT NULL UNIQUE REFERENCES sales(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    canceled_by INTEGER REFERENCES users(id),
+    canceled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sale_cancellations_date ON sale_cancellations(canceled_at);
 CREATE TABLE IF NOT EXISTS restocks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id INTEGER NOT NULL REFERENCES products(id),
@@ -317,6 +325,8 @@ CREATE TABLE IF NOT EXISTS football_sumulas (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finalized_at TEXT,
+    locked_at TEXT,
+    locked_by INTEGER REFERENCES users(id),
     canceled_at TEXT,
     canceled_by INTEGER REFERENCES users(id),
     reopen_justification TEXT DEFAULT '',
@@ -839,6 +849,15 @@ def init_sqlite(wrapper):
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
     conn.commit()
 
+    sumula_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_sumulas)")}
+    for column, definition in {
+        "locked_at": "TEXT",
+        "locked_by": "INTEGER REFERENCES users(id)",
+    }.items():
+        if column not in sumula_columns:
+            conn.execute(f"ALTER TABLE football_sumulas ADD COLUMN {column} {definition}")
+    conn.commit()
+
     load_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entries)")}
     load_migrations = {
         "area_code": "TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN'))",
@@ -910,6 +929,8 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_sent_at TIMESTAMP")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_error TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE football_sumulas ADD COLUMN IF NOT EXISTS locked_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE football_sumulas ADD COLUMN IF NOT EXISTS locked_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS area_code TEXT NOT NULL DEFAULT 'BAR'")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_at TIMESTAMP")

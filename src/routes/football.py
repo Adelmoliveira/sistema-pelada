@@ -1,10 +1,11 @@
 from datetime import date
 
-from flask import Blueprint, flash, g, redirect, render_template, request, url_for
+from flask import Blueprint, flash, g, redirect, render_template, request, send_file, url_for
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import local_today
+from src.services.football_stats_pdf import build_football_stats_pdf
 
 bp = Blueprint("football", __name__, url_prefix="/futebol")
 
@@ -52,6 +53,20 @@ def _ensure_goal_fits_score(db, match_id, team, exclude_goal_id=None):
         raise ValueError(f"O placar do {team.title()} já atingiu {score} gol(s). Atualize o placar antes de registrar outro gol.")
 
 
+def _score_mismatches(db, matches):
+    mismatches = []
+    for item in matches:
+        match = item["row"]
+        goals = db.execute(
+            "SELECT benefited_team,COUNT(*) total FROM football_goals WHERE match_id=? GROUP BY benefited_team",
+            (match["id"],),
+        ).fetchall()
+        counts = {row["benefited_team"]: int(row["total"]) for row in goals}
+        if counts.get("AZUL", 0) != int(match["blue_score"] or 0) or counts.get("BRANCO", 0) != int(match["white_score"] or 0):
+            mismatches.append(f"{match['number']}ª partida")
+    return mismatches
+
+
 def _match_day(value):
     try:
         parsed = date.fromisoformat((value or "").strip())
@@ -78,44 +93,141 @@ def _sumula(db, sumula_id):
     return row, participants, matches, incidents, responsibles, audits
 
 
+def _position_distribution(db):
+    eligible_players = db.execute(
+        "SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name))"
+    ).fetchall()
+    distribution = {"ATAQUE": 0, "MEIO": 0, "DEFESA": 0, "SEM_POSICAO": 0}
+    position_players = {key: [] for key in distribution}
+    for player in eligible_players:
+        position = (player["football_position"] or "").strip().upper()
+        category = position if position in ("ATAQUE", "MEIO") else "DEFESA" if position in ("DEFESA", "GOL") else "SEM_POSICAO"
+        distribution[category] += 1
+        position_players[category].append(player)
+    positioned_total = sum(distribution[key] for key in ("ATAQUE", "MEIO", "DEFESA"))
+    position_summary = []
+    for key, label, target in (("ATAQUE", "Ataque", 40), ("MEIO", "Meio", 30), ("DEFESA", "Defesa", 30)):
+        count = distribution[key]
+        percentage = round((count / positioned_total) * 100, 2) if positioned_total else 0
+        position_summary.append({"key": key, "label": label, "count": count, "percentage": percentage, "target": target, "difference": round(percentage - target, 2)})
+    return position_summary, len(eligible_players), positioned_total
+
+
 @bp.get("")
 @roles_allowed("manager", "football_manager")
 def dashboard():
     db = get_db()
     metrics = db.execute("SELECT COUNT(*) total,COUNT(CASE WHEN situacao='FINALIZADA' THEN 1 END) finalized,COUNT(CASE WHEN situacao IN ('ABERTA','EM_ANDAMENTO') THEN 1 END) active,COUNT(CASE WHEN match_date>=? AND situacao!='CANCELADA' THEN 1 END) upcoming FROM football_sumulas", (local_today().isoformat(),)).fetchone()
     recent = db.execute("SELECT * FROM football_sumulas WHERE situacao!='CANCELADA' ORDER BY match_date DESC,id DESC LIMIT 8").fetchall()
-    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS)
+    position_summary, eligible_total, positioned_total = _position_distribution(db)
+    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, management_view=True)
+
+
+@bp.get("/gestao/posicoes")
+@roles_allowed("manager", "football_manager")
+def position_distribution():
+    db = get_db()
+    position_summary, eligible_total, positioned_total = _position_distribution(db)
+    return render_template("football_dashboard.html", metrics=None, recent=[], situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, management_view=True)
 
 
 @bp.get("/estatisticas")
 @roles_allowed("manager", "football_manager")
 def statistics():
     db = get_db()
-    totals = db.execute("SELECT COUNT(DISTINCT fs.id) sumulas,COUNT(DISTINCT fm.id) partidas,COUNT(DISTINCT fg.id) gols FROM football_sumulas fs LEFT JOIN football_matches fm ON fm.sumula_id=fs.id AND fm.status='ENCERRADA' LEFT JOIN football_goals fg ON fg.match_id=fm.id WHERE fs.situacao='FINALIZADA'").fetchone()
+    year = request.args.get("year", "").strip()
+    month = request.args.get("month", "").strip()
+    player_id = request.args.get("player_id", "").strip()
+    try:
+        year_int = int(year) if year else None
+        month_int = int(month) if month else None
+        if year_int and not 2000 <= year_int <= 2100: raise ValueError
+        if month_int and not 1 <= month_int <= 12: raise ValueError
+        player_int = int(player_id) if player_id else None
+    except ValueError:
+        year = month = player_id = ""
+        year_int = month_int = player_int = None
+    start_date = end_date = None
+    if year_int:
+        start_date = date(year_int, month_int or 1, 1)
+        if month_int:
+            end_date = date(year_int + (1 if month_int == 12 else 0), 1 if month_int == 12 else month_int + 1, 1)
+        else:
+            end_date = date(year_int + 1, 1, 1)
+    fs_filter = ""
+    fs_params = []
+    if start_date:
+        fs_filter += " AND fs.match_date >= ? AND fs.match_date < ?"
+        fs_params.extend((start_date.isoformat(), end_date.isoformat()))
+    totals = db.execute(f"SELECT COUNT(DISTINCT fs.id) sumulas,COUNT(DISTINCT fm.id) partidas,COUNT(DISTINCT fg.id) gols FROM football_sumulas fs LEFT JOIN football_matches fm ON fm.sumula_id=fs.id AND fm.status='ENCERRADA' LEFT JOIN football_goals fg ON fg.match_id=fm.id WHERE fs.situacao='FINALIZADA'{fs_filter}", tuple(fs_params)).fetchone()
     finalized_sumulas = int(totals["sumulas"] or 0)
     player_stats = []
-    for player in db.execute("SELECT id,name,war_name FROM players WHERE active=1 ORDER BY LOWER(name)").fetchall():
-        participacoes = int(db.execute("SELECT COUNT(DISTINCT sumula_id) FROM football_participants WHERE player_id=? AND status='CONFIRMADO' AND sumula_id IN (SELECT id FROM football_sumulas WHERE situacao='FINALIZADA')", (player["id"],)).fetchone()[0] or 0)
+    player_where = "WHERE active=1 AND gender!='female' AND membership_type!='veteran'"
+    player_params = []
+    if player_int:
+        player_where += " AND id=?"; player_params.append(player_int)
+    for player in db.execute(f"SELECT id,name,war_name FROM players {player_where} ORDER BY LOWER(name)", tuple(player_params)).fetchall():
+        participacoes = int(db.execute(f"SELECT COUNT(DISTINCT fp.sumula_id) FROM football_participants fp JOIN football_sumulas fs ON fs.id=fp.sumula_id WHERE fp.player_id=? AND fp.status='CONFIRMADO' AND fs.situacao='FINALIZADA'{fs_filter}", (player["id"], *fs_params)).fetchone()[0] or 0)
         games = db.execute("""SELECT fl.team,fm.blue_score,fm.white_score FROM football_lineups fl
             JOIN football_matches fm ON fm.id=fl.match_id AND fm.status='ENCERRADA'
             JOIN football_sumulas fs ON fs.id=fm.sumula_id AND fs.situacao='FINALIZADA'
-            WHERE fl.player_id=?""", (player["id"],)).fetchall()
+            WHERE fl.player_id=?""" + fs_filter, (player["id"], *fs_params)).fetchall()
         wins = draws = losses = 0
         for game in games:
             own, opponent = (int(game["blue_score"] or 0), int(game["white_score"] or 0)) if game["team"] == "AZUL" else (int(game["white_score"] or 0), int(game["blue_score"] or 0))
             if own > opponent: wins += 1
             elif own == opponent: draws += 1
             else: losses += 1
-        goals = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player["id"],)).fetchone()[0] or 0)
-        assists = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.assist_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player["id"],)).fetchone()[0] or 0)
-        historical = db.execute("SELECT COALESCE(SUM(goals),0) goals,COALESCE(SUM(assists),0) assists FROM football_historical_stats WHERE player_id=?", (player["id"],)).fetchone()
+        goals = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
+        assists = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.assist_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
+        historical_filter = " AND stat_date >= ? AND stat_date < ?" if start_date else ""
+        historical_params = (start_date.isoformat(), end_date.isoformat()) if start_date else ()
+        historical = db.execute("SELECT COALESCE(SUM(goals),0) goals,COALESCE(SUM(assists),0) assists FROM football_historical_stats WHERE player_id=?" + historical_filter, (player["id"], *historical_params)).fetchone()
         goals += int(historical["goals"] or 0); assists += int(historical["assists"] or 0)
         if participacoes or games or goals or assists:
             player_stats.append({"id": player["id"], "name": player["name"], "war_name": player["war_name"], "participacoes": participacoes, "frequencia": round((participacoes / finalized_sumulas) * 100, 1) if finalized_sumulas else 0, "jogos": len(games), "vitorias": wins, "empates": draws, "derrotas": losses, "gols": goals, "assistencias": assists})
     player_stats.sort(key=lambda item: (-item["gols"], -item["assistencias"], -item["vitorias"], -item["participacoes"], (item["war_name"] or item["name"]).lower()))
     team_results = db.execute("""SELECT fm.*,fs.match_date FROM football_matches fm JOIN football_sumulas fs ON fs.id=fm.sumula_id
-        WHERE fm.status='ENCERRADA' ORDER BY fs.match_date DESC,fm.number DESC LIMIT 20""").fetchall()
-    return render_template("football_statistics.html", totals=totals, player_stats=player_stats, team_results=team_results)
+        WHERE fm.status='ENCERRADA'""" + fs_filter + " ORDER BY fs.match_date DESC,fm.number DESC LIMIT 20", tuple(fs_params)).fetchall()
+    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
+    selected_player = next((item for item in players if str(item["id"]) == player_id), None)
+    filters = {"year": year, "month": month, "player_id": player_id, "player_name": (selected_player["war_name"] or selected_player["name"]) if selected_player else ""}
+    if request.args.get("pdf") == "1":
+        report = build_football_stats_pdf(player_stats, totals, filters, local_today())
+        return send_file(report, mimetype="application/pdf", as_attachment=False, download_name="estatisticas-futebol.pdf")
+    return render_template("football_statistics.html", totals=totals, player_stats=player_stats, team_results=team_results, players=players, filters=filters)
+
+
+@bp.get("/frequencia")
+@roles_allowed("manager", "football_manager")
+def attendance():
+    db = get_db()
+    total_sumulas = int(db.execute(
+        "SELECT COUNT(*) FROM football_sumulas WHERE situacao='FINALIZADA'"
+    ).fetchone()[0] or 0)
+    players = db.execute(
+        """SELECT p.id,p.name,p.war_name,p.football_position,
+                  COUNT(DISTINCT CASE WHEN fp.status='CONFIRMADO' AND fs.id IS NOT NULL THEN fp.sumula_id END) participacoes
+           FROM players p
+           LEFT JOIN football_participants fp ON fp.player_id=p.id
+           LEFT JOIN football_sumulas fs ON fs.id=fp.sumula_id AND fs.situacao='FINALIZADA'
+           WHERE p.active=1 AND p.gender!='female' AND p.membership_type!='veteran'
+           GROUP BY p.id,p.name,p.war_name,p.football_position
+           ORDER BY participacoes DESC,LOWER(COALESCE(p.war_name,p.name)),LOWER(p.name)"""
+    ).fetchall()
+    rows = []
+    for player in players:
+        participacoes = int(player["participacoes"] or 0)
+        rows.append({
+            "id": player["id"],
+            "name": player["name"],
+            "war_name": player["war_name"],
+            "football_position": player["football_position"],
+            "participacoes": participacoes,
+            "ausencias": max(0, total_sumulas - participacoes),
+            "frequencia": round((participacoes / total_sumulas) * 100, 2) if total_sumulas else 0,
+        })
+    return render_template("football_attendance.html", rows=rows, total_sumulas=total_sumulas)
 
 
 @bp.route("/lancamentos", methods=["GET", "POST"])
@@ -178,7 +290,9 @@ def sumulas():
         conditions.append("fs.match_date>=?"); params.append(start)
     if end:
         conditions.append("fs.match_date<=?"); params.append(end)
-    if situation in SITUATIONS:
+    if situation == "ENCERRADA":
+        conditions.append("fs.locked_at IS NOT NULL")
+    elif situation in SITUATIONS:
         conditions.append("fs.situacao=?"); params.append(situation)
     sql = "SELECT fs.*,COUNT(DISTINCT fp.player_id) participant_count,COUNT(DISTINCT fm.id) match_count FROM football_sumulas fs LEFT JOIN football_participants fp ON fp.sumula_id=fs.id LEFT JOIN football_matches fm ON fm.sumula_id=fs.id"
     if conditions: sql += " WHERE " + " AND ".join(conditions)
@@ -228,6 +342,8 @@ def detail(sumula_id):
         action = request.form.get("action", "")
         try:
             sumula = data[0]
+            if sumula["locked_at"]:
+                raise ValueError("A súmula foi encerrada definitivamente e não aceita novas alterações.")
             if sumula["situacao"] in ("FINALIZADA", "CANCELADA") and action not in ("status",):
                 raise ValueError("A súmula está bloqueada para alterações. Reabra-a antes de editar.")
             if action == "participant":
@@ -350,6 +466,14 @@ def detail(sumula_id):
                 if db.execute("SELECT 1 FROM football_matches WHERE sumula_id=? AND number=3", (sumula_id,)).fetchone():
                     raise ValueError("A terceira partida já existe.")
                 db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,3)", (sumula_id,)); _audit(db, sumula_id, "TERCEIRA_PARTIDA_ADICIONADA")
+            elif action == "lock":
+                if sumula["situacao"] != "FINALIZADA":
+                    raise ValueError("Finalize a súmula antes de encerrá-la definitivamente.")
+                mismatches = _score_mismatches(db, data[2])
+                if mismatches:
+                    raise ValueError("O placar não corresponde aos gols registrados (" + ", ".join(mismatches) + "). Corrija antes do encerramento definitivo.")
+                db.execute("UPDATE football_sumulas SET locked_at=CURRENT_TIMESTAMP,locked_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (g.user["id"], sumula_id))
+                _audit(db, sumula_id, "ENCERRAMENTO_DEFINITIVO", "Conferência concluída")
             elif action == "status":
                 new_status = request.form["situacao"]
                 if new_status not in SITUATIONS: raise ValueError("Situação inválida.")
@@ -360,13 +484,7 @@ def detail(sumula_id):
                 if sumula["situacao"] == "FINALIZADA" and new_status == "EM_ANDAMENTO" and not request.form.get("justification", "").strip():
                     raise ValueError("Informe a justificativa para reabrir a súmula.")
                 if new_status == "FINALIZADA":
-                    mismatches = []
-                    for item in data[2]:
-                        match = item["row"]
-                        goals = db.execute("SELECT benefited_team,COUNT(*) total FROM football_goals WHERE match_id=? GROUP BY benefited_team", (match["id"],)).fetchall()
-                        counts = {row["benefited_team"]: int(row["total"]) for row in goals}
-                        if counts.get("AZUL", 0) != int(match["blue_score"] or 0) or counts.get("BRANCO", 0) != int(match["white_score"] or 0):
-                            mismatches.append(f"{match['number']}ª partida")
+                    mismatches = _score_mismatches(db, data[2])
                     if mismatches and not request.form.get("justification", "").strip():
                         raise ValueError("O placar não corresponde aos gols registrados (" + ", ".join(mismatches) + "). Informe uma justificativa.")
                     db.execute("UPDATE football_sumulas SET situacao=?,finalized_at=CURRENT_TIMESTAMP,reopen_justification=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, request.form.get("justification", "").strip(), sumula_id))

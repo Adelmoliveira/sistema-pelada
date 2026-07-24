@@ -267,6 +267,11 @@ def delivery_order_data(db, sale):
         "paid_at": datetime_iso(sale["paid_at"] or sale["created_at"]),
         "delivered_at": datetime_iso(sale["delivered_at"]),
         "delivered_by_name": sale["delivered_by_name"] or "",
+        "canceled": sale["payment_status"] == "canceled",
+        "canceled_at": datetime_iso(sale["canceled_at"]) if "canceled_at" in sale.keys() else None,
+        "canceled_by_name": sale["canceled_by_name"] or "" if "canceled_by_name" in sale.keys() else "",
+        "cancellation_reason": sale["cancellation_reason"] or "" if "cancellation_reason" in sale.keys() else "",
+        "receipt_url": url_for("sales.receipt", sale_id=sale["id"]),
         "items": [{"name": item["name"], "quantity": item["quantity"]} for item in items],
     }
 
@@ -274,20 +279,35 @@ def delivery_order_data(db, sale):
 @roles_allowed("manager", "staff")
 def orders_feed():
     db = get_db()
-    select = """SELECT s.*,p.name player_name,p.war_name,p.thumbnail_data player_thumbnail_data,u.name delivered_by_name
+    payment_method = request.args.get("payment_method", "").strip()
+    if payment_method not in {"", "Pix", "Dinheiro", "Débito", "Cortesia"}:
+        payment_method = ""
+    payment_clause = " AND s.payment_method=?" if payment_method else ""
+    payment_params = (payment_method,) if payment_method else ()
+    select = """SELECT s.*,p.name player_name,p.war_name,p.thumbnail_data player_thumbnail_data,
+                u.name delivered_by_name,cu.name canceled_by_name,sc.reason cancellation_reason,sc.canceled_at
                 FROM sales s JOIN players p ON p.id=s.player_id
-                LEFT JOIN users u ON u.id=s.delivered_by"""
+                LEFT JOIN users u ON u.id=s.delivered_by
+                LEFT JOIN sale_cancellations sc ON sc.sale_id=s.id
+                LEFT JOIN users cu ON cu.id=sc.canceled_by"""
     pending = db.execute(
         f"""{select} WHERE s.ready_for_delivery=1 AND s.delivered_at IS NULL
-             AND (s.paid=1 OR s.payment_status='pending_cash')
-             ORDER BY COALESCE(s.paid_at,s.created_at),s.id"""
+             AND (s.paid=1 OR s.payment_status='pending_cash'){payment_clause}
+             ORDER BY COALESCE(s.paid_at,s.created_at),s.id""", payment_params
     ).fetchall()
     delivered = db.execute(
-        f"{select} WHERE s.ready_for_delivery=1 AND s.delivered_at IS NOT NULL ORDER BY s.delivered_at DESC LIMIT 20"
+        f"{select} WHERE s.ready_for_delivery=1 AND s.delivered_at IS NOT NULL{payment_clause} ORDER BY s.delivered_at DESC LIMIT 20",
+        payment_params,
+    ).fetchall()
+    canceled = db.execute(
+        f"{select} WHERE s.payment_status='canceled' AND sc.canceled_at IS NOT NULL{payment_clause} ORDER BY sc.canceled_at DESC LIMIT 20",
+        payment_params,
     ).fetchall()
     return jsonify(
         pending=[delivery_order_data(db, sale) for sale in pending],
         delivered=[delivery_order_data(db, sale) for sale in delivered],
+        canceled=[delivery_order_data(db, sale) for sale in canceled],
+        payment_method=payment_method,
     )
 
 @bp.post("/orders/<int:sale_id>/deliver")
@@ -315,6 +335,12 @@ def deliver_order(sale_id):
 @roles_allowed("manager", "staff")
 def cancel_cash_order(sale_id):
     db = get_db()
+    reason = (request.form.get("reason") or (request.get_json(silent=True) or {}).get("reason") or "").strip()
+    # Compatibilidade com integrações antigas: a interface atual sempre envia
+    # uma justificativa, mas registros legados recebem um motivo auditável.
+    if len(reason) < 5:
+        reason = "Cancelamento registrado pela atendente (sem justificativa informada)."
+    reason = reason[:500]
     try:
         items = db.execute("SELECT product_id FROM sale_items WHERE sale_id=?", (sale_id,)).fetchall()
         with db:
@@ -326,12 +352,38 @@ def cancel_cash_order(sale_id):
             )
             if updated.rowcount != 1:
                 return jsonify(error="Pedido em dinheiro não encontrado ou já finalizado."), 409
+            db.execute(
+                "INSERT INTO sale_cancellations(sale_id,reason,canceled_by) VALUES(?,?,?)",
+                (sale_id, reason, g.user["id"]),
+            )
             restore_reserved_stock(db, sale_id)
         notify_low_stock(db, [item["product_id"] for item in items])
     except Exception as exc:
         current_app.logger.error(f"Erro ao cancelar pedido em dinheiro {sale_id}: {exc}")
         return jsonify(error="Não foi possível cancelar o pedido."), 500
-    return jsonify(ok=True, sale_id=sale_id)
+    return jsonify(ok=True, sale_id=sale_id, reason=reason)
+
+
+@bp.get("/sales/<int:sale_id>/receipt")
+@roles_allowed("manager", "staff", "client")
+def receipt(sale_id):
+    db = get_db()
+    sale = db.execute(
+        """SELECT s.*,p.name player_name,p.war_name,p.cpf,p.email
+           FROM sales s JOIN players p ON p.id=s.player_id WHERE s.id=?""",
+        (sale_id,),
+    ).fetchone()
+    if not sale or (g.user["role"] == "client" and sale["player_id"] != g.user["player_id"]):
+        return "Comprovante não encontrado.", 404
+    if not sale["paid"] and sale["payment_status"] != "approved":
+        return "O comprovante estará disponível após a confirmação do pagamento.", 409
+    items = db.execute(
+        """SELECT i.quantity,i.unit_price_cents,p.name product_name
+           FROM sale_items i JOIN products p ON p.id=i.product_id
+           WHERE i.sale_id=? ORDER BY i.id""",
+        (sale_id,),
+    ).fetchall()
+    return render_template("purchase_receipt.html", sale=sale, items=items)
 
 @bp.get("/pix/qrcode")
 def pix_qrcode():
