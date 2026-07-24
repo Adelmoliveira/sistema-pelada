@@ -51,7 +51,7 @@
   <section class="box">
     <h3>Participantes ({{ data[1]|length }})</h3>
     <div class="participants">
-      {% for match_number in (1, 2, 3) %}
+      {% for match_number in (1, 2, 3) if match_number <= data[2]|length %}
       <div class="part-column">
         <div class="part-title">{{ match_number }}ª PARTIDA{% if match_number == 1 %} (ordens 1 a 22){% elif match_number == 2 %} (ordens 23 a 44){% endif %}</div>
         {% set ns = namespace(count=0) %}
