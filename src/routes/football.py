@@ -290,7 +290,9 @@ def sumulas():
         conditions.append("fs.match_date>=?"); params.append(start)
     if end:
         conditions.append("fs.match_date<=?"); params.append(end)
-    if situation in SITUATIONS:
+    if situation == "ENCERRADA":
+        conditions.append("fs.locked_at IS NOT NULL")
+    elif situation in SITUATIONS:
         conditions.append("fs.situacao=?"); params.append(situation)
     sql = "SELECT fs.*,COUNT(DISTINCT fp.player_id) participant_count,COUNT(DISTINCT fm.id) match_count FROM football_sumulas fs LEFT JOIN football_participants fp ON fp.sumula_id=fs.id LEFT JOIN football_matches fm ON fm.sumula_id=fs.id"
     if conditions: sql += " WHERE " + " AND ".join(conditions)
