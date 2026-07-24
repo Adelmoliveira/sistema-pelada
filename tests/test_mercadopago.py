@@ -1118,6 +1118,20 @@ class MercadoPagoFlowTest(unittest.TestCase):
             session["user_id"] = self.user_id
         page = self.client.get("/finance/reminders")
         self.assertEqual(page.status_code, 200)
+        with patch("src.routes.finance.send_gmail") as send_test:
+            test_email = self.client.post(
+                "/finance/reminders/send-test", data={"test_email": "teste@example.com"}
+            )
+        self.assertEqual(test_email.status_code, 302)
+        send_test.assert_called_once()
+        self.assertEqual(send_test.call_args.args[2], "teste@example.com")
+        self.assertIn("Peladeiro de teste", send_test.call_args.args[4])
+        with patch("src.routes.finance.send_gmail") as invalid_send:
+            invalid_email = self.client.post(
+                "/finance/reminders/send-test", data={"test_email": "endereco-invalido"}
+            )
+        self.assertEqual(invalid_email.status_code, 302)
+        invalid_send.assert_not_called()
         response = self.client.post(
             "/finance/reminders/settings",
             data={

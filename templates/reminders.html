@@ -61,6 +61,15 @@
                     <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
                     <button class="btn btn-success w-100" {{'disabled' if not smtp_ready}}>Enviar lembretes agora</button>
                 </form>
+                <hr>
+                <h3 class="h6">Testar envio</h3>
+                <p class="small text-muted mb-2">Envia a mensagem configurada para um único endereço, sem registrar cobrança nem alterar o histórico.</p>
+                <form method="post" action="{{url_for('finance.send_test_reminder')}}" class="d-flex gap-2">
+                    <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+                    <label for="test-email" class="visually-hidden">E-mail para teste</label>
+                    <input id="test-email" type="email" name="test_email" class="form-control" placeholder="seu-email@exemplo.com" required {% if not smtp_ready %}disabled{% endif %}>
+                    <button class="btn btn-outline-primary text-nowrap" {{'disabled' if not smtp_ready}}>Enviar teste</button>
+                </form>
             </div>
         </div>
         <div class="card shadow-sm">
