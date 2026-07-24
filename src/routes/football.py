@@ -1,10 +1,11 @@
 from datetime import date
 
-from flask import Blueprint, flash, g, redirect, render_template, request, url_for
+from flask import Blueprint, flash, g, redirect, render_template, request, send_file, url_for
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import local_today
+from src.services.football_stats_pdf import build_football_stats_pdf
 
 bp = Blueprint("football", __name__, url_prefix="/futebol")
 
@@ -134,31 +135,67 @@ def position_distribution():
 @roles_allowed("manager", "football_manager")
 def statistics():
     db = get_db()
-    totals = db.execute("SELECT COUNT(DISTINCT fs.id) sumulas,COUNT(DISTINCT fm.id) partidas,COUNT(DISTINCT fg.id) gols FROM football_sumulas fs LEFT JOIN football_matches fm ON fm.sumula_id=fs.id AND fm.status='ENCERRADA' LEFT JOIN football_goals fg ON fg.match_id=fm.id WHERE fs.situacao='FINALIZADA'").fetchone()
+    year = request.args.get("year", "").strip()
+    month = request.args.get("month", "").strip()
+    player_id = request.args.get("player_id", "").strip()
+    try:
+        year_int = int(year) if year else None
+        month_int = int(month) if month else None
+        if year_int and not 2000 <= year_int <= 2100: raise ValueError
+        if month_int and not 1 <= month_int <= 12: raise ValueError
+        player_int = int(player_id) if player_id else None
+    except ValueError:
+        year = month = player_id = ""
+        year_int = month_int = player_int = None
+    start_date = end_date = None
+    if year_int:
+        start_date = date(year_int, month_int or 1, 1)
+        if month_int:
+            end_date = date(year_int + (1 if month_int == 12 else 0), 1 if month_int == 12 else month_int + 1, 1)
+        else:
+            end_date = date(year_int + 1, 1, 1)
+    fs_filter = ""
+    fs_params = []
+    if start_date:
+        fs_filter += " AND fs.match_date >= ? AND fs.match_date < ?"
+        fs_params.extend((start_date.isoformat(), end_date.isoformat()))
+    totals = db.execute(f"SELECT COUNT(DISTINCT fs.id) sumulas,COUNT(DISTINCT fm.id) partidas,COUNT(DISTINCT fg.id) gols FROM football_sumulas fs LEFT JOIN football_matches fm ON fm.sumula_id=fs.id AND fm.status='ENCERRADA' LEFT JOIN football_goals fg ON fg.match_id=fm.id WHERE fs.situacao='FINALIZADA'{fs_filter}", tuple(fs_params)).fetchone()
     finalized_sumulas = int(totals["sumulas"] or 0)
     player_stats = []
-    for player in db.execute("SELECT id,name,war_name FROM players WHERE active=1 ORDER BY LOWER(name)").fetchall():
-        participacoes = int(db.execute("SELECT COUNT(DISTINCT sumula_id) FROM football_participants WHERE player_id=? AND status='CONFIRMADO' AND sumula_id IN (SELECT id FROM football_sumulas WHERE situacao='FINALIZADA')", (player["id"],)).fetchone()[0] or 0)
+    player_where = "WHERE active=1"
+    player_params = []
+    if player_int:
+        player_where += " AND id=?"; player_params.append(player_int)
+    for player in db.execute(f"SELECT id,name,war_name FROM players {player_where} ORDER BY LOWER(name)", tuple(player_params)).fetchall():
+        participacoes = int(db.execute(f"SELECT COUNT(DISTINCT fp.sumula_id) FROM football_participants fp JOIN football_sumulas fs ON fs.id=fp.sumula_id WHERE fp.player_id=? AND fp.status='CONFIRMADO' AND fs.situacao='FINALIZADA'{fs_filter}", (player["id"], *fs_params)).fetchone()[0] or 0)
         games = db.execute("""SELECT fl.team,fm.blue_score,fm.white_score FROM football_lineups fl
             JOIN football_matches fm ON fm.id=fl.match_id AND fm.status='ENCERRADA'
             JOIN football_sumulas fs ON fs.id=fm.sumula_id AND fs.situacao='FINALIZADA'
-            WHERE fl.player_id=?""", (player["id"],)).fetchall()
+            WHERE fl.player_id=?""" + fs_filter, (player["id"], *fs_params)).fetchall()
         wins = draws = losses = 0
         for game in games:
             own, opponent = (int(game["blue_score"] or 0), int(game["white_score"] or 0)) if game["team"] == "AZUL" else (int(game["white_score"] or 0), int(game["blue_score"] or 0))
             if own > opponent: wins += 1
             elif own == opponent: draws += 1
             else: losses += 1
-        goals = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player["id"],)).fetchone()[0] or 0)
-        assists = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.assist_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player["id"],)).fetchone()[0] or 0)
-        historical = db.execute("SELECT COALESCE(SUM(goals),0) goals,COALESCE(SUM(assists),0) assists FROM football_historical_stats WHERE player_id=?", (player["id"],)).fetchone()
+        goals = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
+        assists = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.assist_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
+        historical_filter = " AND stat_date >= ? AND stat_date < ?" if start_date else ""
+        historical_params = (start_date.isoformat(), end_date.isoformat()) if start_date else ()
+        historical = db.execute("SELECT COALESCE(SUM(goals),0) goals,COALESCE(SUM(assists),0) assists FROM football_historical_stats WHERE player_id=?" + historical_filter, (player["id"], *historical_params)).fetchone()
         goals += int(historical["goals"] or 0); assists += int(historical["assists"] or 0)
         if participacoes or games or goals or assists:
             player_stats.append({"id": player["id"], "name": player["name"], "war_name": player["war_name"], "participacoes": participacoes, "frequencia": round((participacoes / finalized_sumulas) * 100, 1) if finalized_sumulas else 0, "jogos": len(games), "vitorias": wins, "empates": draws, "derrotas": losses, "gols": goals, "assistencias": assists})
     player_stats.sort(key=lambda item: (-item["gols"], -item["assistencias"], -item["vitorias"], -item["participacoes"], (item["war_name"] or item["name"]).lower()))
     team_results = db.execute("""SELECT fm.*,fs.match_date FROM football_matches fm JOIN football_sumulas fs ON fs.id=fm.sumula_id
-        WHERE fm.status='ENCERRADA' ORDER BY fs.match_date DESC,fm.number DESC LIMIT 20""").fetchall()
-    return render_template("football_statistics.html", totals=totals, player_stats=player_stats, team_results=team_results)
+        WHERE fm.status='ENCERRADA'""" + fs_filter + " ORDER BY fs.match_date DESC,fm.number DESC LIMIT 20", tuple(fs_params)).fetchall()
+    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
+    selected_player = next((item for item in players if str(item["id"]) == player_id), None)
+    filters = {"year": year, "month": month, "player_id": player_id, "player_name": (selected_player["war_name"] or selected_player["name"]) if selected_player else ""}
+    if request.args.get("pdf") == "1":
+        report = build_football_stats_pdf(player_stats, totals, filters, local_today())
+        return send_file(report, mimetype="application/pdf", as_attachment=False, download_name="estatisticas-futebol.pdf")
+    return render_template("football_statistics.html", totals=totals, player_stats=player_stats, team_results=team_results, players=players, filters=filters)
 
 
 @bp.get("/frequencia")
