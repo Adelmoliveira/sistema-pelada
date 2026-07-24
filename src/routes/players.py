@@ -7,7 +7,7 @@ from src.services.players_pdf import build_players_pdf
 from src.utils import local_today
 
 bp = Blueprint("players", __name__)
-FOOTBALL_POSITIONS = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque", "JUIZ": "Juiz"}
+FOOTBALL_POSITIONS = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque", "JUIZ": "Juiz", "APOSENTADO": "Aposentado"}
 
 
 def _player_report_rows(db, query="", address_filter=""):
@@ -196,10 +196,24 @@ def football_positions():
         except (ValueError, KeyError):
             flash("Não foi possível atualizar a posição.", "danger")
         return redirect(url_for("players.football_positions"))
+    position_filter = request.args.get("position", "").strip().upper()
+    valid_filters = set(FOOTBALL_POSITIONS) | {"UNDEFINED"}
+    if position_filter not in valid_filters:
+        position_filter = ""
+    position_clause = ""
+    position_params = []
+    if position_filter == "UNDEFINED":
+        position_clause = " AND (football_position IS NULL OR football_position='')"
+    elif position_filter:
+        position_clause = " AND football_position=?"
+        position_params.append(position_filter)
     players = db.execute(
-        "SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)"
+        "SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran'"
+        + position_clause
+        + " ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)",
+        position_params,
     ).fetchall()
-    return render_template("football_positions.html", players=players, football_positions=FOOTBALL_POSITIONS)
+    return render_template("football_positions.html", players=players, football_positions=FOOTBALL_POSITIONS, position_filter=position_filter)
 
 
 @bp.post("/players/<int:player_id>/password")
