@@ -98,7 +98,24 @@ def dashboard():
     db = get_db()
     metrics = db.execute("SELECT COUNT(*) total,COUNT(CASE WHEN situacao='FINALIZADA' THEN 1 END) finalized,COUNT(CASE WHEN situacao IN ('ABERTA','EM_ANDAMENTO') THEN 1 END) active,COUNT(CASE WHEN match_date>=? AND situacao!='CANCELADA' THEN 1 END) upcoming FROM football_sumulas", (local_today().isoformat(),)).fetchone()
     recent = db.execute("SELECT * FROM football_sumulas WHERE situacao!='CANCELADA' ORDER BY match_date DESC,id DESC LIMIT 8").fetchall()
-    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS)
+    eligible_players = db.execute(
+        "SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name))"
+    ).fetchall()
+    distribution = {"ATAQUE": 0, "MEIO": 0, "DEFESA": 0, "SEM_POSICAO": 0}
+    position_players = {key: [] for key in distribution}
+    for player in eligible_players:
+        position = (player["football_position"] or "").strip().upper()
+        # Goleiros entram na linha defensiva para a conferência de equilíbrio.
+        category = position if position in ("ATAQUE", "MEIO") else "DEFESA" if position in ("DEFESA", "GOL") else "SEM_POSICAO"
+        distribution[category] += 1
+        position_players[category].append(player)
+    positioned_total = sum(distribution[key] for key in ("ATAQUE", "MEIO", "DEFESA"))
+    position_summary = []
+    for key, label, target in (("ATAQUE", "Ataque", 40), ("MEIO", "Meio", 30), ("DEFESA", "Defesa", 30)):
+        count = distribution[key]
+        percentage = round((count / positioned_total) * 100, 2) if positioned_total else 0
+        position_summary.append({"key": key, "label": label, "count": count, "percentage": percentage, "target": target, "difference": round(percentage - target, 2)})
+    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, position_players=position_players, eligible_total=len(eligible_players), positioned_total=positioned_total)
 
 
 @bp.get("/estatisticas")
