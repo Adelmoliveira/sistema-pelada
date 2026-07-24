@@ -108,7 +108,14 @@ def send_gmail(sender, app_password, recipient, subject, body):
     message["To"] = recipient
     message["Subject"] = subject
     message.set_content(body.replace("**", ""))
-    message.add_alternative(markdown_email_html(body), subtype="html")
+    html_body = f"""<div style="margin:0;background:#f2f6f9;padding:24px;font-family:Arial,sans-serif;color:#183247">
+      <div style="max-width:620px;margin:auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 3px 12px #1232">
+        <div style="background:#07558c;padding:20px;text-align:center"><img src="https://sistema-pelada-one.vercel.app/static/logo-gpcta.jpeg" alt="Logo GPCTA" style="max-width:110px;max-height:90px;object-fit:contain"><h1 style="color:#fff;font-size:22px;margin:10px 0 0">PELADEIROS GPCTA</h1></div>
+        <div style="padding:24px"><h2 style="margin-top:0;color:#07558c">Lembrete de pendência financeira</h2>{markdown_email_html(body)}
+        <p style="margin-top:24px;color:#607d8b;font-size:13px">Mensagem enviada pelo sistema PELADEIROS GPCTA.</p></div>
+      </div>
+    </div>"""
+    message.add_alternative(html_body, subtype="html")
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=20) as smtp:
         smtp.login(sender, app_password)
         smtp.send_message(message)

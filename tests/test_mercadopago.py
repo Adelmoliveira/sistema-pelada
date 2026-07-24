@@ -16,7 +16,7 @@ from src.routes.sales import pix_access_token
 from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
-from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players
+from src.services.email_reminders import dispatch_reminders, get_reminder_settings, outstanding_players, send_gmail
 from src.services.cash_register import get_session, session_summary
 from src.services.monthly_sales_report import monthly_sales_data
 from src.services.stock_alerts import notify_low_stock
@@ -1112,6 +1112,13 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(len(sent_messages), 1)
             self.assertIn("Peladeiro", sent_messages[0][3])
             self.assertIn("R$ 105,00", sent_messages[0][3])
+
+        with patch("src.services.email_reminders.smtplib.SMTP_SSL") as smtp_ssl:
+            send_gmail("diretoriagpcta@gmail.com", "test", "teste@example.com", "Pendência", "Olá **Peladeiro**")
+        message = smtp_ssl.return_value.__enter__.return_value.send_message.call_args.args[0]
+        html_part = message.get_payload()[1].get_payload(decode=True).decode("utf-8")
+        self.assertIn("PELADEIROS GPCTA", html_part)
+        self.assertIn("Lembrete de pendência financeira", html_part)
 
     def test_manager_edits_reminder_and_cron_requires_secret(self):
         with self.client.session_transaction() as session:
