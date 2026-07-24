@@ -325,6 +325,8 @@ CREATE TABLE IF NOT EXISTS football_sumulas (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finalized_at TEXT,
+    locked_at TEXT,
+    locked_by INTEGER REFERENCES users(id),
     canceled_at TEXT,
     canceled_by INTEGER REFERENCES users(id),
     reopen_justification TEXT DEFAULT '',
@@ -847,6 +849,15 @@ def init_sqlite(wrapper):
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
     conn.commit()
 
+    sumula_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_sumulas)")}
+    for column, definition in {
+        "locked_at": "TEXT",
+        "locked_by": "INTEGER REFERENCES users(id)",
+    }.items():
+        if column not in sumula_columns:
+            conn.execute(f"ALTER TABLE football_sumulas ADD COLUMN {column} {definition}")
+    conn.commit()
+
     load_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entries)")}
     load_migrations = {
         "area_code": "TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN'))",
@@ -918,6 +929,8 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_sent_at TIMESTAMP")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_error TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE football_sumulas ADD COLUMN IF NOT EXISTS locked_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE football_sumulas ADD COLUMN IF NOT EXISTS locked_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS area_code TEXT NOT NULL DEFAULT 'BAR'")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS discharged_at TIMESTAMP")

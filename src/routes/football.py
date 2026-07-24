@@ -52,6 +52,20 @@ def _ensure_goal_fits_score(db, match_id, team, exclude_goal_id=None):
         raise ValueError(f"O placar do {team.title()} já atingiu {score} gol(s). Atualize o placar antes de registrar outro gol.")
 
 
+def _score_mismatches(db, matches):
+    mismatches = []
+    for item in matches:
+        match = item["row"]
+        goals = db.execute(
+            "SELECT benefited_team,COUNT(*) total FROM football_goals WHERE match_id=? GROUP BY benefited_team",
+            (match["id"],),
+        ).fetchall()
+        counts = {row["benefited_team"]: int(row["total"]) for row in goals}
+        if counts.get("AZUL", 0) != int(match["blue_score"] or 0) or counts.get("BRANCO", 0) != int(match["white_score"] or 0):
+            mismatches.append(f"{match['number']}ª partida")
+    return mismatches
+
+
 def _match_day(value):
     try:
         parsed = date.fromisoformat((value or "").strip())
@@ -228,6 +242,8 @@ def detail(sumula_id):
         action = request.form.get("action", "")
         try:
             sumula = data[0]
+            if sumula["locked_at"]:
+                raise ValueError("A súmula foi encerrada definitivamente e não aceita novas alterações.")
             if sumula["situacao"] in ("FINALIZADA", "CANCELADA") and action not in ("status",):
                 raise ValueError("A súmula está bloqueada para alterações. Reabra-a antes de editar.")
             if action == "participant":
@@ -350,6 +366,14 @@ def detail(sumula_id):
                 if db.execute("SELECT 1 FROM football_matches WHERE sumula_id=? AND number=3", (sumula_id,)).fetchone():
                     raise ValueError("A terceira partida já existe.")
                 db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,3)", (sumula_id,)); _audit(db, sumula_id, "TERCEIRA_PARTIDA_ADICIONADA")
+            elif action == "lock":
+                if sumula["situacao"] != "FINALIZADA":
+                    raise ValueError("Finalize a súmula antes de encerrá-la definitivamente.")
+                mismatches = _score_mismatches(db, data[2])
+                if mismatches:
+                    raise ValueError("O placar não corresponde aos gols registrados (" + ", ".join(mismatches) + "). Corrija antes do encerramento definitivo.")
+                db.execute("UPDATE football_sumulas SET locked_at=CURRENT_TIMESTAMP,locked_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (g.user["id"], sumula_id))
+                _audit(db, sumula_id, "ENCERRAMENTO_DEFINITIVO", "Conferência concluída")
             elif action == "status":
                 new_status = request.form["situacao"]
                 if new_status not in SITUATIONS: raise ValueError("Situação inválida.")
@@ -360,13 +384,7 @@ def detail(sumula_id):
                 if sumula["situacao"] == "FINALIZADA" and new_status == "EM_ANDAMENTO" and not request.form.get("justification", "").strip():
                     raise ValueError("Informe a justificativa para reabrir a súmula.")
                 if new_status == "FINALIZADA":
-                    mismatches = []
-                    for item in data[2]:
-                        match = item["row"]
-                        goals = db.execute("SELECT benefited_team,COUNT(*) total FROM football_goals WHERE match_id=? GROUP BY benefited_team", (match["id"],)).fetchall()
-                        counts = {row["benefited_team"]: int(row["total"]) for row in goals}
-                        if counts.get("AZUL", 0) != int(match["blue_score"] or 0) or counts.get("BRANCO", 0) != int(match["white_score"] or 0):
-                            mismatches.append(f"{match['number']}ª partida")
+                    mismatches = _score_mismatches(db, data[2])
                     if mismatches and not request.form.get("justification", "").strip():
                         raise ValueError("O placar não corresponde aos gols registrados (" + ", ".join(mismatches) + "). Informe uma justificativa.")
                     db.execute("UPDATE football_sumulas SET situacao=?,finalized_at=CURRENT_TIMESTAMP,reopen_justification=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, request.form.get("justification", "").strip(), sumula_id))
