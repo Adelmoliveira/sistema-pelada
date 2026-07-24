@@ -24,7 +24,7 @@ def _audit(db, sumula_id, action, details=""):
 
 
 def _eligible_player(db, player_id):
-    return db.execute("SELECT id FROM players WHERE id=? AND active=1 AND gender!='female' AND membership_type!='veteran'", (player_id,)).fetchone()
+    return db.execute("SELECT id FROM players WHERE id=? AND active=1 AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO'", (player_id,)).fetchone()
 
 
 def _participant_player(db, sumula_id, player_id):
@@ -131,14 +131,14 @@ def _sumula(db, sumula_id, audit_page=None):
 
 def _position_distribution(db):
     eligible_players = db.execute(
-        "SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name))"
+        "SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO' ORDER BY LOWER(COALESCE(war_name,name))"
     ).fetchall()
     distribution = {"ATAQUE": 0, "MEIO": 0, "DEFESA": 0, "SEM_POSICAO": 0}
     position_players = {key: [] for key in distribution}
     counted_players = 0
     for player in eligible_players:
         position = (player["football_position"] or "").strip().upper()
-        if position in ("GOL", "JUIZ"):
+        if position in ("GOL", "JUIZ", "APOSENTADO"):
             continue
         counted_players += 1
         category = position if position in ("ATAQUE", "MEIO") else "DEFESA" if position == "DEFESA" else "SEM_POSICAO"
@@ -211,7 +211,7 @@ def statistics():
     totals = db.execute(f"SELECT COUNT(DISTINCT fs.id) sumulas,COUNT(DISTINCT fm.id) partidas,COUNT(DISTINCT fg.id) gols FROM football_sumulas fs LEFT JOIN football_matches fm ON fm.sumula_id=fs.id AND fm.status='ENCERRADA' LEFT JOIN football_goals fg ON fg.match_id=fm.id WHERE fs.situacao='FINALIZADA'{fs_filter}", tuple(fs_params)).fetchone()
     finalized_sumulas = int(totals["sumulas"] or 0)
     player_stats = []
-    player_where = "WHERE active=1 AND gender!='female' AND membership_type!='veteran'"
+    player_where = "WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO'"
     player_params = []
     if player_int:
         player_where += " AND id=?"; player_params.append(player_int)
@@ -238,7 +238,7 @@ def statistics():
     player_stats.sort(key=lambda item: (-item["gols"], -item["assistencias"], -item["vitorias"], -item["participacoes"], (item["war_name"] or item["name"]).lower()))
     team_results = db.execute("""SELECT fm.*,fs.match_date FROM football_matches fm JOIN football_sumulas fs ON fs.id=fm.sumula_id
         WHERE fm.status='ENCERRADA'""" + fs_filter + " ORDER BY fs.match_date DESC,fm.number DESC LIMIT 20", tuple(fs_params)).fetchall()
-    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
+    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
     selected_player = next((item for item in players if str(item["id"]) == player_id), None)
     filters = {"year": year, "month": month, "player_id": player_id, "player_name": (selected_player["war_name"] or selected_player["name"]) if selected_player else ""}
     if request.args.get("pdf") == "1":
@@ -260,7 +260,7 @@ def attendance():
            FROM players p
            LEFT JOIN football_participants fp ON fp.player_id=p.id
            LEFT JOIN football_sumulas fs ON fs.id=fp.sumula_id AND fs.situacao='FINALIZADA'
-           WHERE p.active=1 AND p.gender!='female' AND p.membership_type!='veteran'
+           WHERE p.active=1 AND p.gender!='female' AND p.membership_type!='veteran' AND COALESCE(p.football_position,'')!='APOSENTADO'
            GROUP BY p.id,p.name,p.war_name,p.football_position
            ORDER BY participacoes DESC,LOWER(COALESCE(p.war_name,p.name)),LOWER(p.name)"""
     ).fetchall()
@@ -290,14 +290,14 @@ def historical_stats():
             goals = max(0, int(request.form.get("goals", "0") or 0))
             assists = max(0, int(request.form.get("assists", "0") or 0))
             notes = request.form.get("notes", "").strip()[:500]
-            if not db.execute("SELECT 1 FROM players WHERE id=? AND active=1", (player_id,)).fetchone(): raise ValueError("Selecione um peladeiro válido.")
+            if not db.execute("SELECT 1 FROM players WHERE id=? AND active=1 AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO'", (player_id,)).fetchone(): raise ValueError("Selecione um peladeiro válido.")
             if goals == 0 and assists == 0: raise ValueError("Informe pelo menos um gol ou uma assistência.")
             db.execute("INSERT INTO football_historical_stats(player_id,stat_date,goals,assists,notes,created_by) VALUES(?,?,?,?,?,?)", (player_id, stat_date, goals, assists, notes, g.user["id"]))
             db.commit(); flash("Lançamento histórico registrado.", "success")
         except (ValueError, KeyError):
             db.rollback(); flash("Informe peladeiro, data e pelo menos um gol ou assistência válidos.", "danger")
         return redirect(url_for("football.historical_stats"))
-    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name))").fetchall()
+    players = db.execute("SELECT id,name,war_name FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO' ORDER BY LOWER(COALESCE(war_name,name))").fetchall()
     rows = db.execute("SELECT hs.*,p.name,p.war_name FROM football_historical_stats hs JOIN players p ON p.id=hs.player_id ORDER BY hs.stat_date DESC,hs.id DESC").fetchall()
     return render_template("football_historical_stats.html", players=players, rows=rows, today=local_today().isoformat())
 
@@ -561,7 +561,7 @@ def detail(sumula_id):
         except (ValueError, KeyError) as exc:
             db.rollback(); flash(str(exc), "danger")
         return redirect(url_for("football.detail", sumula_id=sumula_id))
-    players = db.execute("SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
+    players = db.execute("SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
     player_positions = {str(player["id"]): _lineup_position(player["football_position"]) for player in players}
     used_orders = {int(row["draw_order"]) for row in db.execute("SELECT draw_order FROM football_participants WHERE sumula_id=? AND draw_order IS NOT NULL", (sumula_id,)).fetchall()}
     next_draw_order = next((number for number in range(1, 45) if number not in used_orders), 44)
