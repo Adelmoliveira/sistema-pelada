@@ -117,10 +117,19 @@ def _position_distribution(db):
 @roles_allowed("manager", "football_manager")
 def dashboard():
     db = get_db()
-    metrics = db.execute("SELECT COUNT(*) total,COUNT(CASE WHEN situacao='FINALIZADA' THEN 1 END) finalized,COUNT(CASE WHEN situacao IN ('ABERTA','EM_ANDAMENTO') THEN 1 END) active,COUNT(CASE WHEN match_date>=? AND situacao!='CANCELADA' THEN 1 END) upcoming FROM football_sumulas", (local_today().isoformat(),)).fetchone()
+    today = local_today()
+    month_start = today.replace(day=1)
+    month_end = date(today.year + (1 if today.month == 12 else 0), 1 if today.month == 12 else today.month + 1, 1)
+    year_start = date(today.year, 1, 1)
+    year_end = date(today.year + 1, 1, 1)
+    metrics = db.execute("SELECT COUNT(*) total,COUNT(CASE WHEN situacao='FINALIZADA' THEN 1 END) finalized,COUNT(CASE WHEN situacao IN ('ABERTA','EM_ANDAMENTO') THEN 1 END) active,COUNT(CASE WHEN match_date>=? AND situacao!='CANCELADA' THEN 1 END) upcoming FROM football_sumulas", (today.isoformat(),)).fetchone()
     recent = db.execute("SELECT * FROM football_sumulas WHERE situacao!='CANCELADA' ORDER BY match_date DESC,id DESC LIMIT 8").fetchall()
+    wins = {}
+    for label, start, end in (("Mês atual", month_start, month_end), ("Ano atual", year_start, year_end)):
+        row = db.execute("SELECT COUNT(CASE WHEN fm.blue_score > fm.white_score THEN 1 END) blue_wins, COUNT(CASE WHEN fm.white_score > fm.blue_score THEN 1 END) white_wins FROM football_matches fm JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fm.status='ENCERRADA' AND fs.situacao!='CANCELADA' AND fs.match_date>=? AND fs.match_date<?", (start.isoformat(), end.isoformat())).fetchone()
+        wins[label] = {"azul": int(row["blue_wins"] or 0), "branco": int(row["white_wins"] or 0)}
     position_summary, eligible_total, positioned_total = _position_distribution(db)
-    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, management_view=True)
+    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, team_wins=wins, management_view=True)
 
 
 @bp.get("/gestao/posicoes")
