@@ -30,7 +30,8 @@
     .goalkeeper { padding: 3px 5px; border-bottom: 1px solid #d4dbe0; }
     .goal-list { padding: 4px 5px; min-height: 46px; }
     .goal-row { display: grid; grid-template-columns: 23px 1fr 1fr; border-top: 1px solid #e0e4e7; padding: 2px 0; }
-    .officials { border-top: 1px solid #aab5bc; padding: 5px 8px; }
+    .officials-page { page-break-before: always; }
+    .officials { border: 1px solid #aab5bc; padding: 8px; margin: 10px 0; }
     .responsibles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .responsible { border-bottom: 1px solid #737f87; min-height: 24px; padding: 4px; }
     .occurrence { border-bottom: 1px solid #d4dbe0; padding: 4px 0; }
@@ -83,11 +84,13 @@
       </div>
       {% endfor %}
     </div>
-    <div class="officials"><strong>Juízes:</strong> {% for r in data[4] if r['responsibility_type'] == 'ARBITRO_VOLUNTARIO' and r['match_number'] == item['row']['number'] %}{{ r['war_name'] or r['name'] or 'Não informado' }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</div>
   </section>
   {% endfor %}
 
-  {% if data[4] %}<section class="box"><h3>Responsáveis</h3><div class="responsibles">{% for kind, label in (('SORTEIO', 'Sorteio'), ('SUMULA', 'Súmula'), ('QUADRO', 'Quadro')) %}<div><strong>{{ label }}</strong><div class="responsible">{% for r in data[4] if r['responsibility_type'] == kind %}{{ r['war_name'] or r['name'] or 'Não informado' }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</div></div>{% endfor %}</div></section>{% endif %}
+  <section class="officials-page">
+    <div class="box"><h3>Juízes</h3>{% for item in data[2] %}<div class="officials"><strong>{{ item['row']['number'] }}ª partida:</strong> {% for r in data[4] if r['responsibility_type'] == 'ARBITRO_VOLUNTARIO' and r['match_number'] == item['row']['number'] %}{{ r['war_name'] or r['name'] or 'Não informado' }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</div>{% endfor %}</div>
+    {% if data[4] %}<section class="box"><h3>Responsáveis</h3><div class="responsibles">{% for kind, label in (('SORTEIO', 'Sorteio'), ('SUMULA', 'Súmula'), ('QUADRO', 'Quadro')) %}<div><strong>{{ label }}</strong><div class="responsible">{% for r in data[4] if r['responsibility_type'] == kind %}{{ r['war_name'] or r['name'] or 'Não informado' }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</div></div>{% endfor %}</div></section>{% endif %}
+  </section>
   {% if data[3] %}<section class="box"><h3>OCORRÊNCIAS</h3>{% for i in data[3] %}<div class="occurrence"><strong>{{ incident_types[i['type']] }}</strong>{% if i['card'] %} · Cartão {{ card_types[i['card']] }}{% endif %}{% if i['war_name'] %} · {{ i['war_name'] }}{% endif %}{% if i['description'] %} · {{ i['description'] }}{% endif %}</div>{% endfor %}</section>{% endif %}
 </body>
 </html>
