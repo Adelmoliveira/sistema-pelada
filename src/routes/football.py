@@ -138,7 +138,7 @@ def _position_distribution(db):
     counted_players = 0
     for player in eligible_players:
         position = (player["football_position"] or "").strip().upper()
-        if position == "GOL":
+        if position in ("GOL", "JUIZ"):
             continue
         counted_players += 1
         category = position if position in ("ATAQUE", "MEIO") else "DEFESA" if position == "DEFESA" else "SEM_POSICAO"

@@ -7,7 +7,7 @@ from src.services.players_pdf import build_players_pdf
 from src.utils import local_today
 
 bp = Blueprint("players", __name__)
-FOOTBALL_POSITIONS = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque"}
+FOOTBALL_POSITIONS = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque", "JUIZ": "Juiz"}
 
 
 def _player_report_rows(db, query="", address_filter=""):
