@@ -263,7 +263,13 @@ def my_account():
             db.rollback()
             current_app.logger.error(f"Erro ao atualizar conta do peladeiro {player['id']}: {exc}")
             flash("Não foi possível atualizar os dados da conta.", "danger")
-    return render_template("my_account.html", player=player)
+    recent_sales = db.execute(
+        """SELECT s.id,s.total_cents,s.payment_method,s.paid_at,s.delivered_at,s.created_at
+           FROM sales s WHERE s.player_id=? AND s.paid=1
+           ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC LIMIT 10""",
+        (player["id"],),
+    ).fetchall()
+    return render_template("my_account.html", player=player, recent_sales=recent_sales)
 
 
 @bp.post("/minha-conta/senha")

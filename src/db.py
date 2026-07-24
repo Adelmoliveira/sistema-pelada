@@ -79,6 +79,14 @@ CREATE TABLE IF NOT EXISTS sale_items (
     unit_price_cents INTEGER NOT NULL,
     unit_cost_cents INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS sale_cancellations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id INTEGER NOT NULL UNIQUE REFERENCES sales(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    canceled_by INTEGER REFERENCES users(id),
+    canceled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sale_cancellations_date ON sale_cancellations(canceled_at);
 CREATE TABLE IF NOT EXISTS restocks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id INTEGER NOT NULL REFERENCES products(id),

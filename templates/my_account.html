@@ -39,6 +39,11 @@
       <button class="btn btn-outline-primary mt-3">Alterar senha</button>
     </form>
   </div></div>
+  <div class="card shadow-sm mt-4"><div class="card-body p-4">
+    <h2 class="h5">Minhas compras recentes</h2>
+    <p class="text-muted small">Acesse o comprovante de cada pedido já pago.</p>
+    <div class="list-group">{% for sale in recent_sales %}<div class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2"><span><strong>Pedido #{{sale.id}}</strong><br><small>{{(sale.paid_at or sale.created_at)|brdate}} · {{sale.payment_method}} · {{sale.total_cents|money}}</small></span><a class="btn btn-sm btn-outline-primary" target="_blank" href="{{url_for('sales.receipt',sale_id=sale.id)}}">Ver comprovante</a></div>{% else %}<div class="text-muted">Nenhuma compra paga registrada.</div>{% endfor %}</div>
+  </div></div>
 </div></div>
 <script>
 (() => {
