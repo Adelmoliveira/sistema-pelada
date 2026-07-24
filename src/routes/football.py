@@ -102,9 +102,13 @@ def _position_distribution(db):
     ).fetchall()
     distribution = {"ATAQUE": 0, "MEIO": 0, "DEFESA": 0, "SEM_POSICAO": 0}
     position_players = {key: [] for key in distribution}
+    counted_players = 0
     for player in eligible_players:
         position = (player["football_position"] or "").strip().upper()
-        category = position if position in ("ATAQUE", "MEIO") else "DEFESA" if position in ("DEFESA", "GOL") else "SEM_POSICAO"
+        if position == "GOL":
+            continue
+        counted_players += 1
+        category = position if position in ("ATAQUE", "MEIO") else "DEFESA" if position == "DEFESA" else "SEM_POSICAO"
         distribution[category] += 1
         position_players[category].append(player)
     positioned_total = sum(distribution[key] for key in ("ATAQUE", "MEIO", "DEFESA"))
@@ -113,7 +117,7 @@ def _position_distribution(db):
         count = distribution[key]
         percentage = round((count / positioned_total) * 100, 2) if positioned_total else 0
         position_summary.append({"key": key, "label": label, "count": count, "percentage": percentage, "target": target, "difference": round(percentage - target, 2)})
-    return position_summary, len(eligible_players), positioned_total
+    return position_summary, counted_players, positioned_total
 
 
 @bp.get("")
