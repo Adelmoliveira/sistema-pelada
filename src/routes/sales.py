@@ -185,11 +185,31 @@ def sale():
         player_rows,
         key=lambda player: alphabetical_key(player["war_name"] or player["name"]),
     )
-    product_rows = db.execute("SELECT * FROM products WHERE active=1 AND stock>0 ORDER BY category, name").fetchall()
+    product_rows = db.execute(
+        """SELECT p.*, COALESCE(SUM(CASE WHEN s.paid=1 THEN si.quantity ELSE 0 END), 0) sold_quantity
+           FROM products p
+           LEFT JOIN sale_items si ON si.product_id=p.id
+           LEFT JOIN sales s ON s.id=si.sale_id
+           WHERE p.active=1 AND p.stock>0
+           GROUP BY p.id"""
+    ).fetchall()
+    product_data = []
+    beverage_categories = {"cerveja", "refrigerante", "água mineral com gás", "água mineral sem gás", "energético", "suco", "isotônico"}
+    snack_categories = {"salgadinho", "salgados", "salgado"}
+    for row in product_rows:
+        product = dict(row)
+        category = (product.get("category") or "").strip().lower()
+        product["group"] = "Bebidas" if category in beverage_categories or "bebida" in category else "Salgados" if category in snack_categories or "salgad" in category else "Alimentos" if "alimento" in category else "Outros"
+        product_data.append(product)
+    product_data.sort(key=lambda product: (-int(product.get("sold_quantity") or 0), (product.get("category") or "").lower(), (product.get("name") or "").lower()))
+    product_rows = product_data
+    product_groups = [group for group in ("Bebidas", "Alimentos", "Salgados", "Outros") if any(product["group"] == group for product in product_data)]
     return render_template(
         "sale.html",
         players=player_rows,
         products=product_rows,
+        product_data=product_data,
+        product_groups=product_groups,
         pix_token=pix_access_token(g.user),
         mercadopago_enabled=mercadopago_enabled(),
     )
