@@ -42,7 +42,7 @@ def _fallback_roles(db, sumula_id):
         "SELECT 1 FROM football_responsibles WHERE sumula_id=? AND match_id=? AND responsibility_type='GOLEIRO_VOLUNTARIO'",
         (sumula_id, match["id"]),
     ).fetchone() or db.execute(
-        "SELECT 1 FROM football_responsibles WHERE sumula_id=? AND observation LIKE 'REGRA_AUTOMATICA_%'",
+        "SELECT 1 FROM football_responsibles WHERE sumula_id=? AND SUBSTR(observation,1,17)='REGRA_AUTOMATICA_'",
         (sumula_id,),
     ).fetchone():
         return []
@@ -657,7 +657,7 @@ def detail(sumula_id):
                 if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND draw_order=? AND id!=?", (sumula_id, draw_order, participant_id)).fetchone():
                     raise ValueError("Esta ordem de sorteio já está ocupada.")
                 db.execute("UPDATE football_participants SET draw_order=? WHERE id=? AND sumula_id=?", (draw_order, participant_id, sumula_id))
-                db.execute("DELETE FROM football_responsibles WHERE sumula_id=? AND observation LIKE 'REGRA_AUTOMATICA_%'", (sumula_id,))
+                db.execute("DELETE FROM football_responsibles WHERE sumula_id=? AND SUBSTR(observation,1,17)='REGRA_AUTOMATICA_'", (sumula_id,))
                 _audit(db, sumula_id, "ORDEM_PARTICIPANTE_ATUALIZADA", f"{participant_id}:{draw_order}")
             elif action == "score":
                 match_id = int(request.form["match_id"]); blue, white = max(0, int(request.form.get("blue_score", 0))), max(0, int(request.form.get("white_score", 0)))
@@ -732,7 +732,7 @@ def detail(sumula_id):
                     raise ValueError("Partida inválida para esta súmula.")
                 db.execute("INSERT INTO football_responsibles(sumula_id,match_id,player_id,responsibility_type,observation) VALUES(?,?,?,?,?)", (sumula_id, match_id, int(request.form["player_id"]) if request.form.get("player_id") else None, responsibility_type, request.form.get("observation", "").strip()))
                 if responsibility_type == "GOLEIRO_VOLUNTARIO" and match_id:
-                    db.execute("DELETE FROM football_responsibles WHERE sumula_id=? AND match_id=? AND observation LIKE 'REGRA_AUTOMATICA_%'", (sumula_id, match_id))
+                    db.execute("DELETE FROM football_responsibles WHERE sumula_id=? AND match_id=? AND SUBSTR(observation,1,17)='REGRA_AUTOMATICA_'", (sumula_id, match_id))
                 _audit(db, sumula_id, "RESPONSAVEL_REGISTRADO", responsibility_type)
             elif action == "apply_fallback_roles":
                 roles = _fallback_roles(db, sumula_id)
