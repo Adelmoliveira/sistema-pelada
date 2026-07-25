@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS players (
     photo_data TEXT DEFAULT '',
     thumbnail_data TEXT DEFAULT '',
     football_position TEXT DEFAULT '',
+    football_join_date TEXT DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -437,11 +438,27 @@ CREATE TABLE IF NOT EXISTS football_historical_stats (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK(goals > 0 OR assists > 0)
 );
+CREATE TABLE IF NOT EXISTS football_transfer_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id),
+    window_year INTEGER NOT NULL,
+    current_position TEXT NOT NULL DEFAULT '',
+    requested_position TEXT NOT NULL,
+    reason TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PENDENTE' CHECK(status IN ('PENDENTE','APROVADA','RECUSADA')),
+    reviewed_by INTEGER REFERENCES users(id),
+    reviewed_at TEXT,
+    review_notes TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(player_id, window_year)
+);
 CREATE INDEX IF NOT EXISTS idx_football_sumulas_date ON football_sumulas(match_date);
 CREATE INDEX IF NOT EXISTS idx_football_participants_sumula ON football_participants(sumula_id);
 CREATE INDEX IF NOT EXISTS idx_football_matches_sumula ON football_matches(sumula_id,number);
 CREATE INDEX IF NOT EXISTS idx_football_incidents_sumula ON football_incidents(sumula_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_football_historical_player ON football_historical_stats(player_id,stat_date);
+CREATE INDEX IF NOT EXISTS idx_football_transfer_status ON football_transfer_requests(status,window_year);
 """
 
 class CursorWrapper:
@@ -794,7 +811,21 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE players ADD COLUMN thumbnail_data TEXT DEFAULT ''")
     if "football_position" not in columns:
         conn.execute("ALTER TABLE players ADD COLUMN football_position TEXT DEFAULT ''")
+    if "football_join_date" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN football_join_date TEXT DEFAULT ''")
     conn.commit()
+
+    transfer_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_transfer_requests)")}
+    if not transfer_columns:
+        conn.execute("""CREATE TABLE IF NOT EXISTS football_transfer_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, player_id INTEGER NOT NULL REFERENCES players(id),
+            window_year INTEGER NOT NULL, current_position TEXT NOT NULL DEFAULT '', requested_position TEXT NOT NULL,
+            reason TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'PENDENTE' CHECK(status IN ('PENDENTE','APROVADA','RECUSADA')),
+            reviewed_by INTEGER REFERENCES users(id), reviewed_at TEXT, review_notes TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(player_id, window_year))""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_football_transfer_status ON football_transfer_requests(status,window_year)")
+        conn.commit()
 
     incident_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_incidents)")}
     if "card" not in incident_columns:
@@ -909,6 +940,7 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS football_position TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS football_join_date TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS gender TEXT NOT NULL DEFAULT 'male'")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
     for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
@@ -940,6 +972,14 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS next_check_due_at TIMESTAMP")
     wrapper.execute("ALTER TABLE football_incidents ADD COLUMN IF NOT EXISTS card TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE football_responsibles ADD COLUMN IF NOT EXISTS match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS football_transfer_requests (
+        id SERIAL PRIMARY KEY, player_id INTEGER NOT NULL REFERENCES players(id), window_year INTEGER NOT NULL,
+        current_position TEXT NOT NULL DEFAULT '', requested_position TEXT NOT NULL, reason TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'PENDENTE' CHECK(status IN ('PENDENTE','APROVADA','RECUSADA')),
+        reviewed_by INTEGER REFERENCES users(id), reviewed_at TIMESTAMP, review_notes TEXT DEFAULT '',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(player_id, window_year))""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_football_transfer_status ON football_transfer_requests(status,window_year)")
     wrapper.execute("ALTER TABLE maintenance_requests DROP CONSTRAINT IF EXISTS maintenance_requests_area_code_check")
     wrapper.execute("ALTER TABLE maintenance_requests ADD CONSTRAINT maintenance_requests_area_code_check CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','EXT'))")
     wrapper.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")

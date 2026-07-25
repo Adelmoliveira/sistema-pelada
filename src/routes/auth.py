@@ -238,6 +238,7 @@ def my_account():
                 raise ValueError("O CEP é obrigatório e deve ter 8 dígitos.")
             values = {
                 "birth_date": birth_date,
+                "football_join_date": request.form.get("football_join_date", "").strip(),
                 "phone": request.form.get("phone", "").strip()[:40],
                 "emergency_phone": request.form.get("emergency_phone", "").strip()[:40],
                 "postal_code": postal_code,
@@ -248,10 +249,10 @@ def my_account():
                 "address_city": request.form.get("address_city", "").strip()[:100],
                 "address_state": request.form.get("address_state", "").strip().upper()[:2],
             }
-            db.execute("""UPDATE players SET photo_data=?,thumbnail_data=?,birth_date=?,phone=?,
+            db.execute("""UPDATE players SET photo_data=?,thumbnail_data=?,birth_date=?,football_join_date=?,phone=?,
                 emergency_phone=?,postal_code=?,address_street=?,address_number=?,address_complement=?,
                 address_neighborhood=?,address_city=?,address_state=? WHERE id=?""",
-                (photo_data, thumbnail_data, values["birth_date"], values["phone"], values["emergency_phone"],
+                (photo_data, thumbnail_data, values["birth_date"], values["football_join_date"], values["phone"], values["emergency_phone"],
                  values["postal_code"], values["address_street"], values["address_number"], values["address_complement"],
                  values["address_neighborhood"], values["address_city"], values["address_state"], player["id"]))
             db.commit()

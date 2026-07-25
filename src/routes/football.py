@@ -1,6 +1,6 @@
 from datetime import date
 
-from flask import Blueprint, flash, g, redirect, render_template, request, send_file, url_for
+from flask import Blueprint, current_app, flash, g, redirect, render_template, request, send_file, url_for
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
@@ -17,6 +17,8 @@ TEAMS = {"AZUL": "Azul", "BRANCO": "Branco"}
 INCIDENT_TYPES = {"DISCIPLINAR": "Disciplinar", "LESAO": "Lesão", "ATRASO": "Atraso", "ABANDONO_PARTIDA": "Abandono de partida", "DISCUSSAO": "Discussão", "FALHA_ORGANIZACAO": "Falha de organização", "PROBLEMA_ESTRUTURAL": "Problema estrutural", "OUTRO": "Outro"}
 INCIDENT_LEVELS = {"INFORMATIVO": "Informativo", "ATENCAO": "Atenção", "GRAVE": "Grave"}
 CARD_TYPES = {"AMARELO": "Amarelo", "AZUL": "Azul", "VERMELHO": "Vermelho"}
+TRANSFER_POSITIONS = {"DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque"}
+TRANSFER_STATUSES = {"PENDENTE": "Pendente", "APROVADA": "Aprovada", "RECUSADA": "Recusada"}
 
 
 def _audit(db, sumula_id, action, details=""):
@@ -108,6 +110,42 @@ def _match_day(value):
     if parsed.weekday() not in (2, 5):
         raise ValueError("A data deve cair em uma quarta-feira ou sábado.")
     return parsed
+
+
+def _transfer_window(today=None):
+    """A janela anual fica aberta durante todo o mês de fevereiro."""
+    today = today or local_today()
+    is_open = today.month == 2
+    next_year = today.year if today.month < 2 else today.year + 1
+    return {"is_open": is_open, "year": today.year if is_open else next_year, "next_date": date(next_year, 2, 1)}
+
+
+def _transfer_metrics(db, player):
+    total = int(db.execute("SELECT COUNT(*) FROM football_sumulas WHERE situacao='FINALIZADA'", ()).fetchone()[0] or 0)
+    attended = int(db.execute("""SELECT COUNT(DISTINCT fp.sumula_id) FROM football_participants fp
+        JOIN football_sumulas fs ON fs.id=fp.sumula_id
+        WHERE fp.player_id=? AND fp.status='CONFIRMADO' AND fs.situacao='FINALIZADA'""", (player["id"],)).fetchone()[0] or 0)
+    joined = (player["football_join_date"] or "").strip()
+    tenure_months = None
+    try:
+        start = date.fromisoformat(joined)
+        today = local_today()
+        tenure_months = max(0, (today.year - start.year) * 12 + today.month - start.month - (today.day < start.day))
+    except (TypeError, ValueError):
+        pass
+    return {"tenure_months": tenure_months, "frequency": round(attended / total * 100, 1) if total else 0, "attended": attended, "total_sumulas": total}
+
+
+def _transfer_rows(db, window_year):
+    rows = db.execute("""SELECT tr.*,p.name,p.war_name,p.football_position,p.football_join_date
+        FROM football_transfer_requests tr JOIN players p ON p.id=tr.player_id
+        WHERE tr.window_year=? ORDER BY CASE tr.status WHEN 'PENDENTE' THEN 0 ELSE 1 END,tr.created_at DESC,tr.id DESC""", (window_year,)).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["metrics"] = _transfer_metrics(db, row)
+        result.append(item)
+    return result
 
 
 def _sumula(db, sumula_id, audit_page=None):
@@ -327,6 +365,72 @@ def client_panel():
         historical = db.execute("SELECT COALESCE(SUM(goals),0) goals,COALESCE(SUM(assists),0) assists FROM football_historical_stats WHERE player_id=?", (player_id,)).fetchone()
         own["gols"] += int(historical["goals"] or 0); own["assistencias"] += int(historical["assists"] or 0)
     return render_template("football_client_panel.html", data=data, own=own, player_id=player_id)
+
+
+@bp.route("/transferencia", methods=["GET", "POST"])
+@roles_allowed("client", "manager", "football_manager")
+def transfer_window():
+    db = get_db()
+    window = _transfer_window()
+    is_manager = g.user["role"] in ("manager", "football_manager")
+    if request.method == "POST":
+        if not is_manager:
+            if not window["is_open"]:
+                flash(f"A janela de transferência abre em fevereiro de {window['year']}.", "warning")
+            else:
+                try:
+                    player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchone()
+                    requested = request.form.get("requested_position", "").strip().upper()
+                    reason = request.form.get("reason", "").strip()[:500]
+                    if not player or requested not in TRANSFER_POSITIONS:
+                        raise ValueError("Selecione uma posição válida.")
+                    current = (player["football_position"] or "").strip().upper()
+                    if current not in TRANSFER_POSITIONS:
+                        raise ValueError("Sua posição atual precisa estar cadastrada antes de solicitar a transferência.")
+                    if requested == current:
+                        raise ValueError("A nova posição deve ser diferente da posição atual.")
+                    existing = db.execute("SELECT id FROM football_transfer_requests WHERE player_id=? AND window_year=?", (player["id"], window["year"])).fetchone()
+                    if existing:
+                        raise ValueError("Você já possui uma solicitação nesta janela.")
+                    db.execute("""INSERT INTO football_transfer_requests(player_id,window_year,current_position,requested_position,reason)
+                        VALUES(?,?,?,?,?)""", (player["id"], window["year"], current, requested, reason))
+                    db.commit()
+                    flash("Solicitação de transferência enviada para avaliação.", "success")
+                except ValueError as exc:
+                    db.rollback(); flash(str(exc), "danger")
+                except Exception as exc:
+                    db.rollback(); current_app.logger.error(f"Erro ao solicitar transferência: {exc}")
+                    flash("Não foi possível registrar a solicitação.", "danger")
+        else:
+            try:
+                request_id = int(request.form["request_id"])
+                decision = request.form.get("decision", "").upper()
+                notes = request.form.get("review_notes", "").strip()[:500]
+                if decision not in ("APROVADA", "RECUSADA"):
+                    raise ValueError("Decisão inválida.")
+                item = db.execute("SELECT * FROM football_transfer_requests WHERE id=? AND status='PENDENTE'", (request_id,)).fetchone()
+                if not item:
+                    raise ValueError("Solicitação não encontrada ou já avaliada.")
+                if decision == "APROVADA":
+                    db.execute("UPDATE players SET football_position=? WHERE id=? AND active=1", (item["requested_position"], item["player_id"]))
+                db.execute("""UPDATE football_transfer_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,review_notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""", (decision, g.user["id"], notes, request_id))
+                db.commit()
+                flash("Solicitação aprovada e posição atualizada." if decision == "APROVADA" else "Solicitação recusada.", "success")
+            except (ValueError, KeyError) as exc:
+                db.rollback(); flash(str(exc), "danger")
+            except Exception as exc:
+                db.rollback(); current_app.logger.error(f"Erro ao avaliar transferência: {exc}")
+                flash("Não foi possível avaliar a solicitação.", "danger")
+        return redirect(url_for("football.transfer_window"))
+    player = None
+    own_request = None
+    if not is_manager:
+        player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchone()
+        if player:
+            own_request = db.execute("SELECT * FROM football_transfer_requests WHERE player_id=? ORDER BY window_year DESC,id DESC LIMIT 1", (player["id"],)).fetchone()
+    rows = _transfer_rows(db, window["year"]) if is_manager else []
+    position_counts = {key: int(db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND football_position=?", (key,)).fetchone()[0] or 0) for key in TRANSFER_POSITIONS}
+    return render_template("football_transfer.html", window=window, is_manager=is_manager, player=player, own_request=own_request, rows=rows, transfer_positions=TRANSFER_POSITIONS, transfer_statuses=TRANSFER_STATUSES, position_counts=position_counts)
 
 
 @bp.get("/sumulas")

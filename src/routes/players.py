@@ -109,7 +109,7 @@ def players():
             photo_data, thumbnail_data = processed_photo or ("", "")
             db.execute(
                 """INSERT INTO players
-                (name,war_name,cpf,phone,emergency_phone,gender,email,membership_type,photo_data,thumbnail_data,football_position) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (name,war_name,cpf,phone,emergency_phone,gender,email,membership_type,photo_data,thumbnail_data,football_position,football_join_date) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     request.form["name"].strip(),
                     war_name,
@@ -118,7 +118,7 @@ def players():
                     request.form.get("emergency_phone", "").strip(),
                     gender,
                     request.form.get("email", "").strip().lower(),
-                    membership_type, photo_data, thumbnail_data, football_position
+                    membership_type, photo_data, thumbnail_data, football_position, request.form.get("football_join_date", "").strip()
                 )
             )
             db.commit()
@@ -275,7 +275,7 @@ def edit_player(player_id):
                 processed_photo = process_material_photo(request.files.get("photo"))
                 photo_fields = (processed_photo or (player["photo_data"], player["thumbnail_data"]))
                 db.execute(
-                    """UPDATE players SET name=?,war_name=?,cpf=?,email=?,phone=?,emergency_phone=?,gender=?,membership_type=?,photo_data=?,thumbnail_data=?,football_position=?
+                    """UPDATE players SET name=?,war_name=?,cpf=?,email=?,phone=?,emergency_phone=?,gender=?,membership_type=?,photo_data=?,thumbnail_data=?,football_position=?,football_join_date=?
                     WHERE id=?""",
                     (
                         request.form["name"].strip(),
@@ -286,7 +286,7 @@ def edit_player(player_id):
                         request.form.get("emergency_phone", "").strip(),
                         gender,
                         membership_type,
-                        photo_fields[0], photo_fields[1], football_position,
+                        photo_fields[0], photo_fields[1], football_position, request.form.get("football_join_date", "").strip(),
                         player_id
                     )
                 )

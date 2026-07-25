@@ -13,6 +13,7 @@
       <h3 class="h5 border-bottom pb-2">Dados pessoais</h3>
       <div class="row g-3 mb-3">
         <div class="col-md-6"><label class="form-label">Data de nascimento <span class="text-danger">*</span></label><input type="date" name="birth_date" class="form-control" value="{{player.birth_date or ''}}" required></div>
+        <div class="col-md-6"><label class="form-label">Data de apresentação na pelada</label><input type="date" name="football_join_date" class="form-control" value="{{player.football_join_date or ''}}"><div class="form-text">Usada para avaliar pedidos de transferência.</div></div>
         <div class="col-md-6"><label class="form-label">Contato normal <span class="text-danger">*</span></label><input type="tel" name="phone" class="form-control" value="{{player.phone or ''}}" placeholder="(12) 99999-9999" required></div>
         <div class="col-md-6"><label class="form-label">Contato de emergência <span class="text-danger">*</span></label><input type="tel" name="emergency_phone" class="form-control" value="{{player.emergency_phone or ''}}" placeholder="Nome e telefone" required></div>
       </div>
