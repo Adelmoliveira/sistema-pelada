@@ -434,7 +434,7 @@ def transfer_window():
                     db.execute("""INSERT INTO football_transfer_requests(player_id,window_year,current_position,requested_position,reason)
                         VALUES(?,?,?,?,?)""", (player["id"], window["year"], current, requested, reason))
                     db.commit()
-                    send_player_push(db, player["id"], "Janela de transferência aberta", f"A janela de transferência de {window['year']} está aberta. Sua solicitação foi enviada para avaliação.", "/futebol/transferencia")
+                    send_player_push(db, player["id"], "Janela de transferência aberta", f"A janela de transferência de {window['year']} está aberta. Sua solicitação foi enviada para avaliação.", "/notificacoes")
                     _notify_transfer(current_app, current_app.config.get("GMAIL_SMTP_USER"), "Nova solicitação de transferência", f"Nova solicitação de {player['war_name'] or player['name']} para mudar de {TRANSFER_POSITIONS[current]} para {TRANSFER_POSITIONS[requested]}.")
                     flash("Solicitação de transferência enviada para avaliação.", "success")
                 except ValueError as exc:
@@ -480,7 +480,7 @@ def transfer_window():
                         message += f"\n\nObservação do gestor: {notes}"
                     _notify_transfer(current_app, player["email"], "Resultado da solicitação de transferência", message)
                 if player:
-                    send_player_push(db, item["player_id"], "Transferência aprovada" if decision == "APROVADA" else "Transferência recusada", "Sua solicitação de mudança de posição foi aprovada." if decision == "APROVADA" else "Sua solicitação de mudança de posição foi recusada.", "/futebol/transferencia")
+                    send_player_push(db, item["player_id"], "Transferência aprovada" if decision == "APROVADA" else "Transferência recusada", "Sua solicitação de mudança de posição foi aprovada." if decision == "APROVADA" else "Sua solicitação de mudança de posição foi recusada.", "/notificacoes")
                 flash("Solicitação aprovada e posição atualizada." if decision == "APROVADA" else "Solicitação recusada.", "success")
             except (ValueError, KeyError) as exc:
                 db.rollback(); flash(str(exc), "danger")
