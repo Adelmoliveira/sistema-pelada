@@ -502,8 +502,10 @@ def transfer_window():
 
 
 @bp.route("/notificacoes", methods=["GET", "POST"])
-@roles_allowed("manager", "football_manager")
+@roles_allowed("manager", "football_manager", "client")
 def notifications():
+    if g.user["role"] == "client":
+        return redirect(url_for("auth.notifications_inbox"))
     db = get_db()
     if request.method == "POST":
         title = request.form.get("title", "").strip()[:80]
