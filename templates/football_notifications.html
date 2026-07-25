@@ -53,7 +53,7 @@
               {% for item in history %}
               <tr>
                 <td class="text-nowrap">{{item.created_at|brdate}}</td>
-                <td><strong>{{item.title}}</strong><div class="small text-muted text-break">{{item.body}}</div></td>
+                <td><strong>{{item.title}}</strong><div class="small text-muted text-break" style="white-space:pre-line">{{item.body}}</div></td>
                 <td>{{'Todos os peladeiros' if item.audience == 'all' else 'Aptos para futebol'}}</td>
                 <td class="text-end">{{item.sent_count}}</td>
                 <td>{{item.user_name or 'Sistema'}}</td>
