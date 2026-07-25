@@ -22,7 +22,7 @@
 {% set finance_active=endpoint.startswith('finance.') %}
 {% set reports_active=endpoint.startswith('reports.') %}
 {% set infra_active=endpoint.startswith('infra.') or endpoint.startswith('maintenance.') %}
-{% set football_management_active=endpoint in ['football.dashboard','football.position_distribution','football.statistics','football.attendance','football.transfer_window'] %}
+{% set football_management_active=endpoint in ['football.dashboard','football.position_distribution','football.statistics','football.attendance','football.transfer_window','football.notifications'] %}
 {% set football_active=endpoint.startswith('football.') and not football_management_active %}
 {% set urgent_active=endpoint == 'players.urgent' %}
 {% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) %}
@@ -53,7 +53,7 @@
         </div>{% endif %}
         {% if current_user.role in ['manager','football_manager'] %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if football_management_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-football-management" aria-expanded="{{'true' if football_management_active else 'false'}}" aria-controls="sidebar-football-management"><span class="sidebar-module-icon">⚽</span><span>Gestão do futebol</span><span class="sidebar-chevron">⌄</span></button>
-          <div class="collapse {{'show' if football_management_active}}" id="sidebar-football-management"><div class="sidebar-submenu"><a class="{{'active' if endpoint in ['football.dashboard','football.position_distribution']}}" href="{{url_for('football.dashboard')}}">Dashboard</a><a class="{{'active' if endpoint == 'football.statistics'}}" href="{{url_for('football.statistics')}}">Estatísticas</a><a class="{{'active' if endpoint == 'football.attendance'}}" href="{{url_for('football.attendance')}}">Frequência geral</a><a class="{{'active' if endpoint == 'football.transfer_window'}}" href="{{url_for('football.transfer_window')}}">Janela de transferência</a></div></div>
+          <div class="collapse {{'show' if football_management_active}}" id="sidebar-football-management"><div class="sidebar-submenu"><a class="{{'active' if endpoint in ['football.dashboard','football.position_distribution']}}" href="{{url_for('football.dashboard')}}">Dashboard</a><a class="{{'active' if endpoint == 'football.statistics'}}" href="{{url_for('football.statistics')}}">Estatísticas</a><a class="{{'active' if endpoint == 'football.attendance'}}" href="{{url_for('football.attendance')}}">Frequência geral</a><a class="{{'active' if endpoint == 'football.transfer_window'}}" href="{{url_for('football.transfer_window')}}">Janela de transferência</a><a class="{{'active' if endpoint == 'football.notifications'}}" href="{{url_for('football.notifications')}}">Notificações</a></div></div>
         </div>{% endif %}
         {% if current_user.role in ['manager','staff','infra'] %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if infra_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-infra" aria-expanded="{{'true' if infra_active else 'false'}}" aria-controls="sidebar-infra"><span class="sidebar-module-icon">I</span><span>Infra-Estrutura</span><span class="sidebar-chevron">⌄</span></button>

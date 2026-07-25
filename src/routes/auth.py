@@ -199,6 +199,43 @@ def logout():
     return redirect(url_for("auth.login"), code=303)
 
 
+@bp.get("/notifications/push/public-key")
+@roles_allowed("client")
+def push_public_key():
+    from src.services.push_notifications import public_key
+    return jsonify(publicKey=public_key())
+
+
+@bp.post("/notifications/push/subscribe")
+@roles_allowed("client")
+def push_subscribe():
+    subscription = request.get_json(silent=True) or {}
+    endpoint = str(subscription.get("endpoint") or "").strip()
+    keys = subscription.get("keys") or {}
+    p256dh = str(keys.get("p256dh") or "").strip()
+    auth_key = str(keys.get("auth") or "").strip()
+    if not endpoint or not p256dh or not auth_key or not g.user["player_id"]:
+        return jsonify(error="Assinatura inválida."), 400
+    db = get_db()
+    db.execute("""INSERT INTO push_subscriptions(player_id,endpoint,p256dh,auth) VALUES(?,?,?,?)
+        ON CONFLICT(endpoint) DO UPDATE SET player_id=?,p256dh=?,auth=?,updated_at=CURRENT_TIMESTAMP""",
+        (g.user["player_id"], endpoint, p256dh, auth_key, g.user["player_id"], p256dh, auth_key))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@bp.post("/notifications/push/unsubscribe")
+@roles_allowed("client")
+def push_unsubscribe():
+    subscription = request.get_json(silent=True) or {}
+    endpoint = str(subscription.get("endpoint") or "").strip()
+    if endpoint:
+        db = get_db()
+        db.execute("DELETE FROM push_subscriptions WHERE endpoint=? AND player_id=?", (endpoint, g.user["player_id"]))
+        db.commit()
+    return jsonify(ok=True)
+
+
 @bp.route("/minha-conta", methods=["GET", "POST"])
 @roles_allowed("client")
 def my_account():

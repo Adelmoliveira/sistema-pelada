@@ -40,6 +40,7 @@
       <button class="btn btn-outline-primary mt-3">Alterar senha</button>
     </form>
   </div></div>
+  <div class="card shadow-sm mt-4"><div class="card-body p-4"><h2 class="h5">Notificações no celular</h2><p class="text-muted small">Receba avisos de mensalidade, pagamentos e comunicados da pelada neste dispositivo.</p><button type="button" class="btn btn-outline-primary" id="enable-push">Ativar notificações</button><span class="small ms-2" id="push-status" aria-live="polite"></span></div></div>
   <div class="card shadow-sm mt-4"><div class="card-body p-4">
     <h2 class="h5">Minhas compras recentes</h2>
     <p class="text-muted small">Acesse o comprovante de cada pedido já pago.</p>
@@ -64,5 +65,8 @@
   cep.addEventListener('blur', buscarCep);
   cep.addEventListener('change', buscarCep);
 })();
+</script>
+<script>
+(() => { const button = document.getElementById('enable-push'); const status = document.getElementById('push-status'); if (!button) return; button.addEventListener('click', async () => { button.disabled = true; status.textContent = 'Ativando…'; try { await window.enablePushNotifications(); status.textContent = 'Notificações ativadas neste dispositivo.'; button.textContent = 'Notificações ativas'; } catch (error) { status.textContent = error.message || 'Não foi possível ativar.'; button.disabled = false; } }); })();
 </script>
 {% endblock %}

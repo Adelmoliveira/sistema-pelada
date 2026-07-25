@@ -5,6 +5,7 @@ import ssl
 from email.message import EmailMessage
 
 from src.utils import alphabetical_key, money
+from src.services.push_notifications import send_player_push
 
 
 MONTH_NAMES = (
@@ -141,6 +142,8 @@ def dispatch_reminders(db, settings, sender, app_password, today, send_func=send
     period = today.strftime("%Y-%m")
     for debtor in outstanding_players(db, today):
         if not debtor["email"]:
+            if int(settings["push_enabled"] or 0):
+                send_player_push(db, debtor["id"], "Mensalidade pendente", f"Você possui uma pendência de mensalidade no valor de {money(debtor['amount_cents'])}.", "/finance/finance")
             result["without_email"] += 1
             continue
         existing = db.execute(
@@ -158,6 +161,8 @@ def dispatch_reminders(db, settings, sender, app_password, today, send_func=send
             send_func(sender, app_password, debtor["email"], subject, body)
             status, error = "sent", ""
             result["sent"] += 1
+            if int(settings["push_enabled"] or 0):
+                send_player_push(db, debtor["id"], "Mensalidade pendente", f"Você possui uma pendência de mensalidade no valor de {money(debtor['amount_cents'])}.", "/finance/finance")
         except Exception as exc:
             status, error = "failed", str(exc)[:500]
             result["failed"] += 1
