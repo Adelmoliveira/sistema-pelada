@@ -17,11 +17,13 @@ def send_player_push(db, player_id, title, body, url="/"):
     except ImportError:
         return {"sent": 0, "skipped": 1, "reason": "pywebpush não instalado"}
     subscriptions = db.execute("SELECT id,endpoint,p256dh,auth FROM push_subscriptions WHERE player_id=?", (player_id,)).fetchall()
+    unread = int(db.execute("SELECT COUNT(*) FROM push_inbox WHERE player_id=? AND read_at IS NULL", (player_id,)).fetchone()[0] or 0)
+    badge_count = unread + 1
     sent = 0
     for subscription in subscriptions:
         info = {"endpoint": subscription["endpoint"], "keys": {"p256dh": subscription["p256dh"], "auth": subscription["auth"]}}
         try:
-            webpush(subscription_info=info, data=json.dumps({"title": title, "body": body, "url": url}), vapid_private_key=private_key, vapid_claims={"sub": subject})
+            webpush(subscription_info=info, data=json.dumps({"title": title, "body": body, "url": url, "badge": badge_count}), vapid_private_key=private_key, vapid_claims={"sub": subject})
             sent += 1
         except Exception as exc:
             # Assinaturas expiradas devem ser removidas para não gerar falhas futuras.

@@ -1,4 +1,4 @@
-const CACHE_NAME = "peladeiros-gpcta-v3";
+const CACHE_NAME = "peladeiros-gpcta-v4";
 const OFFLINE_URL = "/offline";
 const APP_SHELL = [
   OFFLINE_URL,
@@ -27,12 +27,17 @@ self.addEventListener("activate", event => {
 self.addEventListener("push", event => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch (_) { data = {body: event.data ? event.data.text() : ""}; }
-  event.waitUntil(self.registration.showNotification(data.title || "PELADEIROS GPCTA", {
-    body: data.body || "Você tem uma nova atualização.",
-    icon: "/static/icons/pwa-192.png",
-    badge: "/static/icons/pwa-192.png",
-    data: {url: data.url || "/"}
-  }));
+  event.waitUntil(Promise.all([
+    self.registration.showNotification(data.title || "PELADEIROS GPCTA", {
+      body: data.body || "Você tem uma nova atualização.",
+      icon: "/static/icons/pwa-192.png",
+      badge: "/static/icons/pwa-192.png",
+      data: {url: data.url || "/"}
+    }),
+    Number.isFinite(Number(data.badge)) && Number(data.badge) > 0 && self.navigator && "setAppBadge" in self.navigator
+      ? self.navigator.setAppBadge(Number(data.badge)).catch(() => undefined)
+      : Promise.resolve()
+  ]));
 });
 
 self.addEventListener("notificationclick", event => {
