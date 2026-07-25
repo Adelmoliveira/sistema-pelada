@@ -9,8 +9,40 @@
 <div class="card shadow-sm mt-3"><div class="card-header"><strong>Histórico de alterações e auditoria</strong></div><div class="list-group list-group-flush">{% for audit in audits %}<div class="list-group-item d-flex justify-content-between gap-3"><span><strong>{{audit['action']|replace('_',' ')|title}}</strong>{% if audit['details'] %} · {{audit['details']}}{% endif %}</span><small class="text-muted text-nowrap">{{audit['created_at']|brdate}} · {{audit['user_name'] or 'Sistema'}}</small></div>{% else %}<div class="list-group-item text-muted">Nenhuma alteração registrada.</div>{% endfor %}</div></div>
 <div class="card shadow-sm mt-3" id="referee-summary-content"><div class="card-header"><strong>Árbitros por partida</strong></div><div class="card-body"><div class="row g-3">{% for item in matches %}<div class="col-md-6"><strong>{{item['row']['number']}}ª partida</strong>{% for responsible in responsibles if responsible['match_number'] == item['row']['number'] and responsible['responsibility_type'] == 'ARBITRO_VOLUNTARIO' %}<div class="small mt-2">{{responsible['war_name'] or responsible['name'] or 'Não informado'}}</div>{% else %}<div class="small text-muted mt-2">Nenhum árbitro registrado.</div>{% endfor %}</div>{% endfor %}</div></div></div>
 <script>const autoRoles={{auto_roles|tojson}};if(autoRoles.length){const card=document.createElement('div');card.className='card shadow-sm mt-3';card.innerHTML=`<div class="card-header"><strong>Regra automática aplicada</strong></div><div class="card-body"><p class="small mb-2">Papéis definidos para a 2ª partida pela ordem do sorteio:</p><div class="small">${autoRoles.map(role=>`<span class="me-3"><strong>${role.role}:</strong> ${role.name}</span>`).join('')}</div></div>`;document.querySelector('#referee-summary-content')?.before(card);}</script>
+{% if matches|length == 1 %}<script>
+document.querySelector('[data-participant-tab="2"]')?.remove();
+const addMatchForm=[...document.querySelectorAll('form')].find(form=>form.querySelector('input[name="action"][value="third_match"]'));
+if(addMatchForm){addMatchForm.querySelector('input[name="action"]').value='second_match';const button=addMatchForm.querySelector('button');if(button) button.textContent='Adicionar 2ª partida';}
+</script>{% endif %}
 {% endblock %}
 {% block scripts %}<script>
+const footballPage=document.querySelector('main')||document.body;
+const footballHeading=footballPage.querySelector('h1');
+if(footballHeading){
+  const summary=document.createElement('div');
+  summary.className='card shadow-sm mb-3 border-0';
+  summary.innerHTML=`<div class="card-body py-3"><div class="d-flex flex-wrap align-items-center gap-3"><strong>Resumo da súmula</strong><span class="badge rounded-pill text-bg-primary">{{situations[sumula['situacao']]}}</span><span class="text-muted">{{participants|length}} participante(s)</span><span class="text-muted">{{matches|length}} partida(s)</span>{% if score_mismatches %}<span class="badge text-bg-warning">Conferência pendente</span>{% endif %}</div></div>`;
+  footballHeading.closest('.d-flex')?.after(summary);
+}
+const auditCard=[...footballPage.querySelectorAll('.card')].find(card=>card.querySelector('.card-header strong')?.textContent.trim()==='Histórico de alterações e auditoria');
+if(auditCard){
+  const auditHeader=auditCard.querySelector('.card-header');
+  const auditList=auditCard.querySelector('.list-group');
+  if(auditHeader&&auditList){
+    const toggle=document.createElement('button');
+    toggle.type='button'; toggle.className='btn btn-sm btn-outline-secondary float-end'; toggle.textContent='Mostrar histórico';
+    auditHeader.appendChild(toggle); auditList.hidden=true;
+    toggle.addEventListener('click',()=>{auditList.hidden=!auditList.hidden;toggle.textContent=auditList.hidden?'Mostrar histórico':'Ocultar histórico';});
+  }
+}
+footballPage.querySelectorAll('form button[type="submit"], form:not([onsubmit]) button:not([type])').forEach(button=>{
+  const form=button.closest('form'); if(!form||form.dataset.once) return;
+  form.addEventListener('submit',()=>{if(form.checkValidity()){form.dataset.once='1';button.disabled=true;button.dataset.originalText=button.textContent;button.textContent='Salvando…';}});
+});
+footballPage.querySelectorAll('.card-header strong').forEach(title=>{
+  const value=title.textContent.trim();
+  if(['Participantes ({{participants|length}})','Controles','Responsáveis','Escalação e gols'].includes(value)) title.classList.add('fs-5');
+});
 const playerPositions={{player_positions|tojson}};const fallbackRoles={{fallback_roles|tojson}};if(fallbackRoles.length){const card=document.createElement('div');card.className='card shadow-sm mt-3';card.innerHTML=`<div class="card-header"><strong>Regra automática de goleiro e juízes</strong></div><div class="card-body"><p class="small mb-2">Sem goleiro voluntário na 2ª partida: D1 será o primeiro goleiro. Entre D8, M6 e A6, o menor número de sorteio será o segundo goleiro; os demais serão juízes.</p><div class="small mb-2">${fallbackRoles.map(role=>`<span class="me-3"><strong>${role.role}:</strong> ${role.name} (ordem ${role.draw_order})</span>`).join('')}</div><form method="post"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="action" value="apply_fallback_roles"><button class="btn btn-sm btn-primary">Aplicar regra automática</button></form></div>`;const positionsCard=[...document.querySelectorAll('.card')].find(item=>item.querySelector('.card-header strong')?.textContent.trim()==='Posições cadastradas dos participantes');positionsCard?.before(card);}
 const participantTabs=document.querySelectorAll('[data-participant-tab]');
 if(participantTabs.length){const showParticipantMatch=(number)=>{document.querySelectorAll('.participant-match-pane').forEach((pane)=>pane.classList.toggle('d-none',pane.id!==`participant-match-${number}`));participantTabs.forEach((tab)=>{const active=tab.dataset.participantTab===String(number);tab.classList.toggle('btn-primary',active);tab.classList.toggle('btn-outline-primary',!active);});};participantTabs.forEach((tab)=>tab.addEventListener('click',()=>showParticipantMatch(tab.dataset.participantTab)));showParticipantMatch('1');}

@@ -583,9 +583,8 @@ def new_sumula():
                 cur = db.execute("INSERT INTO football_sumulas(match_date,day_pelada,local,horario,situacao,observacoes,created_by) VALUES(?,?,?,?,'RASCUNHO',?,?)", (match_date.isoformat(), day, local, horario, observacoes, g.user["id"]))
                 sid = cur.lastrowid
                 db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,1)", (sid,))
-                db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,2)", (sid,))
                 _audit(db, sid, "CRIADA", f"{day} {match_date.isoformat()}")
-            flash("Súmula criada com duas partidas.", "success")
+            flash("Súmula criada com a 1ª partida. Adicione a 2ª quando necessário.", "success")
             return redirect(url_for("football.detail", sumula_id=sid))
         except ValueError as exc:
             flash(str(exc), "danger")
@@ -613,7 +612,7 @@ def detail(sumula_id):
             sumula = data[0]
             if sumula["locked_at"]:
                 raise ValueError("A súmula foi encerrada definitivamente e não aceita novas alterações.")
-            if sumula["situacao"] in ("FINALIZADA", "CANCELADA") and action not in ("status",):
+            if sumula["situacao"] in ("FINALIZADA", "CANCELADA") and action not in ("status", "lock"):
                 raise ValueError("A súmula está bloqueada para alterações. Reabra-a antes de editar.")
             if action == "participant":
                 player_id = int(request.form.get("player_id", ""))
@@ -744,9 +743,15 @@ def detail(sumula_id):
                     db.execute("INSERT INTO football_responsibles(sumula_id,match_id,player_id,responsibility_type,observation) VALUES(?,?,?,?,?)", (sumula_id, role["match_id"], role["player_id"], "OUTRO", observation))
                 _audit(db, sumula_id, "REGRA_AUTOMATICA_APLICADA", ", ".join(f"{role['role']}: {role['name']}" for role in roles))
             elif action == "third_match":
+                if not db.execute("SELECT 1 FROM football_matches WHERE sumula_id=? AND number=2", (sumula_id,)).fetchone():
+                    raise ValueError("Adicione a 2ª partida antes da 3ª.")
                 if db.execute("SELECT 1 FROM football_matches WHERE sumula_id=? AND number=3", (sumula_id,)).fetchone():
                     raise ValueError("A terceira partida já existe.")
                 db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,3)", (sumula_id,)); _audit(db, sumula_id, "TERCEIRA_PARTIDA_ADICIONADA")
+            elif action == "second_match":
+                if db.execute("SELECT 1 FROM football_matches WHERE sumula_id=? AND number=2", (sumula_id,)).fetchone():
+                    raise ValueError("A segunda partida já existe.")
+                db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,2)", (sumula_id,)); _audit(db, sumula_id, "SEGUNDA_PARTIDA_ADICIONADA")
             elif action == "lock":
                 if sumula["situacao"] != "FINALIZADA":
                     raise ValueError("Finalize a súmula antes de encerrá-la definitivamente.")
