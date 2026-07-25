@@ -27,6 +27,8 @@ def send_player_push(db, player_id, title, body, url="/"):
             # Assinaturas expiradas devem ser removidas para não gerar falhas futuras.
             if getattr(exc, "response", None) is not None and getattr(exc.response, "status_code", 0) in (404, 410):
                 db.execute("DELETE FROM push_subscriptions WHERE id=?", (subscription["id"],))
+    if sent:
+        db.execute("INSERT INTO push_inbox(player_id,title,body) VALUES(?,?,?)", (player_id, title, body))
     db.commit()
     return {"sent": sent, "skipped": 0}
 

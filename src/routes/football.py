@@ -518,7 +518,7 @@ def notifications():
             recipients = db.execute(f"SELECT id FROM players WHERE {clause}").fetchall()
             sent = 0
             for player in recipients:
-                sent += int(send_player_push(db, player["id"], title, body, "/futebol/notificacoes").get("sent", 0))
+                    sent += int(send_player_push(db, player["id"], title, body, "/notificacoes").get("sent", 0))
             db.execute("INSERT INTO push_announcements(title,body,audience,sent_count,created_by) VALUES(?,?,?,?,?)", (title, body, audience, sent, g.user["id"]))
             db.commit()
             flash(f"Aviso enviado para {sent} dispositivo(s) inscrito(s).", "success")

@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block title %}Avisos · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4"><div><h1 class="h3 mb-1">Avisos da pelada</h1><p class="text-muted mb-0">Mensagens recebidas neste dispositivo.</p></div><a class="btn btn-outline-secondary" href="{{url_for('sales.sale')}}">← Voltar</a></div>
+<div class="row g-3">
+{% for message in messages %}<article class="card shadow-sm border-0"><div class="card-body"><div class="d-flex justify-content-between gap-3"><h2 class="h5 mb-2">{{message.title}}</h2><small class="text-muted text-nowrap">{{message.created_at|brdate}}</small></div><p class="mb-0" style="white-space:pre-line">{{message.body}}</p></div></article>
+{% else %}<div class="card shadow-sm"><div class="card-body text-muted">Nenhum aviso recebido ainda.</div></div>{% endfor %}
+</div>
+{% endblock %}

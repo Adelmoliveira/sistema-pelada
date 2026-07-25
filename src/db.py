@@ -329,6 +329,15 @@ CREATE TABLE IF NOT EXISTS push_dispatches (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(player_id, kind, period)
 );
+CREATE TABLE IF NOT EXISTS push_inbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    read_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_push_inbox_player ON push_inbox(player_id, created_at);
 CREATE TABLE IF NOT EXISTS push_announcements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
