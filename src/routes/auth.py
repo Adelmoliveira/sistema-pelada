@@ -244,6 +244,8 @@ def notifications_inbox():
         "SELECT * FROM push_inbox WHERE player_id=? ORDER BY id DESC LIMIT 50",
         (g.user["player_id"],),
     ).fetchall()
+    db.execute("UPDATE push_inbox SET read_at=CURRENT_TIMESTAMP WHERE player_id=? AND read_at IS NULL", (g.user["player_id"],))
+    db.commit()
     return render_template("notifications_inbox.html", messages=messages)
 
 
