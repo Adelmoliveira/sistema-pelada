@@ -236,6 +236,27 @@ def push_unsubscribe():
     return jsonify(ok=True)
 
 
+@bp.get("/notificacoes")
+@roles_allowed("client")
+def notifications_inbox():
+    db = get_db()
+    messages = db.execute(
+        "SELECT * FROM push_inbox WHERE player_id=? ORDER BY id DESC LIMIT 50",
+        (g.user["player_id"],),
+    ).fetchall()
+    return render_template("notifications_inbox.html", messages=messages)
+
+
+@bp.post("/notificacoes/limpar")
+@roles_allowed("client")
+def clear_notifications_inbox():
+    db = get_db()
+    db.execute("DELETE FROM push_inbox WHERE player_id=?", (g.user["player_id"],))
+    db.commit()
+    flash("Avisos removidos deste dispositivo.", "success")
+    return redirect(url_for("auth.notifications_inbox"))
+
+
 @bp.route("/minha-conta", methods=["GET", "POST"])
 @roles_allowed("client")
 def my_account():

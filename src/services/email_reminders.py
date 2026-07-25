@@ -143,7 +143,7 @@ def dispatch_reminders(db, settings, sender, app_password, today, send_func=send
     for debtor in outstanding_players(db, today):
         if not debtor["email"]:
             if int(settings["push_enabled"] or 0):
-                send_player_push(db, debtor["id"], "Mensalidade pendente", f"Você possui uma pendência de mensalidade no valor de {money(debtor['amount_cents'])}.", "/finance/finance")
+                send_player_push(db, debtor["id"], "Mensalidade pendente", f"Você possui uma pendência de mensalidade no valor de {money(debtor['amount_cents'])}.", "/notificacoes")
             result["without_email"] += 1
             continue
         existing = db.execute(
@@ -162,7 +162,7 @@ def dispatch_reminders(db, settings, sender, app_password, today, send_func=send
             status, error = "sent", ""
             result["sent"] += 1
             if int(settings["push_enabled"] or 0):
-                send_player_push(db, debtor["id"], "Mensalidade pendente", f"Você possui uma pendência de mensalidade no valor de {money(debtor['amount_cents'])}.", "/finance/finance")
+                send_player_push(db, debtor["id"], "Mensalidade pendente", f"Você possui uma pendência de mensalidade no valor de {money(debtor['amount_cents'])}.", "/notificacoes")
         except Exception as exc:
             status, error = "failed", str(exc)[:500]
             result["failed"] += 1
