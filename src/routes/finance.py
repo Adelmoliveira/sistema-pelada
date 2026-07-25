@@ -19,7 +19,7 @@ from src.services.finance_accounts import (
 )
 from src.services.finance_ledger_pdf import build_finance_ledger_pdf
 from src.services.monthly_sales_report import build_monthly_sales_pdf, monthly_sales_data
-from src.services.push_notifications import send_transfer_window_notifications
+from src.services.push_notifications import send_birthday_notifications, send_transfer_window_notifications
 from src.utils import alphabetical_key, money, brdate, cents, month_bounds, add_months, local_today
 
 bp = Blueprint("finance", __name__)
@@ -791,13 +791,14 @@ def payment_reminders_cron():
     settings = get_reminder_settings(db)
     today = local_today()
     transfer_push_sent = send_transfer_window_notifications(db, today.year) if today.month == 2 else 0
+    birthday_push_sent = send_birthday_notifications(db, today)
     if not settings["enabled"]:
-        return jsonify(ok=True, sent=0, transfer_push_sent=transfer_push_sent, reason="Lembretes desativados.")
+        return jsonify(ok=True, sent=0, transfer_push_sent=transfer_push_sent, birthday_push_sent=birthday_push_sent, reason="Lembretes desativados.")
     if today.day != settings["schedule_day"]:
-        return jsonify(ok=True, sent=0, reason="Fora do dia programado.")
+        return jsonify(ok=True, sent=0, transfer_push_sent=transfer_push_sent, birthday_push_sent=birthday_push_sent, reason="Fora do dia programado.")
     sender, password = smtp_configuration()
     if not sender or not password:
         current_app.logger.error("Lembretes habilitados sem configuração SMTP completa.")
-        return jsonify(error="Configuração de e-mail incompleta."), 503
+        return jsonify(error="Configuração de e-mail incompleta.", transfer_push_sent=transfer_push_sent, birthday_push_sent=birthday_push_sent), 503
     result = dispatch_reminders(db, settings, sender, password, today)
-    return jsonify(ok=result["failed"] == 0, transfer_push_sent=transfer_push_sent, **result), 200 if result["failed"] == 0 else 502
+    return jsonify(ok=result["failed"] == 0, transfer_push_sent=transfer_push_sent, birthday_push_sent=birthday_push_sent, **result), 200 if result["failed"] == 0 else 502

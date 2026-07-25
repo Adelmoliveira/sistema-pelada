@@ -53,3 +53,33 @@ def send_transfer_window_notifications(db, year):
         result = send_player_push_once(db, player["id"], "transfer_window", period, "Janela de transferência aberta", f"A janela de transferência de {year} está aberta durante fevereiro.", "/futebol/transferencia")
         sent += int(result.get("sent", 0))
     return sent
+
+
+def send_birthday_notifications(db, today):
+    """Envia uma vez por dia os avisos dos aniversariantes para os peladeiros."""
+    birthdays = db.execute(
+        """SELECT id,name,war_name,gender FROM players
+           WHERE active=1 AND birth_date<>'' AND substr(birth_date,6,5)=?""",
+        (today.strftime("%m-%d"),),
+    ).fetchall()
+    recipients = db.execute("SELECT id FROM players WHERE active=1").fetchall()
+    sent = 0
+    for birthday in birthdays:
+        display_name = birthday["war_name"] or birthday["name"]
+        for recipient in recipients:
+            if recipient["id"] == birthday["id"]:
+                prefix = "" if birthday["gender"] == "female" else "Peladeiro "
+                title = f"Parabéns, {prefix}{display_name}! ⚽🍻"
+                body = "Hoje é dia de comemorar! Desejamos a você muita saúde, felicidade, paz e sucesso. Que não faltem bons momentos, grandes amizades e, claro, muitas resenhas e gols na nossa pelada.\n\nFeliz aniversário! Aproveite o seu dia!"
+            elif birthday["gender"] == "female":
+                title = f"Aniversário da {display_name}"
+                body = f"Hoje é aniversário da {display_name}! Deseje parabéns à aniversariante."
+            else:
+                title = f"Aniversário do peladeiro {display_name}"
+                body = f"Hoje é aniversário do peladeiro {display_name}! Deseje parabéns ao aniversariante."
+            result = send_player_push_once(
+                db, recipient["id"], f"birthday:{birthday['id']}", today.isoformat(),
+                title, body, "/notificacoes",
+            )
+            sent += int(result.get("sent", 0))
+    return sent
