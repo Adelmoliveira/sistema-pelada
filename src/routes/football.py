@@ -613,7 +613,7 @@ def detail(sumula_id):
             sumula = data[0]
             if sumula["locked_at"]:
                 raise ValueError("A súmula foi encerrada definitivamente e não aceita novas alterações.")
-            if sumula["situacao"] in ("FINALIZADA", "CANCELADA") and action not in ("status",):
+            if sumula["situacao"] in ("FINALIZADA", "CANCELADA") and action not in ("status", "lock"):
                 raise ValueError("A súmula está bloqueada para alterações. Reabra-a antes de editar.")
             if action == "participant":
                 player_id = int(request.form.get("player_id", ""))
