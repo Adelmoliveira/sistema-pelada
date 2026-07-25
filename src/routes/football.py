@@ -752,6 +752,14 @@ def detail(sumula_id):
                 if db.execute("SELECT 1 FROM football_matches WHERE sumula_id=? AND number=2", (sumula_id,)).fetchone():
                     raise ValueError("A segunda partida já existe.")
                 db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,2)", (sumula_id,)); _audit(db, sumula_id, "SEGUNDA_PARTIDA_ADICIONADA")
+            elif action == "delete_draft":
+                if sumula["situacao"] != "RASCUNHO":
+                    raise ValueError("Somente súmulas em rascunho podem ser excluídas.")
+                db.execute("INSERT INTO football_deleted_sumula_audit(sumula_id,match_date,day_pelada,local,deleted_by) VALUES(?,?,?,?,?)", (sumula_id, sumula["match_date"], sumula["day_pelada"], sumula["local"] or "", g.user["id"]))
+                db.execute("DELETE FROM football_sumulas WHERE id=?", (sumula_id,))
+                db.commit()
+                flash("Súmula em rascunho excluída.", "success")
+                return redirect(url_for("football.sumulas"))
             elif action == "lock":
                 if sumula["situacao"] != "FINALIZADA":
                     raise ValueError("Finalize a súmula antes de encerrá-la definitivamente.")

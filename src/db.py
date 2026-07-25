@@ -464,6 +464,15 @@ CREATE TABLE IF NOT EXISTS football_audit (
     details TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS football_deleted_sumula_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sumula_id INTEGER NOT NULL,
+    match_date TEXT NOT NULL,
+    day_pelada TEXT NOT NULL,
+    local TEXT DEFAULT '',
+    deleted_by INTEGER REFERENCES users(id),
+    deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS football_historical_stats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL REFERENCES players(id),
@@ -1015,6 +1024,10 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS next_check_due_at TIMESTAMP")
     wrapper.execute("ALTER TABLE football_incidents ADD COLUMN IF NOT EXISTS card TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE football_responsibles ADD COLUMN IF NOT EXISTS match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS football_deleted_sumula_audit (
+        id SERIAL PRIMARY KEY, sumula_id INTEGER NOT NULL, match_date DATE NOT NULL,
+        day_pelada TEXT NOT NULL, local TEXT DEFAULT '', deleted_by INTEGER REFERENCES users(id),
+        deleted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS football_transfer_requests (
         id SERIAL PRIMARY KEY, player_id INTEGER NOT NULL REFERENCES players(id), window_year INTEGER NOT NULL,
         current_position TEXT NOT NULL DEFAULT '', requested_position TEXT NOT NULL, reason TEXT DEFAULT '',
