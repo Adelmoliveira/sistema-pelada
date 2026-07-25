@@ -112,7 +112,7 @@ def offline():
     return render_template("offline.html")
 
 # Exempt public/authentication routes from CSRF to avoid login issues in local/dev deployments
-from src.routes.auth import setup, login, client_access, logout
+from src.routes.auth import setup, login, client_access, logout, push_subscribe, push_unsubscribe
 from src.routes.sales import mercadopago_create_order, mercadopago_webhook
 csrf.exempt(setup)
 csrf.exempt(login)
@@ -120,6 +120,8 @@ csrf.exempt(client_access)
 csrf.exempt(logout)
 csrf.exempt(mercadopago_create_order)
 csrf.exempt(mercadopago_webhook)
+csrf.exempt(push_subscribe)
+csrf.exempt(push_unsubscribe)
 
 # Register Template Filters
 app.template_filter("money")(money)

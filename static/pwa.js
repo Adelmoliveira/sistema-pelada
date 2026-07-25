@@ -1,24 +1,36 @@
 (() => {
   let serviceWorkerRegistration;
+  let registrationPromise;
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/service-worker.js", {scope: "/"})
-        .then(registration => { serviceWorkerRegistration = registration; return registration.update(); })
-        .catch(error => console.warn("PWA indisponível:", error));
-    });
+    registrationPromise = navigator.serviceWorker.register("/service-worker.js", {scope: "/"})
+      .then(registration => { serviceWorkerRegistration = registration; return registration.update().then(() => registration); })
+      .catch(error => { console.warn("PWA indisponível:", error); throw error; });
   }
 
   window.enablePushNotifications = async () => {
-    if (!serviceWorkerRegistration || !("PushManager" in window) || !("Notification" in window)) throw new Error("Este dispositivo não oferece notificações push.");
+    if (!registrationPromise || !("PushManager" in window) || !("Notification" in window)) throw new Error("Este dispositivo não oferece notificações push.");
+    const registration = await registrationPromise;
     const keyResponse = await fetch("/notifications/push/public-key");
     const keyData = await keyResponse.json();
     if (!keyData.publicKey) throw new Error("Notificações ainda não configuradas no servidor.");
     const permission = await Notification.requestPermission();
     if (permission !== "granted") throw new Error("Permissão de notificação não concedida.");
     const normalizedKey = keyData.publicKey.replace(/-/g, "+").replace(/_/g, "/") + "===";
-    const subscription = await serviceWorkerRegistration.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: Uint8Array.from(atob(normalizedKey.slice(0, normalizedKey.length - normalizedKey.length % 4)), c => c.charCodeAt(0))});
+    const existing = await registration.pushManager.getSubscription();
+    const subscription = existing || await registration.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: Uint8Array.from(atob(normalizedKey.slice(0, normalizedKey.length - normalizedKey.length % 4)), c => c.charCodeAt(0))});
     const response = await fetch("/notifications/push/subscribe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(subscription)});
     if (!response.ok) throw new Error("Não foi possível registrar este dispositivo.");
+    return true;
+  };
+
+  window.disablePushNotifications = async () => {
+    if (!registrationPromise || !("PushManager" in window)) throw new Error("Este dispositivo não oferece notificações push.");
+    const registration = await registrationPromise;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) return true;
+    const response = await fetch("/notifications/push/unsubscribe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({endpoint: subscription.endpoint})});
+    if (!response.ok) throw new Error("Não foi possível desativar as notificações.");
+    await subscription.unsubscribe();
     return true;
   };
 
