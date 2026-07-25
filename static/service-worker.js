@@ -1,4 +1,4 @@
-const CACHE_NAME = "peladeiros-gpcta-v2";
+const CACHE_NAME = "peladeiros-gpcta-v3";
 const OFFLINE_URL = "/offline";
 const APP_SHELL = [
   OFFLINE_URL,

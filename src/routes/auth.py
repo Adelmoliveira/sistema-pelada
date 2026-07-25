@@ -307,7 +307,8 @@ def my_account():
            ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC LIMIT 10""",
         (player["id"],),
     ).fetchall()
-    return render_template("my_account.html", player=player, recent_sales=recent_sales)
+    push_enabled = bool(db.execute("SELECT 1 FROM push_subscriptions WHERE player_id=? LIMIT 1", (player["id"],)).fetchone())
+    return render_template("my_account.html", player=player, recent_sales=recent_sales, push_enabled=push_enabled)
 
 
 @bp.post("/minha-conta/senha")

@@ -533,6 +533,16 @@ def notifications():
     return render_template("football_notifications.html", history=history)
 
 
+@bp.post("/notificacoes/historico/limpar")
+@roles_allowed("manager", "football_manager")
+def clear_notification_history():
+    db = get_db()
+    db.execute("DELETE FROM push_announcements")
+    db.commit()
+    flash("Histórico de avisos apagado.", "success")
+    return redirect(url_for("football.notifications"))
+
+
 @bp.get("/sumulas")
 @roles_allowed("manager", "football_manager")
 def sumulas():

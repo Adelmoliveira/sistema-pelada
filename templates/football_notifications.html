@@ -43,7 +43,7 @@
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-3">
           <h2 class="h4 mb-0">Histórico de avisos</h2>
-          <span class="text-muted small">Últimos 50 envios</span>
+          <div class="d-flex align-items-center gap-2"><span class="text-muted small">Últimos 50 envios</span>{% if history %}<form method="post" action="{{url_for('football.clear_notification_history')}}" onsubmit="return confirm('Apagar todo o histórico de avisos? As notificações já enviadas não serão canceladas.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger" type="submit">Limpar histórico</button></form>{% endif %}</div>
         </div>
         {% if history %}
         <div class="table-responsive">
