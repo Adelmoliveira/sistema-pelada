@@ -6,6 +6,8 @@ from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import local_today
 from src.services.football_stats_pdf import build_football_stats_pdf
+from src.services.email_reminders import send_gmail_html
+from src.services.push_notifications import send_player_push
 
 bp = Blueprint("football", __name__, url_prefix="/futebol")
 
@@ -136,6 +138,40 @@ def _transfer_metrics(db, player):
     return {"tenure_months": tenure_months, "frequency": round(attended / total * 100, 1) if total else 0, "attended": attended, "total_sumulas": total}
 
 
+def _transfer_analysis(db, player, requested_position):
+    metrics = _transfer_metrics(db, player)
+    counts = {key: int(db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND football_position=?", (key,)).fetchone()[0] or 0) for key in TRANSFER_POSITIONS}
+    current = (player["football_position"] or "").strip().upper()
+    projected = dict(counts)
+    if current in projected:
+        projected[current] = max(0, projected[current] - 1)
+    if requested_position in projected:
+        projected[requested_position] += 1
+    total = sum(projected.values()) or 1
+    targets = {"DEFESA": 30, "MEIO": 30, "ATAQUE": 40}
+    impact = {key: {"current": round(counts[key] / total * 100, 1), "projected": round(projected[key] / total * 100, 1), "target": targets[key]} for key in TRANSFER_POSITIONS}
+    max_deviation = max(abs(item["projected"] - item["target"]) for item in impact.values())
+    if metrics["tenure_months"] is None or metrics["tenure_months"] < 6 or metrics["frequency"] < 40 or max_deviation > 15:
+        recommendation = "DESFAVORÁVEL"
+    elif metrics["tenure_months"] < 12 or metrics["frequency"] < 65 or max_deviation > 8:
+        recommendation = "ATENÇÃO"
+    else:
+        recommendation = "FAVORÁVEL"
+    return {"metrics": metrics, "impact": impact, "recommendation": recommendation}
+
+
+def _notify_transfer(current_app, recipient, subject, text):
+    sender = current_app.config.get("GMAIL_SMTP_USER")
+    password = current_app.config.get("GMAIL_APP_PASSWORD")
+    if not recipient or not sender or not password:
+        return
+    try:
+        html = "<div style='font-family:Arial,sans-serif;line-height:1.55;color:#183042'><h2 style='color:#07558c'>PELADEIROS GPCTA</h2>" + text.replace("\n", "<br>") + "</div>"
+        send_gmail_html(sender, password, recipient, subject, text, html)
+    except Exception as exc:
+        current_app.logger.warning("Não foi possível enviar notificação de transferência: %s", exc)
+
+
 def _transfer_rows(db, window_year):
     rows = db.execute("""SELECT tr.*,p.name,p.war_name,p.football_position,p.football_join_date
         FROM football_transfer_requests tr JOIN players p ON p.id=tr.player_id
@@ -143,7 +179,10 @@ def _transfer_rows(db, window_year):
     result = []
     for row in rows:
         item = dict(row)
-        item["metrics"] = _transfer_metrics(db, row)
+        analysis = _transfer_analysis(db, row, row["requested_position"])
+        item["metrics"] = analysis["metrics"]
+        item["impact"] = analysis["impact"]
+        item["recommendation"] = analysis["recommendation"]
         result.append(item)
     return result
 
@@ -389,12 +428,14 @@ def transfer_window():
                         raise ValueError("Sua posição atual precisa estar cadastrada antes de solicitar a transferência.")
                     if requested == current:
                         raise ValueError("A nova posição deve ser diferente da posição atual.")
-                    existing = db.execute("SELECT id FROM football_transfer_requests WHERE player_id=? AND window_year=?", (player["id"], window["year"])).fetchone()
+                    existing = db.execute("SELECT id FROM football_transfer_requests WHERE player_id=? AND window_year=? AND status='PENDENTE'", (player["id"], window["year"])).fetchone()
                     if existing:
                         raise ValueError("Você já possui uma solicitação nesta janela.")
                     db.execute("""INSERT INTO football_transfer_requests(player_id,window_year,current_position,requested_position,reason)
                         VALUES(?,?,?,?,?)""", (player["id"], window["year"], current, requested, reason))
                     db.commit()
+                    send_player_push(db, player["id"], "Janela de transferência aberta", f"A janela de transferência de {window['year']} está aberta. Sua solicitação foi enviada para avaliação.", "/futebol/transferencia")
+                    _notify_transfer(current_app, current_app.config.get("GMAIL_SMTP_USER"), "Nova solicitação de transferência", f"Nova solicitação de {player['war_name'] or player['name']} para mudar de {TRANSFER_POSITIONS[current]} para {TRANSFER_POSITIONS[requested]}.")
                     flash("Solicitação de transferência enviada para avaliação.", "success")
                 except ValueError as exc:
                     db.rollback(); flash(str(exc), "danger")
@@ -403,6 +444,23 @@ def transfer_window():
                     flash("Não foi possível registrar a solicitação.", "danger")
         else:
             try:
+                if request.form.get("action") == "important_notice":
+                    title = request.form.get("title", "Aviso da pelada").strip()[:80]
+                    body = request.form.get("body", "").strip()[:500]
+                    if not body:
+                        raise ValueError("Informe o texto do aviso.")
+                    recipients = db.execute("SELECT id FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran'").fetchall()
+                    sent = sum(int(send_player_push(db, row["id"], title or "Aviso da pelada", body, "/futebol/minha-pelada").get("sent", 0)) for row in recipients)
+                    flash(f"Aviso enviado para {sent} dispositivo(s) ativo(s).", "success")
+                    return redirect(url_for("football.transfer_window"))
+                if request.form.get("action") == "join_date":
+                    player_id = int(request.form["player_id"])
+                    join_date = request.form.get("football_join_date", "").strip()
+                    if join_date:
+                        date.fromisoformat(join_date)
+                    db.execute("UPDATE players SET football_join_date=? WHERE id=? AND active=1", (join_date, player_id))
+                    db.commit(); flash("Data de apresentação atualizada.", "success")
+                    return redirect(url_for("football.transfer_window"))
                 request_id = int(request.form["request_id"])
                 decision = request.form.get("decision", "").upper()
                 notes = request.form.get("review_notes", "").strip()[:500]
@@ -415,6 +473,14 @@ def transfer_window():
                     db.execute("UPDATE players SET football_position=? WHERE id=? AND active=1", (item["requested_position"], item["player_id"]))
                 db.execute("""UPDATE football_transfer_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,review_notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""", (decision, g.user["id"], notes, request_id))
                 db.commit()
+                player = db.execute("SELECT name,war_name,email FROM players WHERE id=?", (item["player_id"],)).fetchone()
+                if player and player["email"]:
+                    message = f"Olá, {player['war_name'] or player['name']}!\n\nSua solicitação de transferência de posição foi {'aprovada' if decision == 'APROVADA' else 'recusada'}."
+                    if notes:
+                        message += f"\n\nObservação do gestor: {notes}"
+                    _notify_transfer(current_app, player["email"], "Resultado da solicitação de transferência", message)
+                if player:
+                    send_player_push(db, item["player_id"], "Transferência aprovada" if decision == "APROVADA" else "Transferência recusada", "Sua solicitação de mudança de posição foi aprovada." if decision == "APROVADA" else "Sua solicitação de mudança de posição foi recusada.", "/futebol/transferencia")
                 flash("Solicitação aprovada e posição atualizada." if decision == "APROVADA" else "Solicitação recusada.", "success")
             except (ValueError, KeyError) as exc:
                 db.rollback(); flash(str(exc), "danger")
@@ -424,13 +490,47 @@ def transfer_window():
         return redirect(url_for("football.transfer_window"))
     player = None
     own_request = None
+    own_history = []
     if not is_manager:
         player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchone()
         if player:
             own_request = db.execute("SELECT * FROM football_transfer_requests WHERE player_id=? ORDER BY window_year DESC,id DESC LIMIT 1", (player["id"],)).fetchone()
+            own_history = db.execute("SELECT * FROM football_transfer_requests WHERE player_id=? ORDER BY window_year DESC,id DESC", (player["id"],)).fetchall()
     rows = _transfer_rows(db, window["year"]) if is_manager else []
     position_counts = {key: int(db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND football_position=?", (key,)).fetchone()[0] or 0) for key in TRANSFER_POSITIONS}
-    return render_template("football_transfer.html", window=window, is_manager=is_manager, player=player, own_request=own_request, rows=rows, transfer_positions=TRANSFER_POSITIONS, transfer_statuses=TRANSFER_STATUSES, position_counts=position_counts)
+    return render_template("football_transfer.html", window=window, is_manager=is_manager, player=player, own_request=own_request, own_history=own_history, rows=rows, transfer_positions=TRANSFER_POSITIONS, transfer_statuses=TRANSFER_STATUSES, position_counts=position_counts)
+
+
+@bp.route("/notificacoes", methods=["GET", "POST"])
+@roles_allowed("manager", "football_manager")
+def notifications():
+    db = get_db()
+    if request.method == "POST":
+        title = request.form.get("title", "").strip()[:80]
+        body = request.form.get("body", "").strip()[:500]
+        audience = request.form.get("audience", "all")
+        if audience not in ("all", "football"):
+            audience = "all"
+        try:
+            if not title or not body:
+                raise ValueError("Informe o título e a mensagem do aviso.")
+            clause = "active=1" if audience == "all" else "active=1 AND gender!='female' AND membership_type!='veteran'"
+            recipients = db.execute(f"SELECT id FROM players WHERE {clause}").fetchall()
+            sent = 0
+            for player in recipients:
+                sent += int(send_player_push(db, player["id"], title, body, "/futebol/notificacoes").get("sent", 0))
+            db.execute("INSERT INTO push_announcements(title,body,audience,sent_count,created_by) VALUES(?,?,?,?,?)", (title, body, audience, sent, g.user["id"]))
+            db.commit()
+            flash(f"Aviso enviado para {sent} dispositivo(s) inscrito(s).", "success")
+        except ValueError as exc:
+            db.rollback(); flash(str(exc), "danger")
+        except Exception as exc:
+            db.rollback(); current_app.logger.error("Erro ao enviar aviso push: %s", exc)
+            flash("Não foi possível enviar o aviso.", "danger")
+        return redirect(url_for("football.notifications"))
+    history = db.execute("""SELECT pa.*,u.name user_name FROM push_announcements pa
+        LEFT JOIN users u ON u.id=pa.created_by ORDER BY pa.id DESC LIMIT 50""").fetchall()
+    return render_template("football_notifications.html", history=history)
 
 
 @bp.get("/sumulas")

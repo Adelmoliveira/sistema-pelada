@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Notificações · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h1 class="mb-1">Central de notificações</h1>
+    <p class="text-muted mb-0">Envie avisos para os peladeiros que ativaram as notificações no celular.</p>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-12 col-xl-5">
+    <section class="card shadow-sm">
+      <div class="card-body">
+        <h2 class="h4 mb-3">Novo aviso</h2>
+        <form method="post" action="{{url_for('football.notifications')}}">
+          <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+          <div class="mb-3">
+            <label class="form-label" for="notification-title">Título</label>
+            <input class="form-control" id="notification-title" name="title" maxlength="80" required placeholder="Ex.: Aviso importante da pelada">
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="notification-body">Mensagem</label>
+            <textarea class="form-control" id="notification-body" name="body" rows="5" maxlength="500" required placeholder="Digite a mensagem que será exibida no celular."></textarea>
+            <div class="form-text">Até 500 caracteres.</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="notification-audience">Público</label>
+            <select class="form-select" id="notification-audience" name="audience">
+              <option value="all">Todos os peladeiros ativos</option>
+              <option value="football">Somente peladeiros aptos para futebol</option>
+            </select>
+          </div>
+          <button class="btn btn-primary w-100" type="submit">Enviar aviso</button>
+        </form>
+        <div class="alert alert-info mt-3 mb-0 small">O aviso só será recebido por quem já permitiu notificações e cadastrou o celular no PWA.</div>
+      </div>
+    </section>
+  </div>
+
+  <div class="col-12 col-xl-7">
+    <section class="card shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h2 class="h4 mb-0">Histórico de avisos</h2>
+          <span class="text-muted small">Últimos 50 envios</span>
+        </div>
+        {% if history %}
+        <div class="table-responsive">
+          <table class="table align-middle mb-0">
+            <thead><tr><th>Data</th><th>Aviso</th><th>Público</th><th class="text-end">Dispositivos</th><th>Responsável</th></tr></thead>
+            <tbody>
+              {% for item in history %}
+              <tr>
+                <td class="text-nowrap">{{item.created_at|brdate}}</td>
+                <td><strong>{{item.title}}</strong><div class="small text-muted text-break">{{item.body}}</div></td>
+                <td>{{'Todos os peladeiros' if item.audience == 'all' else 'Aptos para futebol'}}</td>
+                <td class="text-end">{{item.sent_count}}</td>
+                <td>{{item.user_name or 'Sistema'}}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-muted mb-0">Nenhum aviso foi enviado ainda.</p>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}

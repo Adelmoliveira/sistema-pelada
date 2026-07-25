@@ -295,6 +295,7 @@ CREATE INDEX IF NOT EXISTS idx_interaccount_transfers_created ON interaccount_tr
 CREATE TABLE IF NOT EXISTS reminder_settings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     enabled INTEGER NOT NULL DEFAULT 0,
+    push_enabled INTEGER NOT NULL DEFAULT 1,
     schedule_day INTEGER NOT NULL DEFAULT 5 CHECK(schedule_day BETWEEN 1 AND 28),
     subject TEXT NOT NULL,
     body TEXT NOT NULL,
@@ -309,6 +310,33 @@ CREATE TABLE IF NOT EXISTS reminder_dispatches (
     error_message TEXT DEFAULT '',
     sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(player_id, period)
+);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_player ON push_subscriptions(player_id);
+CREATE TABLE IF NOT EXISTS push_dispatches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    period TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(player_id, kind, period)
+);
+CREATE TABLE IF NOT EXISTS push_announcements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    audience TEXT NOT NULL DEFAULT 'all',
+    sent_count INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_items_sale ON sale_items(sale_id);
@@ -815,6 +843,11 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE players ADD COLUMN football_join_date TEXT DEFAULT ''")
     conn.commit()
 
+    reminder_columns = {row[1] for row in conn.execute("PRAGMA table_info(reminder_settings)")}
+    if "push_enabled" not in reminder_columns:
+        conn.execute("ALTER TABLE reminder_settings ADD COLUMN push_enabled INTEGER NOT NULL DEFAULT 1")
+        conn.commit()
+
     transfer_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_transfer_requests)")}
     if not transfer_columns:
         conn.execute("""CREATE TABLE IF NOT EXISTS football_transfer_requests (
@@ -942,6 +975,7 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS football_position TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS football_join_date TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS gender TEXT NOT NULL DEFAULT 'male'")
+    wrapper.execute("ALTER TABLE reminder_settings ADD COLUMN IF NOT EXISTS push_enabled INTEGER NOT NULL DEFAULT 1")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
     for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
         wrapper.execute(f"ALTER TABLE players ADD COLUMN IF NOT EXISTS {column} TEXT DEFAULT ''")
