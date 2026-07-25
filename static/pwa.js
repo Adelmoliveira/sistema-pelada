@@ -1,4 +1,17 @@
 (() => {
+  const syncAppBadge = async () => {
+    if (!("setAppBadge" in navigator || "clearAppBadge" in navigator)) return;
+    try {
+      const response = await fetch("/notifications/push/unread-count", {credentials: "same-origin", cache: "no-store"});
+      if (!response.ok) return;
+      const data = await response.json();
+      if (Number(data.count) > 0 && "setAppBadge" in navigator) await navigator.setAppBadge(Number(data.count));
+      else if ("clearAppBadge" in navigator) await navigator.clearAppBadge();
+    } catch (_) {}
+  };
+  window.syncAppBadge = syncAppBadge;
+  syncAppBadge();
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) syncAppBadge(); });
   let serviceWorkerRegistration;
   let registrationPromise;
   if ("serviceWorker" in navigator) {

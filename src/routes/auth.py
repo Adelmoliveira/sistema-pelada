@@ -206,6 +206,17 @@ def push_public_key():
     return jsonify(publicKey=public_key())
 
 
+@bp.get("/notifications/push/unread-count")
+@roles_allowed("client")
+def push_unread_count():
+    db = get_db()
+    count = db.execute(
+        "SELECT COUNT(*) AS total FROM push_inbox WHERE player_id=? AND read_at IS NULL",
+        (g.user["player_id"],),
+    ).fetchone()["total"]
+    return jsonify(count=int(count or 0))
+
+
 @bp.post("/notifications/push/subscribe")
 @roles_allowed("client")
 def push_subscribe():
