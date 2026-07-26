@@ -444,6 +444,19 @@ def client_panel():
     if not sumula:
         sumula = db.execute("SELECT * FROM football_sumulas WHERE situacao!='CANCELADA' ORDER BY match_date DESC,id DESC LIMIT 1").fetchone()
     data = _sumula(db, sumula["id"]) if sumula else None
+    if data:
+        # A súmula pode criar partidas futuras como placeholders. Na visão do
+        # peladeiro, exiba somente partidas efetivamente utilizadas (ou
+        # encerradas), preservando inclusive partidas reais com placar 0 x 0.
+        used_matches = [
+            item for item in data[2]
+            if item["row"]["status"] == "ENCERRADA"
+            or int(item["row"]["blue_score"] or 0) != 0
+            or int(item["row"]["white_score"] or 0) != 0
+            or item["lineups"]
+            or item["goals"]
+        ]
+        data = (data[0], data[1], used_matches, data[3], data[4], data[5])
     own = {"participacoes": 0, "jogos": 0, "vitorias": 0, "empates": 0, "derrotas": 0, "gols": 0, "assistencias": 0}
     if player_id:
         own["participacoes"] = int(db.execute("SELECT COUNT(DISTINCT sumula_id) FROM football_participants WHERE player_id=? AND status='CONFIRMADO' AND sumula_id IN (SELECT id FROM football_sumulas WHERE situacao='FINALIZADA')", (player_id,)).fetchone()[0] or 0)
