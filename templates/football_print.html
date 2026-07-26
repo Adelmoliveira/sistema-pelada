@@ -52,10 +52,11 @@
     </div>
   </header>
 
+  {% set active_matches = namespace(numbers=[]) %}{% for match_item in data[2] %}{% if match_item['row']['status'] != 'PLANEJADA' or match_item['lineups'] or match_item['goals'] or match_item['row']['blue_score'] or match_item['row']['white_score'] %}{% set _ = active_matches.numbers.append(match_item['row']['number']) %}{% endif %}{% endfor %}
   <section class="box">
     <h3>Participantes ({{ data[1]|length }})</h3>
     <div class="participants">
-      {% for match_number in (1, 2, 3) if match_number <= data[2]|length %}
+      {% for match_number in (1, 2, 3) if match_number in active_matches.numbers %}
       <div class="part-column">
         <div class="part-title">{{ match_number }}ª PARTIDA{% if match_number == 1 %} (ordens 1 a 22){% elif match_number == 2 %} (ordens 23 a 44){% endif %}</div>
         {% set ns = namespace(count=0) %}
@@ -69,7 +70,7 @@
     </div>
   </section>
 
-  {% for item in data[2] %}
+  {% for item in data[2] if item['row']['number'] in active_matches.numbers %}
   <section class="match">
     <div class="match-title">{{ item['row']['number'] }}ª PARTIDA</div>
     <div class="score">AZUL {{ item['row']['blue_score'] }} × {{ item['row']['white_score'] }} BRANCO</div>
@@ -92,7 +93,7 @@
   {% endfor %}
 
   <section class="officials-page">
-    <div class="box"><h3>Juízes</h3>{% for item in data[2] %}<div class="officials"><strong>{{ item['row']['number'] }}ª partida:</strong> {% for r in data[4] if r['responsibility_type'] == 'ARBITRO_VOLUNTARIO' and r['match_number'] == item['row']['number'] %}{{ r['war_name'] or r['name'] or 'Não informado' }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</div>{% endfor %}</div>
+    <div class="box"><h3>Juízes</h3>{% for item in data[2] if item['row']['number'] in active_matches.numbers %}<div class="officials"><strong>{{ item['row']['number'] }}ª partida:</strong> {% for r in data[4] if r['responsibility_type'] == 'ARBITRO_VOLUNTARIO' and r['match_number'] == item['row']['number'] %}{{ r['war_name'] or r['name'] or 'Não informado' }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</div>{% endfor %}</div>
     {% if data[4] %}<section class="box"><h3>Responsáveis</h3><div class="responsibles">{% for kind, label in (('SORTEIO', 'Sorteio'), ('SUMULA', 'Súmula'), ('QUADRO', 'Quadro')) %}<div><strong>{{ label }}</strong><div class="responsible">{% for r in data[4] if r['responsibility_type'] == kind %}{{ r['war_name'] or r['name'] or 'Não informado' }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</div></div>{% endfor %}</div></section>{% endif %}
   </section>
   {% if data[3] %}<section class="box"><h3>OCORRÊNCIAS</h3>{% for i in data[3] %}<div class="occurrence"><strong>{{ incident_types[i['type']] }}</strong>{% if i['card'] %} · Cartão {{ card_types[i['card']] }}{% endif %}{% if i['war_name'] %} · {{ i['war_name'] }}{% endif %}{% if i['description'] %} · {{ i['description'] }}{% endif %}</div>{% endfor %}</section>{% endif %}
