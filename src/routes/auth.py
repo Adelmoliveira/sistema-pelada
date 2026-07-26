@@ -42,6 +42,19 @@ def make_password_hash(password):
     return generate_password_hash(password, method="pbkdf2:sha256", salt_length=16)
 
 
+def _completed_years(join_date):
+    """Return complete years since the player's presentation date."""
+    if not join_date:
+        return None
+    try:
+        joined = date.fromisoformat(str(join_date)[:10])
+    except (TypeError, ValueError):
+        return None
+    today = local_today()
+    years = today.year - joined.year - ((today.month, today.day) < (joined.month, joined.day))
+    return max(0, years)
+
+
 def _client_player_for_username(db, username):
     return db.execute(
         "SELECT * FROM players WHERE active=1 AND war_name<>'' AND LOWER(war_name)=LOWER(?)",
@@ -335,14 +348,73 @@ def my_account():
             db.rollback()
             current_app.logger.error(f"Erro ao atualizar conta do peladeiro {player['id']}: {exc}")
             flash("Não foi possível atualizar os dados da conta.", "danger")
-    recent_sales = db.execute(
-        """SELECT s.id,s.total_cents,s.payment_method,s.paid_at,s.delivered_at,s.created_at
-           FROM sales s WHERE s.player_id=? AND s.paid=1
-           ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC LIMIT 10""",
-        (player["id"],),
-    ).fetchall()
     push_enabled = bool(db.execute("SELECT 1 FROM push_subscriptions WHERE player_id=? LIMIT 1", (player["id"],)).fetchone())
-    return render_template("my_account.html", player=player, recent_sales=recent_sales, push_enabled=push_enabled)
+    return render_template(
+        "my_account.html",
+        player=player,
+        tenure_years=_completed_years(player["football_join_date"]),
+        push_enabled=push_enabled,
+    )
+
+
+@bp.get("/minhas-compras")
+@roles_allowed("client")
+def my_purchases():
+    """Show the peladeiro's complete purchase history and pending pickups."""
+    db = get_db()
+    player_id = g.user["player_id"]
+    rows = db.execute(
+        """SELECT s.id,s.total_cents,s.payment_method,s.paid,s.payment_status,
+                  s.paid_at,s.ready_for_delivery,s.delivered_at,s.created_at
+           FROM sales s
+           WHERE s.player_id=?
+           ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC
+           LIMIT 50""",
+        (player_id,),
+    ).fetchall()
+    sales = []
+    for row in rows:
+        sale = dict(row)
+        payment_status = (sale.get("payment_status") or "").lower()
+        if not sale.get("paid") and payment_status in {"pending", "pending_cash", "creating"}:
+            sale["display_status"] = "AGUARDANDO_PAGAMENTO"
+            sale["display_status_label"] = "Aguardando pagamento"
+            sale["display_status_class"] = "warning"
+        elif sale.get("delivered_at"):
+            sale["display_status"] = "ENTREGUE"
+            sale["display_status_label"] = "Entregue"
+            sale["display_status_class"] = "secondary"
+        elif sale.get("ready_for_delivery"):
+            sale["display_status"] = "AGUARDANDO_RETIRADA"
+            sale["display_status_label"] = "Pago · aguardando retirada"
+            sale["display_status_class"] = "success"
+        else:
+            sale["display_status"] = "REGISTRADO"
+            sale["display_status_label"] = "Pedido registrado"
+            sale["display_status_class"] = "primary"
+        sales.append(sale)
+
+    if sales:
+        placeholders = ",".join("?" for _ in sales)
+        item_rows = db.execute(
+            f"""SELECT i.sale_id,i.quantity,p.name product_name
+                FROM sale_items i JOIN products p ON p.id=i.product_id
+                WHERE i.sale_id IN ({placeholders}) ORDER BY i.sale_id,i.id""",
+            tuple(sale["id"] for sale in sales),
+        ).fetchall()
+        item_summary = {}
+        for item in item_rows:
+            item_summary.setdefault(item["sale_id"], []).append(
+                f"{item['quantity']}× {item['product_name']}"
+            )
+        for sale in sales:
+            sale["items_summary"] = " · ".join(item_summary.get(sale["id"], []))
+
+    pending_pickups = [
+        sale for sale in sales
+        if sale["display_status"] == "AGUARDANDO_RETIRADA"
+    ]
+    return render_template("my_purchases.html", sales=sales, pending_pickups=pending_pickups)
 
 
 @bp.post("/minha-conta/senha")
