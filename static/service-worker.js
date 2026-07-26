@@ -32,6 +32,7 @@ self.addEventListener("push", event => {
       body: data.body || "Você tem uma nova atualização.",
       icon: "/static/icons/pwa-192.png",
       badge: "/static/icons/pwa-192.png",
+      image: data.image || undefined,
       data: {url: data.url || "/"}
     }),
     Number.isFinite(Number(data.badge)) && Number(data.badge) > 0 && self.navigator && "setAppBadge" in self.navigator

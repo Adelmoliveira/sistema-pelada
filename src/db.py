@@ -334,6 +334,7 @@ CREATE TABLE IF NOT EXISTS push_inbox (
     player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     body TEXT NOT NULL,
+    image_url TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     read_at TEXT
 );
@@ -866,6 +867,11 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE reminder_settings ADD COLUMN push_enabled INTEGER NOT NULL DEFAULT 1")
         conn.commit()
 
+    push_inbox_columns = {row[1] for row in conn.execute("PRAGMA table_info(push_inbox)")}
+    if "image_url" not in push_inbox_columns:
+        conn.execute("ALTER TABLE push_inbox ADD COLUMN image_url TEXT DEFAULT ''")
+        conn.commit()
+
     transfer_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_transfer_requests)")}
     if not transfer_columns:
         conn.execute("""CREATE TABLE IF NOT EXISTS football_transfer_requests (
@@ -994,6 +1000,7 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS football_join_date TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS gender TEXT NOT NULL DEFAULT 'male'")
     wrapper.execute("ALTER TABLE reminder_settings ADD COLUMN IF NOT EXISTS push_enabled INTEGER NOT NULL DEFAULT 1")
+    wrapper.execute("ALTER TABLE push_inbox ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
     for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
         wrapper.execute(f"ALTER TABLE players ADD COLUMN IF NOT EXISTS {column} TEXT DEFAULT ''")
