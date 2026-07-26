@@ -44,7 +44,7 @@ def send_player_push_once(db, player_id, kind, period, title, body, url="/", ima
         return {"sent": 0, "skipped": 1, "reason": "já enviado"}
     result = send_player_push(db, player_id, title, body, url, image_url)
     if result.get("reason") not in ("VAPID não configurado", "pywebpush não instalado"):
-        db.execute("INSERT OR IGNORE INTO push_dispatches(player_id,kind,period) VALUES(?,?,?)", (player_id, kind, period))
+        db.execute("INSERT INTO push_dispatches(player_id,kind,period) VALUES(?,?,?) ON CONFLICT(player_id,kind,period) DO NOTHING", (player_id, kind, period))
         db.commit()
     return result
 
