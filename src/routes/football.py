@@ -207,7 +207,7 @@ def _sumula(db, sumula_id, audit_page=None):
     for match in db.execute("SELECT * FROM football_matches WHERE sumula_id=? ORDER BY number", (sumula_id,)).fetchall():
         lineups = [dict(item) for item in db.execute("SELECT fl.*,p.name,p.war_name FROM football_lineups fl JOIN players p ON p.id=fl.player_id WHERE fl.match_id=? ORDER BY fl.period,fl.team,fl.position,COALESCE(fl.draw_order,999999),LOWER(p.name)", (match["id"],)).fetchall()]
         for lineup in lineups:
-            lineup["war_name"] = f"{lineup['war_name'] or lineup['name']} · Escalação {lineup['period']}"
+            lineup["war_name"] = f"{lineup['war_name'] or lineup['name']} · Tempo {lineup['period']}"
         goals = db.execute("SELECT fg.*,pa.name author_name,pa.war_name author_war,ps.name assist_name,ps.war_name assist_war FROM football_goals fg LEFT JOIN players pa ON pa.id=fg.author_player_id LEFT JOIN players ps ON ps.id=fg.assist_player_id WHERE fg.match_id=? ORDER BY fg.id", (match["id"],)).fetchall()
         matches.append({"row": match, "lineups": lineups, "goals": goals})
     incidents = db.execute("SELECT fi.*,p.name,p.war_name FROM football_incidents fi LEFT JOIN players p ON p.id=fi.player_id WHERE fi.sumula_id=? ORDER BY fi.id DESC", (sumula_id,)).fetchall()
@@ -660,7 +660,7 @@ def detail(sumula_id):
                     raise ValueError("Escale somente peladeiros participantes desta súmula.")
                 if db.execute("SELECT 1 FROM football_lineups WHERE match_id=? AND player_id=? AND period=?", (match_id, player_id, period)).fetchone(): raise ValueError("O peladeiro já está escalado neste tempo da partida.")
                 db.execute("INSERT INTO football_lineups(match_id,player_id,team,position,slot,draw_order,observation,period) VALUES(?,?,?,?,?,?,?,?)", (match_id, player_id, request.form["team"], request.form["position"], request.form.get("slot", ""), request.form.get("draw_order") or None, request.form.get("observation", "").strip(), period))
-                _audit(db, sumula_id, "ESCALACAO_ADICIONADA", f"{player_id} · Escalação {period}")
+                _audit(db, sumula_id, "ESCALACAO_ADICIONADA", f"{player_id} · Tempo {period}")
             elif action == "remove_lineup":
                 lineup_id = int(request.form["lineup_id"])
                 db.execute("DELETE FROM football_lineups WHERE id=? AND match_id IN (SELECT id FROM football_matches WHERE sumula_id=?)", (lineup_id, sumula_id))
