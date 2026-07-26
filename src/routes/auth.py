@@ -363,6 +363,10 @@ def my_purchases():
     """Show the peladeiro's complete purchase history and pending pickups."""
     db = get_db()
     player_id = g.user["player_id"]
+    total_consumed_cents = db.execute(
+        "SELECT COALESCE(SUM(total_cents), 0) total_cents FROM sales WHERE player_id=? AND paid=1",
+        (player_id,),
+    ).fetchone()["total_cents"]
     rows = db.execute(
         """SELECT s.id,s.total_cents,s.payment_method,s.paid,s.payment_status,
                   s.paid_at,s.ready_for_delivery,s.delivered_at,s.created_at
@@ -414,7 +418,12 @@ def my_purchases():
         sale for sale in sales
         if sale["display_status"] == "AGUARDANDO_RETIRADA"
     ]
-    return render_template("my_purchases.html", sales=sales, pending_pickups=pending_pickups)
+    return render_template(
+        "my_purchases.html",
+        sales=sales,
+        pending_pickups=pending_pickups,
+        total_consumed_cents=int(total_consumed_cents or 0),
+    )
 
 
 @bp.post("/minha-conta/senha")
