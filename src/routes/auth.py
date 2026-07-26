@@ -420,6 +420,25 @@ def my_purchases():
                 WHERE i.sale_id IN ({placeholders}) ORDER BY i.sale_id,i.id""",
             tuple(sale["id"] for sale in sales),
         ).fetchall()
+        # Registros antigos marcavam o pedido como entregue antes da retirada
+        # parcial passar a ser registrada em ``sale_item_deliveries``. Quando
+        # não há nenhum detalhe de retirada, ``delivered_at`` é a fonte
+        # confiável e todos os itens devem ser exibidos como entregues.
+        legacy_delivered_sales = {
+            sale["id"] for sale in sales
+            if sale.get("delivered_at")
+            and not any(
+                int(item["delivered_quantity"] or 0) > 0
+                for item in item_rows
+                if item["sale_id"] == sale["id"]
+            )
+        }
+        if legacy_delivered_sales:
+            item_rows = [
+                dict(item, delivered_quantity=item["quantity"])
+                if item["sale_id"] in legacy_delivered_sales else item
+                for item in item_rows
+            ]
         item_summary = {}
         for item in item_rows:
             delivered = int(item["delivered_quantity"] or 0)
