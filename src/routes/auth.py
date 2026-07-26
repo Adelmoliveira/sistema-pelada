@@ -68,13 +68,13 @@ def _client_password_setup(player, user=None):
 
 def _client_profile_complete(db, player_id):
     player = db.execute(
-        "SELECT birth_date, phone, emergency_phone, postal_code FROM players WHERE id=? AND active=1",
+        "SELECT birth_date, football_join_date, phone, emergency_phone, postal_code FROM players WHERE id=? AND active=1",
         (player_id,),
     ).fetchone()
     if not player:
         return False
     postal_code = "".join(ch for ch in (player["postal_code"] or "") if ch.isdigit())
-    return bool(player["birth_date"] and player["phone"] and player["emergency_phone"] and len(postal_code) == 8)
+    return bool(player["birth_date"] and player["football_join_date"] and player["phone"] and player["emergency_phone"] and len(postal_code) == 8)
 
 
 def _client_home_redirect(db, user):
@@ -311,6 +311,19 @@ def my_account():
                 if parsed_birth_date > local_today() or parsed_birth_date.year < 1900:
                     raise ValueError("A data de nascimento informada não é válida.")
 
+            football_join_date = request.form.get("football_join_date", player["football_join_date"] or "").strip()
+            # Formulários legados podem não enviar esse campo; nesse caso preservamos o valor
+            # existente. Quando o campo é apresentado, ele é obrigatório e validado.
+            if "football_join_date" in request.form:
+                if not football_join_date:
+                    raise ValueError("A data de apresentação na pelada é obrigatória.")
+                try:
+                    parsed_join_date = date.fromisoformat(football_join_date)
+                except ValueError:
+                    raise ValueError("Informe uma data de apresentação válida.")
+                if parsed_join_date > local_today() or parsed_join_date.year < 1900:
+                    raise ValueError("A data de apresentação informada não é válida.")
+
             postal_code = "".join(ch for ch in request.form.get("postal_code", "") if ch.isdigit())
             if not birth_date:
                 raise ValueError("A data de nascimento é obrigatória.")
@@ -322,7 +335,7 @@ def my_account():
                 raise ValueError("O CEP é obrigatório e deve ter 8 dígitos.")
             values = {
                 "birth_date": birth_date,
-                "football_join_date": request.form.get("football_join_date", "").strip(),
+                "football_join_date": football_join_date,
                 "phone": request.form.get("phone", "").strip()[:40],
                 "emergency_phone": request.form.get("emergency_phone", "").strip()[:40],
                 "postal_code": postal_code,
