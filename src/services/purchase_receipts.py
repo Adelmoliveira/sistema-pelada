@@ -65,3 +65,39 @@ def send_purchase_receipt(db, sale_id, sender, app_password, send_func=send_gmai
     db.execute("UPDATE sales SET receipt_sent_at=CURRENT_TIMESTAMP,receipt_error='' WHERE id=?", (sale_id,))
     db.commit()
     return "sent"
+
+
+def send_delivery_update(db, sale_id, delivered_items, remaining_items, sender, app_password, send_func=send_gmail_html):
+    """Envia ao peladeiro o resumo de uma retirada parcial ou total."""
+    sale = db.execute(
+        "SELECT s.id,s.player_id,s.payment_method,p.email,p.name player_name FROM sales s JOIN players p ON p.id=s.player_id WHERE s.id=?",
+        (sale_id,),
+    ).fetchone()
+    if not sale or "@" not in (sale["email"] or "").strip():
+        return "without_email"
+    delivered_lines = ", ".join(f"{item['quantity']}x {item['name']}" for item in delivered_items)
+    remaining_lines = ", ".join(f"{item['quantity']}x {item['name']}" for item in remaining_items) or "Nenhum item pendente"
+    fully_delivered = not remaining_items
+    lines = [
+        "Olá,", "", f"Atualização da retirada do pedido #{sale_id} no PELADEIROS GPCTA.", "",
+        f"Itens retirados agora: {delivered_lines}.",
+        f"Itens restantes: {remaining_lines}.", "",
+        "Pedido totalmente entregue. Não há itens pendentes." if fully_delivered else "Você poderá retirar os itens restantes em outra ocasião.",
+    ]
+    plain_body = "\n".join(lines)
+    esc = html.escape
+    delivered_html = "".join(f"<li>{item['quantity']}x {esc(item['name'])}</li>" for item in delivered_items)
+    remaining_html = "".join(f"<li>{item['quantity']}x {esc(item['name'])}</li>" for item in remaining_items) or "<li>Nenhum item pendente</li>"
+    status_text = "Pedido totalmente entregue. Não há itens pendentes." if fully_delivered else "Os itens restantes poderão ser retirados posteriormente."
+    html_body = f"""<div style='font-family:Arial,sans-serif;color:#183247;line-height:1.5'>
+      <div style='background:#07558c;padding:18px;text-align:center'><img src='https://sistema-pelada-one.vercel.app/static/logo-gpcta.jpeg' alt='Logo GPCTA' style='max-width:100px'><h2 style='color:#fff;margin:8px 0 0'>PELADEIROS GPCTA</h2></div>
+      <div style='padding:20px'><p>Olá, <strong>{esc(sale['player_name'])}</strong>!</p><p>Atualização da retirada do pedido <strong>#{sale_id}</strong>:</p>
+      <p><strong>Retirados agora:</strong></p><ul>{delivered_html}</ul><p><strong>Restantes:</strong></p><ul>{remaining_html}</ul><p>{status_text}</p></div></div>"""
+    try:
+        send_func(sender, app_password, (sale["email"] or "").strip().lower(), f"Atualização do pedido #{sale_id} - PELADEIROS GPCTA", plain_body, html_body)
+    except Exception as exc:
+        current_error = str(exc)[:500]
+        db.execute("UPDATE sales SET receipt_error=? WHERE id=?", (current_error, sale_id))
+        db.commit()
+        return "failed"
+    return "sent"

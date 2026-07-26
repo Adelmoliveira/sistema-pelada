@@ -22,7 +22,7 @@
       </div>
       <h3 class="h5 border-bottom pb-2">Produtos</h3>
       <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Produto</th><th>Qtd.</th><th class="text-end">Unitário</th><th class="text-end">Total</th></tr></thead><tbody>
-        {% for item in items %}<tr><td>{{item.product_name}}</td><td>{{item.quantity}}</td><td class="text-end">{{item.unit_price_cents|money}}</td><td class="text-end">{{(item.quantity * item.unit_price_cents)|money}}</td></tr>{% endfor %}
+        {% for item in items %}<tr><td>{{item.product_name}}</td><td>{{item.quantity}}{% if item.delivered_quantity %}<small class="d-block text-muted">{{item.delivered_quantity}} entregue(s){% if item.pending_quantity %} · {{item.pending_quantity}} pendente(s){% endif %}</small>{% endif %}</td><td class="text-end">{{item.unit_price_cents|money}}</td><td class="text-end">{{(item.quantity * item.unit_price_cents)|money}}</td></tr>{% endfor %}
       </tbody></table></div>
       <div class="text-end fs-4 fw-bold text-success">Total pago: {{sale.total_cents|money}}</div>
     </div>

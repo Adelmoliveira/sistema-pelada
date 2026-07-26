@@ -80,6 +80,14 @@ CREATE TABLE IF NOT EXISTS sale_items (
     unit_price_cents INTEGER NOT NULL,
     unit_cost_cents INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS sale_item_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    delivered_by INTEGER REFERENCES users(id),
+    delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_item ON sale_item_deliveries(sale_item_id);
 CREATE TABLE IF NOT EXISTS sale_cancellations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sale_id INTEGER NOT NULL UNIQUE REFERENCES sales(id) ON DELETE CASCADE,
@@ -1047,6 +1055,14 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_sent_at TIMESTAMP")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_error TEXT DEFAULT ''")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS sale_item_deliveries (
+        id SERIAL PRIMARY KEY,
+        sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
+        quantity INTEGER NOT NULL CHECK(quantity > 0),
+        delivered_by INTEGER REFERENCES users(id),
+        delivered_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_item ON sale_item_deliveries(sale_item_id)")
     wrapper.execute("ALTER TABLE football_sumulas ADD COLUMN IF NOT EXISTS locked_at TIMESTAMP")
     wrapper.execute("ALTER TABLE football_sumulas ADD COLUMN IF NOT EXISTS locked_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
