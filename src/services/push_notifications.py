@@ -6,7 +6,7 @@ def public_key():
     return (os.environ.get("VAPID_PUBLIC_KEY") or "").strip()
 
 
-def send_player_push(db, player_id, title, body, url="/"):
+def send_player_push(db, player_id, title, body, url="/", image_url=""):
     """Envia uma notificação Web Push, quando VAPID está configurado."""
     private_key = (os.environ.get("VAPID_PRIVATE_KEY") or "").strip()
     subject = (os.environ.get("VAPID_SUBJECT") or "mailto:diretoriagpcta@gmail.com").strip()
@@ -23,23 +23,26 @@ def send_player_push(db, player_id, title, body, url="/"):
     for subscription in subscriptions:
         info = {"endpoint": subscription["endpoint"], "keys": {"p256dh": subscription["p256dh"], "auth": subscription["auth"]}}
         try:
-            webpush(subscription_info=info, data=json.dumps({"title": title, "body": body, "url": url, "badge": badge_count}), vapid_private_key=private_key, vapid_claims={"sub": subject})
+            payload = {"title": title, "body": body, "url": url, "badge": badge_count}
+            if image_url:
+                payload["image"] = image_url
+            webpush(subscription_info=info, data=json.dumps(payload), vapid_private_key=private_key, vapid_claims={"sub": subject})
             sent += 1
         except Exception as exc:
             # Assinaturas expiradas devem ser removidas para não gerar falhas futuras.
             if getattr(exc, "response", None) is not None and getattr(exc.response, "status_code", 0) in (404, 410):
                 db.execute("DELETE FROM push_subscriptions WHERE id=?", (subscription["id"],))
     if sent:
-        db.execute("INSERT INTO push_inbox(player_id,title,body) VALUES(?,?,?)", (player_id, title, body))
+        db.execute("INSERT INTO push_inbox(player_id,title,body,image_url) VALUES(?,?,?,?)", (player_id, title, body, image_url or ""))
     db.commit()
     return {"sent": sent, "skipped": 0}
 
 
-def send_player_push_once(db, player_id, kind, period, title, body, url="/"):
+def send_player_push_once(db, player_id, kind, period, title, body, url="/", image_url=""):
     existing = db.execute("SELECT 1 FROM push_dispatches WHERE player_id=? AND kind=? AND period=?", (player_id, kind, period)).fetchone()
     if existing:
         return {"sent": 0, "skipped": 1, "reason": "já enviado"}
-    result = send_player_push(db, player_id, title, body, url)
+    result = send_player_push(db, player_id, title, body, url, image_url)
     if result.get("reason") not in ("VAPID não configurado", "pywebpush não instalado"):
         db.execute("INSERT OR IGNORE INTO push_dispatches(player_id,kind,period) VALUES(?,?,?)", (player_id, kind, period))
         db.commit()

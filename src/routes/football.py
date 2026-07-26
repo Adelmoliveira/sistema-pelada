@@ -7,7 +7,7 @@ from src.routes.auth import roles_allowed
 from src.utils import local_today
 from src.services.football_stats_pdf import build_football_stats_pdf
 from src.services.email_reminders import send_gmail_html
-from src.services.push_notifications import send_player_push
+from src.services.push_notifications import send_player_push, send_player_push_once
 
 bp = Blueprint("football", __name__, url_prefix="/futebol")
 
@@ -102,6 +102,17 @@ def _score_mismatches(db, matches):
         if counts.get("AZUL", 0) != int(match["blue_score"] or 0) or counts.get("BRANCO", 0) != int(match["white_score"] or 0):
             mismatches.append(f"{match['number']}ª partida")
     return mismatches
+
+
+def _matematico_results(db, sumula_id):
+    """Retorna os placares quando todas as partidas encerradas têm diferença de até dois gols."""
+    rows = db.execute(
+        "SELECT number,blue_score,white_score,status FROM football_matches WHERE sumula_id=? ORDER BY number",
+        (sumula_id,),
+    ).fetchall()
+    if not rows or any(row["status"] != "ENCERRADA" or abs(int(row["blue_score"] or 0) - int(row["white_score"] or 0)) > 2 for row in rows):
+        return []
+    return rows
 
 
 def _match_day(value):
@@ -608,6 +619,7 @@ def detail(sumula_id):
         return redirect(url_for("football.sumulas"))
     if request.method == "POST":
         action = request.form.get("action", "")
+        math_results = None
         try:
             sumula = data[0]
             if sumula["locked_at"]:
@@ -782,11 +794,20 @@ def detail(sumula_id):
                     if mismatches and not request.form.get("justification", "").strip():
                         raise ValueError("O placar não corresponde aos gols registrados (" + ", ".join(mismatches) + "). Informe uma justificativa.")
                     db.execute("UPDATE football_sumulas SET situacao=?,finalized_at=CURRENT_TIMESTAMP,reopen_justification=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, request.form.get("justification", "").strip(), sumula_id))
+                    math_results = _matematico_results(db, sumula_id)
                 elif new_status == "CANCELADA": db.execute("UPDATE football_sumulas SET situacao=?,canceled_at=CURRENT_TIMESTAMP,canceled_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, g.user["id"], sumula_id))
                 else: db.execute("UPDATE football_sumulas SET situacao=?,reopen_justification=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, request.form.get("justification", "").strip(), sumula_id))
                 _audit(db, sumula_id, "SITUACAO_ATUALIZADA", f"{new_status}: {request.form.get('justification', '').strip()}")
             else: raise ValueError("Ação inválida.")
-            db.commit(); flash("Súmula atualizada.", "success")
+            db.commit()
+            if math_results:
+                result_text = "; ".join(f"Partida {row['number']}: Azul {row['blue_score']} x {row['white_score']} Branco" for row in math_results)
+                title = "É Matemático! ⚽"
+                body = f"A divisão dos times foi equilibrada na súmula de {sumula['match_date']}: {result_text}."
+                recipients = db.execute("SELECT id FROM players WHERE active=1").fetchall()
+                for recipient in recipients:
+                    send_player_push_once(db, recipient["id"], "matematico_sumula", str(sumula_id), title, body, "/notificacoes", "/static/images/e-matematico.webp")
+            flash("Súmula atualizada.", "success")
         except (ValueError, KeyError) as exc:
             db.rollback(); flash(str(exc), "danger")
         return redirect(url_for("football.detail", sumula_id=sumula_id))
