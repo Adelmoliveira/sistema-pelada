@@ -291,6 +291,12 @@ def delivery_order_data(db, sale):
            JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
         (sale["id"],),
     ).fetchall()
+    # Compatibilidade com pedidos antigos: antes da retirada parcial, os
+    # detalhes em sale_item_deliveries não eram gravados. Um pedido com
+    # delivered_at preenchido, mas sem nenhum detalhe, foi integralmente
+    # entregue e não deve exibir itens pendentes.
+    if sale["delivered_at"] and items and not any(int(item["delivered_quantity"] or 0) > 0 for item in items):
+        items = [dict(item, delivered_quantity=item["quantity"]) for item in items]
     item_data = [{
         "id": item["id"], "name": item["name"], "quantity": int(item["quantity"] or 0),
         "delivered_quantity": int(item["delivered_quantity"] or 0),
@@ -497,6 +503,8 @@ def receipt(sale_id):
            WHERE i.sale_id=? ORDER BY i.id""",
         (sale_id,),
     ).fetchall()
+    if sale["delivered_at"] and items and not any(int(item["delivered_quantity"] or 0) > 0 for item in items):
+        items = [dict(item, delivered_quantity=item["quantity"]) for item in items]
     receipt_items = []
     for item in items:
         entry = dict(item)
