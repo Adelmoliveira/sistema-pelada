@@ -659,9 +659,27 @@ def detail(sumula_id):
                     raise ValueError("Veteranos e mulheres não podem ser escalados nas partidas de futebol.")
                 if not _participant_player(db, sumula_id, player_id):
                     raise ValueError("Escale somente peladeiros participantes desta súmula.")
-                if db.execute("SELECT 1 FROM football_lineups WHERE match_id=? AND player_id=? AND period=?", (match_id, player_id, period)).fetchone(): raise ValueError("O peladeiro já está escalado neste tempo da partida.")
-                db.execute("INSERT INTO football_lineups(match_id,player_id,team,position,slot,draw_order,observation,period) VALUES(?,?,?,?,?,?,?,?)", (match_id, player_id, request.form["team"], request.form["position"], request.form.get("slot", ""), request.form.get("draw_order") or None, request.form.get("observation", "").strip(), period))
-                _audit(db, sumula_id, "ESCALACAO_ADICIONADA", f"{player_id} · Tempo {period}")
+                lineup_values = (
+                    request.form["team"], request.form["position"],
+                    request.form.get("slot", ""), request.form.get("draw_order") or None,
+                    request.form.get("observation", "").strip(),
+                )
+                existing_lineup = db.execute(
+                    "SELECT id FROM football_lineups WHERE match_id=? AND player_id=? AND period=?",
+                    (match_id, player_id, period),
+                ).fetchone()
+                if existing_lineup:
+                    db.execute(
+                        "UPDATE football_lineups SET team=?,position=?,slot=?,draw_order=?,observation=? WHERE id=?",
+                        (*lineup_values, existing_lineup["id"]),
+                    )
+                    _audit(db, sumula_id, "ESCALACAO_ATUALIZADA", f"{player_id} · Tempo {period}")
+                else:
+                    db.execute(
+                        "INSERT INTO football_lineups(match_id,player_id,team,position,slot,draw_order,observation,period) VALUES(?,?,?,?,?,?,?,?)",
+                        (match_id, player_id, *lineup_values, period),
+                    )
+                    _audit(db, sumula_id, "ESCALACAO_ADICIONADA", f"{player_id} · Tempo {period}")
             elif action == "remove_lineup":
                 lineup_id = int(request.form["lineup_id"])
                 db.execute("DELETE FROM football_lineups WHERE id=? AND match_id IN (SELECT id FROM football_matches WHERE sumula_id=?)", (lineup_id, sumula_id))
