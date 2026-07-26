@@ -6,6 +6,7 @@ from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import local_today
 from src.services.football_stats_pdf import build_football_stats_pdf
+from src.services.football_tenure_pdf import build_football_tenure_pdf
 from src.services.email_reminders import send_gmail_html
 from src.services.push_notifications import send_player_push, send_player_push_once
 
@@ -268,6 +269,47 @@ def position_distribution():
     db = get_db()
     position_summary, eligible_total, positioned_total = _position_distribution(db)
     return render_template("football_dashboard.html", metrics=None, recent=[], situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, management_view=True)
+
+
+@bp.get("/gestao/tempo-futebol")
+@roles_allowed("manager", "football_manager")
+def tenure_report():
+    """Lista os peladeiros pelo tempo desde a apresentação no grupo."""
+    db = get_db()
+    today = local_today()
+    players = db.execute(
+        """SELECT id,name,war_name,football_join_date,football_position,membership_type
+           FROM players
+           WHERE active=1 AND gender!='female'
+           ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)"""
+    ).fetchall()
+    rows = []
+    for player in players:
+        raw_date = (player["football_join_date"] or "").strip()
+        years = months = None
+        if raw_date:
+            try:
+                joined = date.fromisoformat(raw_date[:10])
+                months = max(0, (today.year - joined.year) * 12 + today.month - joined.month - (today.day < joined.day))
+                years, remaining_months = divmod(months, 12)
+                tenure_label = f"{years} ano(s)" if not remaining_months else f"{years} ano(s) e {remaining_months} mês(es)"
+            except ValueError:
+                raw_date = ""
+        if not raw_date:
+            tenure_label = "Não informada"
+        rows.append({
+            "id": player["id"], "name": player["name"], "war_name": player["war_name"],
+            "football_join_date": raw_date, "football_position": player["football_position"],
+            "membership_type": player["membership_type"],
+            "months": months, "tenure_label": tenure_label,
+        })
+    rows.sort(key=lambda item: (item["months"] is None, -(item["months"] or 0), (item["war_name"] or item["name"]).lower()))
+    for row in rows:
+        row["position_label"] = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque", "APOSENTADO": "Aposentado"}.get(row["football_position"], "Não definida")
+        row["join_date_label"] = row["football_join_date"] or "Não informada"
+    if request.args.get("pdf") == "1":
+        return send_file(build_football_tenure_pdf(rows, today), mimetype="application/pdf", as_attachment=False, download_name="tempo-de-futebol.pdf")
+    return render_template("football_tenure.html", rows=rows, today=today)
 
 
 @bp.get("/estatisticas")

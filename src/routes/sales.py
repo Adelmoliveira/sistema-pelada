@@ -4,7 +4,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from itsdangerous import BadData, URLSafeTimedSerializer
 from src.db import get_db
 from src.routes.auth import roles_allowed
-from src.utils import alphabetical_key, money, datetime_iso, local_today
+from src.utils import alphabetical_key, money, datetime_iso, brdate, local_today
 from src.services.pix import pix_payload, generate_qrcode_base64
 from src.services.mercadopago import (
     MercadoPagoError,
@@ -14,6 +14,7 @@ from src.services.mercadopago import (
 )
 from src.services.stock_alerts import notify_low_stock
 from src.services.purchase_receipts import send_purchase_receipt
+from src.services.push_notifications import send_player_push_once
 
 bp = Blueprint("sales", __name__)
 PIX_TOKEN_MAX_AGE = 60 * 60
@@ -351,6 +352,23 @@ def deliver_order(sale_id):
     db.commit()
     if updated.rowcount != 1:
         return jsonify(error="Pedido não encontrado ou já entregue."), 409
+    delivered_sale = db.execute(
+        """SELECT s.id,s.player_id,s.delivered_at,p.name,p.war_name
+           FROM sales s JOIN players p ON p.id=s.player_id WHERE s.id=?""",
+        (sale_id,),
+    ).fetchone()
+    if delivered_sale:
+        display_name = delivered_sale["war_name"] or delivered_sale["name"]
+        delivered_at = brdate(delivered_sale["delivered_at"])
+        send_player_push_once(
+            db,
+            delivered_sale["player_id"],
+            "pedido_entregue",
+            str(sale_id),
+            "Retirada confirmada",
+            f"Pedido retirado com sucesso! Data e hora: {delivered_at}. Obrigado pela compra, {display_name}!",
+            url_for("auth.my_purchases"),
+        )
     receipt_status = send_purchase_receipt(
         db, sale_id, current_app.config.get("GMAIL_SMTP_USER", ""),
         current_app.config.get("GMAIL_APP_PASSWORD", ""),
