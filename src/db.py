@@ -1060,6 +1060,20 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE football_responsibles ADD COLUMN IF NOT EXISTS match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL")
     wrapper.execute("ALTER TABLE football_lineups ADD COLUMN IF NOT EXISTS period INTEGER NOT NULL DEFAULT 1")
     wrapper.execute("ALTER TABLE football_lineups DROP CONSTRAINT IF EXISTS football_lineups_match_id_player_id_key")
+    wrapper.execute("""DO $$
+    DECLARE item RECORD;
+    BEGIN
+        FOR item IN
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            WHERE t.relname = 'football_lineups'
+              AND c.contype = 'u'
+              AND pg_get_constraintdef(c.oid) ILIKE '%(match_id, player_id)%'
+        LOOP
+            EXECUTE format('ALTER TABLE football_lineups DROP CONSTRAINT IF EXISTS %I', item.conname);
+        END LOOP;
+    END $$;""")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_football_lineups_match_player_period ON football_lineups(match_id,player_id,period)")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS football_deleted_sumula_audit (
         id SERIAL PRIMARY KEY, sumula_id INTEGER NOT NULL, match_date DATE NOT NULL,
