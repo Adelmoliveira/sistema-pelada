@@ -213,7 +213,7 @@ def inject_user():
         try:
             db = get_db()
             if user["role"] == "client" and user["player_id"]:
-                player = db.execute("SELECT name, war_name, thumbnail_data FROM players WHERE id=?", (user["player_id"],)).fetchone()
+                player = db.execute("SELECT name, war_name, thumbnail_data, football_join_date FROM players WHERE id=?", (user["player_id"],)).fetchone()
                 unread_notifications = db.execute("SELECT COUNT(*) AS total FROM push_inbox WHERE player_id=? AND read_at IS NULL", (user["player_id"],)).fetchone()["total"]
             today_birthdays = db.execute("""SELECT id, name, war_name, gender, thumbnail_data
                 FROM players WHERE active=1 AND birth_date<>'' AND substr(birth_date,6,5)=?
