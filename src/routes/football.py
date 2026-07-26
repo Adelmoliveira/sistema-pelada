@@ -659,8 +659,11 @@ def detail(sumula_id):
                     raise ValueError("Veteranos e mulheres não podem ser escalados nas partidas de futebol.")
                 if not _participant_player(db, sumula_id, player_id):
                     raise ValueError("Escale somente peladeiros participantes desta súmula.")
+                lineup_position = _lineup_position(request.form.get("position", ""))
+                if lineup_position not in ("GOLEIRO", "DEFENSOR", "MEIO_CAMPO", "ATACANTE"):
+                    raise ValueError("Posição inválida para a escalação.")
                 lineup_values = (
-                    request.form["team"], request.form["position"],
+                    request.form["team"], lineup_position,
                     request.form.get("slot", ""), request.form.get("draw_order") or None,
                     request.form.get("observation", "").strip(),
                 )
@@ -756,7 +759,7 @@ def detail(sumula_id):
                     if not description: raise ValueError("Descreva a ocorrência.")
                     level = request.form["level"]
                 db.execute("INSERT INTO football_incidents(sumula_id,match_id,type,level,player_id,card,description,created_by) VALUES(?,?,?,?,?,?,?,?)", (sumula_id, int(request.form["match_id"]) if request.form.get("match_id") else None, request.form["type"], level, int(request.form["player_id"]) if request.form.get("player_id") else None, card, description, g.user["id"])); _audit(db, sumula_id, "OCORRENCIA_REGISTRADA")
-            elif action == "responsible":
+            elif action in ("responsible", "update_responsible"):
                 responsibility_type = request.form.get("responsibility_type", "")
                 if responsibility_type not in ("SORTEIO", "SUMULA", "QUADRO", "GOLEIRO_VOLUNTARIO", "ARBITRO_VOLUNTARIO", "OUTRO"):
                     raise ValueError("Tipo de responsável inválido.")
@@ -765,10 +768,25 @@ def detail(sumula_id):
                     raise ValueError("Selecione a partida do árbitro.")
                 if match_id and not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
                     raise ValueError("Partida inválida para esta súmula.")
-                db.execute("INSERT INTO football_responsibles(sumula_id,match_id,player_id,responsibility_type,observation) VALUES(?,?,?,?,?)", (sumula_id, match_id, int(request.form["player_id"]) if request.form.get("player_id") else None, responsibility_type, request.form.get("observation", "").strip()))
+                player_id = int(request.form["player_id"]) if request.form.get("player_id") else None
+                observation = request.form.get("observation", "").strip()
+                responsible_id = int(request.form["responsible_id"]) if request.form.get("responsible_id") else None
+                if action == "update_responsible":
+                    if not responsible_id or not db.execute("SELECT 1 FROM football_responsibles WHERE id=? AND sumula_id=?", (responsible_id, sumula_id)).fetchone():
+                        raise ValueError("Responsável não encontrado nesta súmula.")
+                    db.execute("UPDATE football_responsibles SET match_id=?,player_id=?,responsibility_type=?,observation=? WHERE id=? AND sumula_id=?", (match_id, player_id, responsibility_type, observation, responsible_id, sumula_id))
+                    _audit(db, sumula_id, "RESPONSAVEL_ATUALIZADO", f"{responsible_id}: {responsibility_type}")
+                else:
+                    db.execute("INSERT INTO football_responsibles(sumula_id,match_id,player_id,responsibility_type,observation) VALUES(?,?,?,?,?)", (sumula_id, match_id, player_id, responsibility_type, observation))
+                    _audit(db, sumula_id, "RESPONSAVEL_REGISTRADO", responsibility_type)
                 if responsibility_type == "GOLEIRO_VOLUNTARIO" and match_id:
                     db.execute("DELETE FROM football_responsibles WHERE sumula_id=? AND match_id=? AND SUBSTR(observation,1,17)='REGRA_AUTOMATICA_'", (sumula_id, match_id))
-                _audit(db, sumula_id, "RESPONSAVEL_REGISTRADO", responsibility_type)
+            elif action == "delete_responsible":
+                responsible_id = int(request.form.get("responsible_id", "0"))
+                if not db.execute("SELECT 1 FROM football_responsibles WHERE id=? AND sumula_id=?", (responsible_id, sumula_id)).fetchone():
+                    raise ValueError("Responsável não encontrado nesta súmula.")
+                db.execute("DELETE FROM football_responsibles WHERE id=? AND sumula_id=?", (responsible_id, sumula_id))
+                _audit(db, sumula_id, "RESPONSAVEL_EXCLUIDO", str(responsible_id))
             elif action == "apply_fallback_roles":
                 roles = _fallback_roles(db, sumula_id)
                 if not roles:
