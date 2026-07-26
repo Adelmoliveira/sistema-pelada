@@ -651,7 +651,8 @@ def detail(sumula_id):
                     flash("Nenhum jogador selecionado. A escalação é opcional.", "info")
                     return redirect(url_for("football.detail", sumula_id=sumula_id))
                 match_id, player_id = int(request.form["match_id"]), int(request.form["player_id"])
-                period = int(request.form.get("period", "1"))
+                raw_period = request.form.get("period", "").strip()
+                period = int(raw_period) if raw_period else 1
                 if period not in (1, 2):
                     raise ValueError("O tempo da partida é inválido.")
                 if not _eligible_player(db, player_id):
