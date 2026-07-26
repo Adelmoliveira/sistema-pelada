@@ -413,7 +413,8 @@ CREATE TABLE IF NOT EXISTS football_lineups (
     titular INTEGER NOT NULL DEFAULT 1,
     draw_order INTEGER,
     observation TEXT DEFAULT '',
-    UNIQUE(match_id, player_id)
+    period INTEGER NOT NULL DEFAULT 1 CHECK(period IN (1,2)),
+    UNIQUE(match_id, player_id, period)
 );
 CREATE TABLE IF NOT EXISTS football_goalkeepers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -892,6 +893,32 @@ def init_sqlite(wrapper):
     if "match_id" not in responsible_columns:
         conn.execute("ALTER TABLE football_responsibles ADD COLUMN match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL")
         conn.commit()
+    lineup_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_lineups)")}
+    if "period" not in lineup_columns:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executescript("""
+            BEGIN;
+            ALTER TABLE football_lineups RENAME TO football_lineups_legacy;
+            CREATE TABLE football_lineups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                match_id INTEGER NOT NULL REFERENCES football_matches(id) ON DELETE CASCADE,
+                player_id INTEGER NOT NULL REFERENCES players(id),
+                team TEXT NOT NULL CHECK(team IN ('AZUL','BRANCO')),
+                position TEXT NOT NULL CHECK(position IN ('GOLEIRO','DEFENSOR','MEIO_CAMPO','ATACANTE')),
+                slot TEXT DEFAULT '',
+                titular INTEGER NOT NULL DEFAULT 1,
+                draw_order INTEGER,
+                observation TEXT DEFAULT '',
+                period INTEGER NOT NULL DEFAULT 1 CHECK(period IN (1,2)),
+                UNIQUE(match_id, player_id, period)
+            );
+            INSERT INTO football_lineups(id,match_id,player_id,team,position,slot,titular,draw_order,observation,period)
+                SELECT id,match_id,player_id,team,position,slot,titular,draw_order,observation,1
+                FROM football_lineups_legacy;
+            DROP TABLE football_lineups_legacy;
+            COMMIT;
+        """)
+        conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_players_cpf ON players(cpf) WHERE cpf<>''")
     conn.commit()
     product_columns = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
@@ -1031,6 +1058,9 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS next_check_due_at TIMESTAMP")
     wrapper.execute("ALTER TABLE football_incidents ADD COLUMN IF NOT EXISTS card TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE football_responsibles ADD COLUMN IF NOT EXISTS match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL")
+    wrapper.execute("ALTER TABLE football_lineups ADD COLUMN IF NOT EXISTS period INTEGER NOT NULL DEFAULT 1")
+    wrapper.execute("ALTER TABLE football_lineups DROP CONSTRAINT IF EXISTS football_lineups_match_id_player_id_key")
+    wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_football_lineups_match_player_period ON football_lineups(match_id,player_id,period)")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS football_deleted_sumula_audit (
         id SERIAL PRIMARY KEY, sumula_id INTEGER NOT NULL, match_date DATE NOT NULL,
         day_pelada TEXT NOT NULL, local TEXT DEFAULT '', deleted_by INTEGER REFERENCES users(id),
