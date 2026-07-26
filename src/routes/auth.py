@@ -414,22 +414,34 @@ def my_purchases():
     if sales:
         placeholders = ",".join("?" for _ in sales)
         item_rows = db.execute(
-            f"""SELECT i.sale_id,i.quantity,p.name product_name
+            f"""SELECT i.sale_id,i.id item_id,i.quantity,p.name product_name,
+                       COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=i.id),0) delivered_quantity
                 FROM sale_items i JOIN products p ON p.id=i.product_id
                 WHERE i.sale_id IN ({placeholders}) ORDER BY i.sale_id,i.id""",
             tuple(sale["id"] for sale in sales),
         ).fetchall()
         item_summary = {}
         for item in item_rows:
-            item_summary.setdefault(item["sale_id"], []).append(
-                f"{item['quantity']}× {item['product_name']}"
-            )
+            delivered = int(item["delivered_quantity"] or 0)
+            total = int(item["quantity"] or 0)
+            pending = max(0, total - delivered)
+            label = f"{item['product_name']} · {delivered}/{total} entregue(s)"
+            if pending:
+                label += f" · restam {pending}"
+            item_summary.setdefault(item["sale_id"], []).append(label)
         for sale in sales:
             sale["items_summary"] = " · ".join(item_summary.get(sale["id"], []))
+            sale_items = [item for item in item_rows if item["sale_id"] == sale["id"]]
+            sale["delivered_quantity"] = sum(int(item["delivered_quantity"] or 0) for item in sale_items)
+            sale["pending_quantity"] = sum(max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0)) for item in sale_items)
+            if sale["delivered_quantity"] and sale["pending_quantity"]:
+                sale["display_status"] = "PARCIAL"
+                sale["display_status_label"] = f"Parcial · restam {sale['pending_quantity']}"
+                sale["display_status_class"] = "warning"
 
     pending_pickups = [
         sale for sale in sales
-        if sale["display_status"] == "AGUARDANDO_RETIRADA"
+        if sale["display_status"] in ("AGUARDANDO_RETIRADA", "PARCIAL")
     ]
     return render_template(
         "my_purchases.html",

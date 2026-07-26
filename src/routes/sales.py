@@ -13,7 +13,7 @@ from src.services.mercadopago import (
     validate_webhook_signature,
 )
 from src.services.stock_alerts import notify_low_stock
-from src.services.purchase_receipts import send_purchase_receipt
+from src.services.purchase_receipts import send_purchase_receipt, send_delivery_update
 from src.services.push_notifications import send_player_push_once
 
 bp = Blueprint("sales", __name__)
@@ -273,12 +273,31 @@ def pix():
 def orders():
     return render_template("orders.html")
 
+@bp.get("/orders/delivered")
+@roles_allowed("manager", "staff")
+def delivered_history():
+    return render_template("order_history.html", history_kind="delivered")
+
+@bp.get("/orders/canceled")
+@roles_allowed("manager", "staff")
+def canceled_history():
+    return render_template("order_history.html", history_kind="canceled")
+
 def delivery_order_data(db, sale):
     items = db.execute(
-        """SELECT si.quantity,p.name FROM sale_items si
+        """SELECT si.id,si.quantity,p.name,
+                  COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=si.id),0) delivered_quantity
+           FROM sale_items si
            JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
         (sale["id"],),
     ).fetchall()
+    item_data = [{
+        "id": item["id"], "name": item["name"], "quantity": int(item["quantity"] or 0),
+        "delivered_quantity": int(item["delivered_quantity"] or 0),
+        "pending_quantity": max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0)),
+    } for item in items]
+    delivered_quantity = sum(item["delivered_quantity"] for item in item_data)
+    pending_quantity = sum(item["pending_quantity"] for item in item_data)
     return {
         "id": sale["id"],
         "player_name": sale["war_name"] or sale["player_name"],
@@ -298,8 +317,11 @@ def delivery_order_data(db, sale):
         "canceled_at": datetime_iso(sale["canceled_at"]) if "canceled_at" in sale.keys() else None,
         "canceled_by_name": sale["canceled_by_name"] or "" if "canceled_by_name" in sale.keys() else "",
         "cancellation_reason": sale["cancellation_reason"] or "" if "cancellation_reason" in sale.keys() else "",
+        "partial": delivered_quantity > 0 and pending_quantity > 0,
+        "delivered_quantity": delivered_quantity,
+        "pending_quantity": pending_quantity,
         "receipt_url": url_for("sales.receipt", sale_id=sale["id"]),
-        "items": [{"name": item["name"], "quantity": item["quantity"]} for item in items],
+        "items": item_data,
     }
 
 @bp.get("/orders/feed")
@@ -341,17 +363,55 @@ def orders_feed():
 @roles_allowed("manager", "staff")
 def deliver_order(sale_id):
     db = get_db()
-    updated = db.execute(
-        """UPDATE sales SET paid=1,payment_status='approved',
-           paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP),
-           delivered_at=CURRENT_TIMESTAMP,delivered_by=?
-           WHERE id=? AND ready_for_delivery=1 AND delivered_at IS NULL
-           AND (paid=1 OR payment_status='pending_cash')""",
-        (g.user["id"], sale_id),
-    )
-    db.commit()
-    if updated.rowcount != 1:
+    remaining_items = []
+    payload = request.get_json(silent=True) or {}
+    requested_item_id = payload.get("sale_item_id")
+    requested_quantity = payload.get("quantity")
+    try:
+        requested_item_id = int(requested_item_id) if requested_item_id is not None else None
+        requested_quantity = int(requested_quantity) if requested_quantity is not None else None
+    except (TypeError, ValueError):
+        return jsonify(error="Quantidade de retirada inválida."), 400
+    sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+    if not sale or not sale["ready_for_delivery"] or sale["delivered_at"]:
         return jsonify(error="Pedido não encontrado ou já entregue."), 409
+    item_rows = db.execute(
+        """SELECT si.id,si.quantity,p.name,
+                  COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=si.id),0) delivered_quantity
+           FROM sale_items si JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
+        (sale_id,),
+    ).fetchall()
+    if not item_rows:
+        return jsonify(error="O pedido não possui itens para entregar."), 409
+    if requested_item_id is None:
+        deliver_plan = {item["id"]: max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0)) for item in item_rows}
+    else:
+        deliver_plan = {item["id"]: (requested_quantity or 0) if item["id"] == requested_item_id else 0 for item in item_rows}
+    deliver_plan = {item_id: quantity for item_id, quantity in deliver_plan.items() if quantity > 0}
+    if not deliver_plan:
+        return jsonify(error="Não há unidades pendentes para entregar."), 409
+    item_by_id = {item["id"]: item for item in item_rows}
+    for item_id, quantity in deliver_plan.items():
+        pending = int(item_by_id[item_id]["quantity"] or 0) - int(item_by_id[item_id]["delivered_quantity"] or 0)
+        if quantity > pending:
+            return jsonify(error=f"A quantidade pendente de {item_by_id[item_id]['name']} é {pending}."), 409
+    try:
+        with db:
+            if sale["payment_status"] == "pending_cash" and not sale["paid"]:
+                db.execute("UPDATE sales SET paid=1,payment_status='approved',paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP) WHERE id=?", (sale_id,))
+            for item_id, quantity in deliver_plan.items():
+                db.execute("INSERT INTO sale_item_deliveries(sale_item_id,quantity,delivered_by) VALUES(?,?,?)", (item_id, quantity, g.user["id"]))
+            delivered_totals = db.execute(
+                """SELECT si.quantity,COALESCE(SUM(sid.quantity),0) delivered_quantity
+                   FROM sale_items si LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
+                   WHERE si.sale_id=? GROUP BY si.id,si.quantity""", (sale_id,)
+            ).fetchall()
+            fully_delivered = all(int(item["delivered_quantity"] or 0) >= int(item["quantity"] or 0) for item in delivered_totals)
+            if fully_delivered:
+                db.execute("UPDATE sales SET delivered_at=CURRENT_TIMESTAMP,delivered_by=? WHERE id=?", (g.user["id"], sale_id))
+    except Exception as exc:
+        current_app.logger.error("Erro ao registrar retirada parcial do pedido %s: %s", sale_id, exc)
+        return jsonify(error="Não foi possível registrar a retirada."), 500
     delivered_sale = db.execute(
         """SELECT s.id,s.player_id,s.delivered_at,p.name,p.war_name
            FROM sales s JOIN players p ON p.id=s.player_id WHERE s.id=?""",
@@ -359,21 +419,30 @@ def deliver_order(sale_id):
     ).fetchone()
     if delivered_sale:
         display_name = delivered_sale["war_name"] or delivered_sale["name"]
-        delivered_at = brdate(delivered_sale["delivered_at"])
+        delivery_time = db.execute("SELECT MAX(delivered_at) delivered_at FROM sale_item_deliveries sid JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=?", (sale_id,)).fetchone()["delivered_at"]
+        delivered_at = brdate(delivery_time)
+        current = delivery_order_data(db, db.execute(
+            """SELECT s.*,p.name player_name,p.war_name,p.thumbnail_data player_thumbnail_data,u.name delivered_by_name
+               FROM sales s JOIN players p ON p.id=s.player_id LEFT JOIN users u ON u.id=s.delivered_by WHERE s.id=?""", (sale_id,)
+        ).fetchone())
+        delivered_items = [{"name": item["name"], "quantity": deliver_plan[item["id"]]} for item in item_rows if item["id"] in deliver_plan]
+        remaining_items = [{"name": item["name"], "quantity": item["pending_quantity"]} for item in current["items"] if item["pending_quantity"] > 0]
+        delivered_total = sum(item["quantity"] for item in delivered_items)
         send_player_push_once(
             db,
             delivered_sale["player_id"],
-            "pedido_entregue",
-            str(sale_id),
+            "pedido_retirada",
+            f"{sale_id}-{delivery_time}",
             "Retirada confirmada",
-            f"Pedido retirado com sucesso! Data e hora: {delivered_at}. Obrigado pela compra, {display_name}!",
+            f"{('Pedido totalmente entregue' if not remaining_items else 'Retirada parcial registrada')}. {delivered_total} item(ns) retirado(s) em {delivered_at}." + (f" Restam {sum(item['quantity'] for item in remaining_items)} item(ns)." if remaining_items else ""),
             url_for("auth.my_purchases"),
         )
+        send_delivery_update(db, sale_id, delivered_items, remaining_items, current_app.config.get("GMAIL_SMTP_USER", ""), current_app.config.get("GMAIL_APP_PASSWORD", ""))
     receipt_status = send_purchase_receipt(
         db, sale_id, current_app.config.get("GMAIL_SMTP_USER", ""),
         current_app.config.get("GMAIL_APP_PASSWORD", ""),
     )
-    return jsonify(ok=True, sale_id=sale_id, receipt_status=receipt_status)
+    return jsonify(ok=True, sale_id=sale_id, partial=bool(remaining_items), remaining_items=remaining_items, receipt_status=receipt_status)
 
 @bp.post("/orders/<int:sale_id>/cancel")
 @roles_allowed("manager", "staff")
@@ -422,12 +491,18 @@ def receipt(sale_id):
     if not sale["paid"] and sale["payment_status"] != "approved":
         return "O comprovante estará disponível após a confirmação do pagamento.", 409
     items = db.execute(
-        """SELECT i.quantity,i.unit_price_cents,p.name product_name
+        """SELECT i.id item_id,i.quantity,i.unit_price_cents,p.name product_name,
+                  COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=i.id),0) delivered_quantity
            FROM sale_items i JOIN products p ON p.id=i.product_id
            WHERE i.sale_id=? ORDER BY i.id""",
         (sale_id,),
     ).fetchall()
-    return render_template("purchase_receipt.html", sale=sale, items=items)
+    receipt_items = []
+    for item in items:
+        entry = dict(item)
+        entry["pending_quantity"] = max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0))
+        receipt_items.append(entry)
+    return render_template("purchase_receipt.html", sale=sale, items=receipt_items)
 
 @bp.get("/pix/qrcode")
 def pix_qrcode():
