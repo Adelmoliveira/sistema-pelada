@@ -47,6 +47,38 @@
     return true;
   };
 
+  const onboarding = document.querySelector("#push-onboarding");
+  if (onboarding) {
+    const action = onboarding.querySelector("#push-onboarding-action");
+    const dismiss = onboarding.querySelector("#push-onboarding-dismiss");
+    const dismissedAt = Number(localStorage.getItem("gpcta-push-onboarding-dismissed") || 0);
+    const recentlyDismissed = Date.now() - dismissedAt < 30 * 24 * 60 * 60 * 1000;
+    const hideOnboarding = () => onboarding.classList.add("d-none");
+
+    if (!recentlyDismissed && "Notification" in window && "PushManager" in window && registrationPromise) {
+      registrationPromise.then(registration => registration.pushManager.getSubscription())
+        .then(subscription => { if (!subscription) onboarding.classList.remove("d-none"); })
+        .catch(() => {});
+    }
+    dismiss.addEventListener("click", () => {
+      localStorage.setItem("gpcta-push-onboarding-dismissed", String(Date.now()));
+      hideOnboarding();
+    });
+    action.addEventListener("click", async () => {
+      action.disabled = true;
+      action.textContent = "Ativando…";
+      try {
+        await window.enablePushNotifications();
+        action.textContent = "Avisos ativados";
+        setTimeout(hideOnboarding, 1200);
+      } catch (error) {
+        action.disabled = false;
+        action.textContent = "Ativar avisos no celular";
+        alert(error.message || "Não foi possível ativar as notificações.");
+      }
+    });
+  }
+
   const panel = document.querySelector("#pwa-install");
   if (!panel) return;
 
