@@ -47,7 +47,8 @@ def _completed_years(join_date):
     if not join_date:
         return None
     try:
-        joined = date.fromisoformat(str(join_date)[:10])
+        value = str(join_date).strip()
+        joined = date.fromisoformat(value + "-01" if len(value) == 7 else value[:10])
     except (TypeError, ValueError):
         return None
     today = local_today()
@@ -318,11 +319,14 @@ def my_account():
                 if not football_join_date:
                     raise ValueError("A data de apresentação na pelada é obrigatória.")
                 try:
-                    parsed_join_date = date.fromisoformat(football_join_date)
+                    parsed_join_date = date.fromisoformat(
+                        football_join_date + "-01" if len(football_join_date) == 7 else football_join_date
+                    )
                 except ValueError:
                     raise ValueError("Informe uma data de apresentação válida.")
                 if parsed_join_date > local_today() or parsed_join_date.year < 1900:
                     raise ValueError("A data de apresentação informada não é válida.")
+                football_join_date = parsed_join_date.isoformat()
 
             postal_code = "".join(ch for ch in request.form.get("postal_code", "") if ch.isdigit())
             if not birth_date:
