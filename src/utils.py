@@ -76,7 +76,7 @@ def brdate(value):
 
 
 def month_year_label(value):
-    """Format a presentation month as ``MM/AAAA - Mmm/AAAA``."""
+    """Format a presentation month as ``Mmm/AAAA``."""
     raw = str(value or "").strip()
     if len(raw) < 7:
         return "Não informada"
@@ -85,7 +85,7 @@ def month_year_label(value):
         abbreviations = ("Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez")
         if month < 1 or month > 12:
             raise ValueError
-        return f"{month:02d}/{year} - {abbreviations[month - 1]}/{year}"
+        return f"{abbreviations[month - 1]}/{year}"
     except (TypeError, ValueError):
         return "Não informada"
 
