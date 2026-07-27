@@ -142,7 +142,7 @@ def _transfer_metrics(db, player):
     joined = (player["football_join_date"] or "").strip()
     tenure_months = None
     try:
-        start = date.fromisoformat(joined)
+        start = date.fromisoformat(joined + "-01" if len(joined) == 7 else joined[:10])
         today = local_today()
         tenure_months = max(0, (today.year - start.year) * 12 + today.month - start.month - (today.day < start.day))
     except (TypeError, ValueError):
@@ -289,7 +289,7 @@ def tenure_report():
         years = months = None
         if raw_date:
             try:
-                joined = date.fromisoformat(raw_date[:10])
+                joined = date.fromisoformat(raw_date + "-01" if len(raw_date) == 7 else raw_date[:10])
                 months = max(0, (today.year - joined.year) * 12 + today.month - joined.month - (today.day < joined.day))
                 years, remaining_months = divmod(months, 12)
                 tenure_label = f"{years} ano(s)" if not remaining_months else f"{years} ano(s) e {remaining_months} mês(es)"
@@ -306,7 +306,11 @@ def tenure_report():
     rows.sort(key=lambda item: (item["months"] is None, -(item["months"] or 0), (item["war_name"] or item["name"]).lower()))
     for row in rows:
         row["position_label"] = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque", "APOSENTADO": "Aposentado"}.get(row["football_position"], "Não definida")
-        row["join_date_label"] = row["football_join_date"] or "Não informada"
+        row["join_date_label"] = (
+            f"{row['football_join_date'][5:7]}/{row['football_join_date'][:4]}"
+            if row["football_join_date"] and len(row["football_join_date"]) >= 7
+            else "Não informada"
+        )
     if request.args.get("pdf") == "1":
         return send_file(build_football_tenure_pdf(rows, today), mimetype="application/pdf", as_attachment=False, download_name="tempo-de-futebol.pdf")
     return render_template("football_tenure.html", rows=rows, today=today)
@@ -525,7 +529,7 @@ def transfer_window():
                     player_id = int(request.form["player_id"])
                     join_date = request.form.get("football_join_date", "").strip()
                     if join_date:
-                        date.fromisoformat(join_date)
+                        join_date = date.fromisoformat(join_date + "-01" if len(join_date) == 7 else join_date).isoformat()
                     db.execute("UPDATE players SET football_join_date=? WHERE id=? AND active=1", (join_date, player_id))
                     db.commit(); flash("Data de apresentação atualizada.", "success")
                     return redirect(url_for("football.transfer_window"))
