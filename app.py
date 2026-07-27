@@ -209,6 +209,7 @@ def inject_user():
     player = None
     today_birthdays = []
     unread_notifications = 0
+    pending_restock_requests = 0
     user = g.get("user")
     if user:
         try:
@@ -216,6 +217,8 @@ def inject_user():
             if user["role"] == "client" and user["player_id"]:
                 player = db.execute("SELECT name, war_name, thumbnail_data, football_join_date FROM players WHERE id=?", (user["player_id"],)).fetchone()
                 unread_notifications = db.execute("SELECT COUNT(*) AS total FROM push_inbox WHERE player_id=? AND read_at IS NULL", (user["player_id"],)).fetchone()["total"]
+            if user["role"] == "manager":
+                pending_restock_requests = db.execute("SELECT COUNT(*) AS total FROM bar_restock_requests WHERE status='PENDENTE'").fetchone()["total"]
             today_birthdays = db.execute("""SELECT id, name, war_name, gender, thumbnail_data
                 FROM players WHERE active=1 AND birth_date<>'' AND substr(birth_date,6,5)=?
                 ORDER BY LOWER(COALESCE(war_name, name))""",
@@ -224,8 +227,9 @@ def inject_user():
             player = None
             today_birthdays = []
             unread_notifications = 0
+            pending_restock_requests = 0
     medals = service_medals(player["football_join_date"]) if player else []
-    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "service_medals": medals}
+    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "pending_restock_requests": pending_restock_requests, "service_medals": medals}
 
 if __name__ == "__main__":
     app.run(debug=True)

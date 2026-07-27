@@ -54,6 +54,24 @@ CREATE TABLE IF NOT EXISTS products (
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS bar_restock_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    submitted_by INTEGER NOT NULL REFERENCES users(id),
+    cleaning_materials TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PENDENTE' CHECK(status IN ('PENDENTE','VISTA','ATENDIDA','CANCELADA')),
+    reviewed_by INTEGER REFERENCES users(id),
+    reviewed_at TEXT,
+    review_notes TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS bar_restock_request_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    measure TEXT NOT NULL CHECK(measure IN ('caixas','unidades'))
+);
+CREATE INDEX IF NOT EXISTS idx_bar_restock_requests_status ON bar_restock_requests(status,created_at);
 CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL REFERENCES players(id),
