@@ -516,7 +516,7 @@ def highlights():
     """Show active peladeiros who have earned a service medal."""
     db = get_db()
     players = db.execute(
-        """SELECT name, war_name, football_join_date, thumbnail_data
+        """SELECT id, name, war_name, football_join_date, thumbnail_data
            FROM players
            WHERE active=1 AND football_join_date<>''
            ORDER BY LOWER(COALESCE(war_name, name))"""
