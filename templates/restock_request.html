@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+  <div><h1 class="h3 mb-1">Reposição do bar</h1><p class="text-muted mb-0">Informe o que precisa ser reposto. O gerente receberá a solicitação.</p></div>
+  {% if current_user.role == 'manager' %}<a class="btn btn-outline-primary" href="{{url_for('products.restock_requests')}}">Solicitações recebidas</a>{% endif %}
+</div>
+<form method="post" class="card shadow-sm mb-4">
+  <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+  <div class="card-header fw-bold">Itens para reposição</div>
+  <div class="card-body">
+    <div class="row g-3">
+      {% for p in products %}
+      <div class="col-md-6 col-xl-4"><div class="border rounded p-3 h-100">
+        <label class="form-label fw-semibold mb-1" for="quantity-{{p.id}}">{{p.name}}</label>
+        <div class="small text-muted mb-2">Estoque atual: {{p.stock}} un.{% if p.units_per_case %} · caixa com {{p.units_per_case}}{% endif %}</div>
+        <div class="input-group"><input id="quantity-{{p.id}}" name="quantity_{{p.id}}" type="number" min="0" class="form-control" placeholder="0"><span class="input-group-text">{{'caixa(s)' if p.units_per_case else 'unidade(s)'}}</span></div>
+      </div></div>
+      {% else %}<p class="text-muted">Nenhum produto ativo cadastrado.</p>{% endfor %}
+    </div>
+    <hr class="my-4">
+    <label class="form-label fw-semibold" for="cleaning-materials">Materiais de limpeza</label>
+    <textarea id="cleaning-materials" name="cleaning_materials" class="form-control" rows="4" placeholder="Ex.: detergente, papel toalha, saco de lixo..."></textarea>
+    <button class="btn btn-primary btn-lg mt-4">Enviar reposição ao gerente</button>
+  </div>
+</form>
+<div class="card shadow-sm"><div class="card-header fw-bold">Minhas solicitações recentes</div><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Data</th><th>Situação</th><th>Observação do gerente</th></tr></thead><tbody>
+{% for r in requests %}<tr><td>{{r.created_at|brdate}}</td><td><span class="badge {% if r.status=='PENDENTE' %}text-bg-warning{% elif r.status=='ATENDIDA' %}text-bg-success{% elif r.status=='CANCELADA' %}text-bg-danger{% else %}text-bg-secondary{% endif %}">{{r.status|replace('_',' ')|title}}</span></td><td>{{r.review_notes or '—'}}</td></tr>{% else %}<tr><td colspan="3" class="text-muted">Nenhuma solicitação enviada.</td></tr>{% endfor %}
+</tbody></table></div></div>
+{% endblock %}

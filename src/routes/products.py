@@ -230,6 +230,104 @@ def stock():
                            report_end=request.args.get("end", ""))
 
 
+@bp.route("/stock/restock-request", methods=["GET", "POST"])
+@roles_allowed("staff", "manager")
+def restock_request():
+    """Formulário simples para a atendente solicitar a reposição do bar."""
+    db = get_db()
+    products = db.execute(
+        "SELECT id,name,category,units_per_case,stock FROM products WHERE active=1 ORDER BY category,name"
+    ).fetchall()
+    if request.method == "POST":
+        try:
+            items = []
+            for product in products:
+                raw = (request.form.get(f"quantity_{product['id']}") or "").strip()
+                if not raw:
+                    continue
+                quantity = int(raw)
+                if quantity < 0:
+                    raise ValueError("As quantidades não podem ser negativas.")
+                if quantity:
+                    measure = "caixas" if int(product["units_per_case"] or 0) else "unidades"
+                    items.append((product["id"], quantity, measure))
+            cleaning = request.form.get("cleaning_materials", "").strip()
+            if not items and not cleaning:
+                raise ValueError("Informe ao menos um item do bar ou material de limpeza.")
+            with db:
+                cur = db.execute(
+                    "INSERT INTO bar_restock_requests(submitted_by,cleaning_materials) VALUES(?,?)",
+                    (g.user["id"], cleaning),
+                )
+                for product_id, quantity, measure in items:
+                    db.execute(
+                        "INSERT INTO bar_restock_request_items(request_id,product_id,quantity,measure) VALUES(?,?,?,?)",
+                        (cur.lastrowid, product_id, quantity, measure),
+                    )
+            flash("Solicitação de reposição enviada ao gerente.", "success")
+            return redirect(url_for("products.restock_request"), code=303)
+        except ValueError as exc:
+            flash(str(exc), "danger")
+        except Exception as exc:
+            db.rollback()
+            current_app.logger.error(f"Erro ao solicitar reposição do bar: {exc}")
+            flash("Erro interno ao enviar a solicitação.", "danger")
+
+    own_requests = db.execute(
+        """SELECT r.*,u.name submitted_by_name,ru.name reviewed_by_name
+           FROM bar_restock_requests r JOIN users u ON u.id=r.submitted_by
+           LEFT JOIN users ru ON ru.id=r.reviewed_by
+           WHERE r.submitted_by=? ORDER BY r.id DESC LIMIT 10""",
+        (g.user["id"],),
+    ).fetchall()
+    return render_template("restock_request.html", products=products, requests=own_requests)
+
+
+@bp.route("/stock/restock-requests", methods=["GET", "POST"])
+@roles_allowed("manager")
+def restock_requests():
+    """Caixa de entrada do gerente para acompanhar as reposições solicitadas."""
+    db = get_db()
+    if request.method == "POST":
+        try:
+            request_id = int(request.form["request_id"])
+            status = request.form.get("status", "VISTA")
+            if status not in {"VISTA", "ATENDIDA", "CANCELADA"}:
+                raise ValueError("Situação inválida.")
+            updated = db.execute(
+                """UPDATE bar_restock_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,review_notes=?
+                   WHERE id=?""",
+                (status, g.user["id"], request.form.get("review_notes", "").strip(), request_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("Solicitação não encontrada.")
+            db.commit()
+            flash("Solicitação atualizada.", "success")
+        except (TypeError, ValueError) as exc:
+            db.rollback()
+            flash(str(exc), "danger")
+        except Exception as exc:
+            db.rollback()
+            current_app.logger.error(f"Erro ao atualizar solicitação de reposição: {exc}")
+            flash("Erro interno ao atualizar a solicitação.", "danger")
+        return redirect(url_for("products.restock_requests"), code=303)
+
+    rows = db.execute(
+        """SELECT r.*,u.name submitted_by_name,ru.name reviewed_by_name
+           FROM bar_restock_requests r JOIN users u ON u.id=r.submitted_by
+           LEFT JOIN users ru ON ru.id=r.reviewed_by ORDER BY r.id DESC LIMIT 50"""
+    ).fetchall()
+    items_by_request = {}
+    for item in db.execute(
+        """SELECT i.request_id,i.quantity,i.measure,p.name product_name
+           FROM bar_restock_request_items i JOIN products p ON p.id=i.product_id
+           WHERE i.request_id IN (SELECT id FROM bar_restock_requests ORDER BY id DESC LIMIT 50)
+           ORDER BY p.name"""
+    ).fetchall():
+        items_by_request.setdefault(item["request_id"], []).append(item)
+    return render_template("restock_requests.html", requests=rows, items_by_request=items_by_request)
+
+
 @bp.get("/stock/report.pdf")
 @roles_allowed("manager", "staff")
 def stock_report():
