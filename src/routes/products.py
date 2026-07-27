@@ -250,7 +250,8 @@ def restock_request():
                     raise ValueError("As quantidades não podem ser negativas.")
                 if quantity:
                     measure = "caixas" if int(product["units_per_case"] or 0) else "unidades"
-                    items.append((product["id"], quantity, measure))
+                    description = (request.form.get(f"description_{product['id']}") or "").strip()
+                    items.append((product["id"], quantity, measure, description))
             cleaning = request.form.get("cleaning_materials", "").strip()
             if not items and not cleaning:
                 raise ValueError("Informe ao menos um item do bar ou material de limpeza.")
@@ -259,10 +260,10 @@ def restock_request():
                     "INSERT INTO bar_restock_requests(submitted_by,cleaning_materials) VALUES(?,?)",
                     (g.user["id"], cleaning),
                 )
-                for product_id, quantity, measure in items:
+                for product_id, quantity, measure, description in items:
                     db.execute(
-                        "INSERT INTO bar_restock_request_items(request_id,product_id,quantity,measure) VALUES(?,?,?,?)",
-                        (cur.lastrowid, product_id, quantity, measure),
+                        "INSERT INTO bar_restock_request_items(request_id,product_id,quantity,measure,description) VALUES(?,?,?,?,?)",
+                        (cur.lastrowid, product_id, quantity, measure, description),
                     )
             flash("Solicitação de reposição enviada ao gerente.", "success")
             return redirect(url_for("products.restock_request"), code=303)
@@ -319,7 +320,7 @@ def restock_requests():
     ).fetchall()
     items_by_request = {}
     for item in db.execute(
-        """SELECT i.request_id,i.quantity,i.measure,p.name product_name
+        """SELECT i.request_id,i.quantity,i.measure,i.description,p.name product_name
            FROM bar_restock_request_items i JOIN products p ON p.id=i.product_id
            WHERE i.request_id IN (SELECT id FROM bar_restock_requests ORDER BY id DESC LIMIT 50)
            ORDER BY p.name"""
