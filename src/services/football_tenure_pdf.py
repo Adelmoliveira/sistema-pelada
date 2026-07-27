@@ -5,7 +5,36 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+
+class MedalIcons(Flowable):
+    """Small vector medal badges suitable for PDF output."""
+    COLORS = {
+        "Bronze": colors.HexColor("#b87333"),
+        "Prata": colors.HexColor("#9aa0a6"),
+        "Ouro": colors.HexColor("#d49b12"),
+        "Platina": colors.HexColor("#6aaec9"),
+    }
+
+    def __init__(self, medals):
+        super().__init__()
+        self.medals = medals or []
+        self.width = max(1, len(self.medals)) * 13 * mm
+        self.height = 10 * mm
+
+    def draw(self):
+        canvas = self.canv
+        canvas.saveState()
+        for index, medal in enumerate(self.medals):
+            center_x = index * 13 * mm + 5 * mm
+            center_y = 5 * mm
+            canvas.setFillColor(self.COLORS.get(medal.get("passador"), colors.HexColor("#9aa0a6")))
+            canvas.circle(center_x, center_y, 4 * mm, stroke=0, fill=1)
+            canvas.setFillColor(colors.white)
+            canvas.setFont("Helvetica-Bold", 5.5 * mm)
+            canvas.drawCentredString(center_x, center_y - 1.8 * mm, str(medal.get("years", "")))
+        canvas.restoreState()
 
 
 def build_football_tenure_pdf(rows, issued_on=None):
@@ -40,14 +69,14 @@ def build_football_tenure_pdf(rows, issued_on=None):
         if row.get("war_name") and row.get("name"):
             name = f"{name} ({row['name']})"
         medals = row.get("service_medals") or []
-        decoration = ", ".join(medal.get("name", "") for medal in medals) if medals else "Nenhuma"
+        decoration = MedalIcons(medals) if medals else Paragraph("Nenhuma", styles["TenureCell"])
         table_rows.append([
             Paragraph(str(index), styles["TenureCell"]),
             Paragraph(escape(name), styles["TenureCell"]),
             Paragraph(escape(row.get("position_label", "Não definida")), styles["TenureCell"]),
             Paragraph(escape(row.get("join_date_label", "Não informada")), styles["TenureCell"]),
             Paragraph(escape(row.get("tenure_label", "Não informada")), styles["TenureCell"]),
-            Paragraph(escape(decoration), styles["TenureCell"]),
+            decoration,
         ])
     if len(table_rows) == 1:
         table_rows.append([Paragraph("Nenhum peladeiro apto cadastrado.", styles["TenureCell"])] + [""] * (len(headers) - 1))
@@ -64,7 +93,7 @@ def build_football_tenure_pdf(rows, issued_on=None):
             rules.append(("BACKGROUND", (0, index), (-1, index), colors.HexColor("#FFF3CD")))
         elif index % 2 == 0:
             rules.append(("BACKGROUND", (0, index), (-1, index), colors.HexColor("#F4F6F7")))
-    if len(table_rows) == 2:
+    if len(table_rows) == 2 and not rows:
         rules.append(("SPAN", (0, 1), (-1, 1)))
     table.setStyle(TableStyle(rules))
     story.append(table)
