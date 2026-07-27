@@ -4,7 +4,7 @@ from flask import Blueprint, current_app, flash, g, redirect, render_template, r
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
-from src.utils import local_today
+from src.utils import local_today, month_year_label
 from src.services.football_stats_pdf import build_football_stats_pdf
 from src.services.football_tenure_pdf import build_football_tenure_pdf
 from src.services.email_reminders import send_gmail_html
@@ -306,11 +306,7 @@ def tenure_report():
     rows.sort(key=lambda item: (item["months"] is None, -(item["months"] or 0), (item["war_name"] or item["name"]).lower()))
     for row in rows:
         row["position_label"] = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque", "APOSENTADO": "Aposentado"}.get(row["football_position"], "Não definida")
-        row["join_date_label"] = (
-            f"{row['football_join_date'][5:7]}/{row['football_join_date'][:4]}"
-            if row["football_join_date"] and len(row["football_join_date"]) >= 7
-            else "Não informada"
-        )
+        row["join_date_label"] = month_year_label(row["football_join_date"])
     if request.args.get("pdf") == "1":
         return send_file(build_football_tenure_pdf(rows, today), mimetype="application/pdf", as_attachment=False, download_name="tempo-de-futebol.pdf")
     return render_template("football_tenure.html", rows=rows, today=today)
