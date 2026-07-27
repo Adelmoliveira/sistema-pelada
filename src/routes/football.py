@@ -22,7 +22,7 @@ INCIDENT_TYPES = {"DISCIPLINAR": "Disciplinar", "LESAO": "Lesão", "ATRASO": "At
 INCIDENT_LEVELS = {"INFORMATIVO": "Informativo", "ATENCAO": "Atenção", "GRAVE": "Grave"}
 CARD_TYPES = {"AMARELO": "Amarelo", "AZUL": "Azul", "VERMELHO": "Vermelho"}
 TRANSFER_POSITIONS = {"DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque"}
-TRANSFER_STATUSES = {"PENDENTE": "Pendente", "APROVADA": "Aprovada", "RECUSADA": "Recusada"}
+TRANSFER_STATUSES = {"PENDENTE": "Pendente", "APROVADA": "Deferido", "RECUSADA": "Indeferido"}
 
 
 def _audit(db, sumula_id, action, details=""):
@@ -161,7 +161,9 @@ def _transfer_metrics(db, player):
         if months:
             parts.append(f"{months} mês" + ("es" if months != 1 else ""))
         tenure_label = " e ".join(parts) if parts else "menos de 1 mês"
-    return {"tenure_months": tenure_months, "tenure_label": tenure_label, "frequency": round(attended / total * 100, 1) if total else 0, "attended": attended, "total_sumulas": total}
+    frequency = round(attended / total * 100, 1) if total else 0
+    return {"tenure_months": tenure_months, "tenure_label": tenure_label, "tenure_missing_months": None if tenure_months is None else max(0, 4 - tenure_months),
+            "frequency": frequency, "frequency_missing_points": max(0, round(40 - frequency, 1)), "attended": attended, "total_sumulas": total}
 
 
 def _transfer_analysis(db, player, requested_position):
@@ -180,29 +182,34 @@ def _transfer_analysis(db, player, requested_position):
     reasons = []
     if metrics["tenure_months"] is None:
         reasons.append("não há data de apresentação cadastrada")
-    elif metrics["tenure_months"] < 6:
-        reasons.append("tempo de pelada inferior a 6 meses")
+    elif metrics["tenure_months"] < 4:
+        reasons.append("tempo de pelada inferior a 4 meses")
     if metrics["frequency"] < 40:
         reasons.append("frequência inferior a 40%")
     if max_deviation > 15:
         reasons.append("o impacto ultrapassa 15 pontos percentuais do equilíbrio 30/30/40")
-    if metrics["tenure_months"] is None or metrics["tenure_months"] < 6 or metrics["frequency"] < 40 or max_deviation > 15:
+    criteria = {
+        "tenure_ok": metrics["tenure_months"] is not None and metrics["tenure_months"] >= 4,
+        "frequency_ok": metrics["frequency"] >= 40,
+        "balance_ok": max_deviation <= 15,
+    }
+    criteria["eligible"] = all(criteria.values())
+    if not criteria["eligible"]:
         recommendation = "DESFAVORÁVEL"
         recommendation_reason = "Não atende aos critérios: " + "; ".join(reasons) + "."
-    elif metrics["tenure_months"] < 12 or metrics["frequency"] < 65 or max_deviation > 8:
+    elif metrics["tenure_months"] < 12 or max_deviation > 8:
         recommendation = "ATENÇÃO"
         attention = []
         if metrics["tenure_months"] < 12:
             attention.append("tempo de pelada ainda inferior a 12 meses")
-        if metrics["frequency"] < 65:
-            attention.append("frequência inferior a 65%")
         if max_deviation > 8:
             attention.append("impacto acima de 8 pontos percentuais no equilíbrio")
         recommendation_reason = "Requer análise: " + "; ".join(attention) + "."
     else:
         recommendation = "FAVORÁVEL"
-        recommendation_reason = "Atende às regras de tempo de pelada (12 meses ou mais), frequência (65% ou mais) e equilíbrio 30/30/40."
-    return {"metrics": metrics, "impact": impact, "recommendation": recommendation, "recommendation_reason": recommendation_reason}
+        recommendation_reason = "Atende às regras mínimas de tempo de pelada (4 meses ou mais), frequência (40% ou mais) e equilíbrio 30/30/40."
+    return {"metrics": metrics, "impact": impact, "recommendation": recommendation, "recommendation_reason": recommendation_reason,
+            "criteria": criteria, "max_deviation": round(max_deviation, 1)}
 
 
 def _notify_transfer(current_app, recipient, subject, text, status="PENDENTE"):
@@ -212,7 +219,7 @@ def _notify_transfer(current_app, recipient, subject, text, status="PENDENTE"):
         return
     try:
         colors = {"APROVADA": "#198754", "RECUSADA": "#dc3545", "PENDENTE": "#07558c"}
-        labels = {"APROVADA": "Aprovada", "RECUSADA": "Recusada", "PENDENTE": "Em análise"}
+        labels = {"APROVADA": "Deferido", "RECUSADA": "Indeferido", "PENDENTE": "Em análise"}
         color = colors.get(status, colors["PENDENTE"])
         label = labels.get(status, labels["PENDENTE"])
         body = escape(text).replace("\n", "<br>")
@@ -604,13 +611,13 @@ def transfer_window():
                 db.commit()
                 player = db.execute("SELECT name,war_name,email FROM players WHERE id=?", (item["player_id"],)).fetchone()
                 if player and player["email"]:
-                    message = f"Olá, {player['war_name'] or player['name']}!\n\nSua solicitação de transferência de posição foi {'aprovada' if decision == 'APROVADA' else 'recusada'}."
+                    message = f"Olá, {player['war_name'] or player['name']}!\n\nSua solicitação de transferência de posição foi {'deferida' if decision == 'APROVADA' else 'indeferida'}."
                     if notes:
                         message += f"\n\nMotivo da diretoria: {notes}"
                     _notify_transfer(current_app, player["email"], "Resultado da solicitação de transferência", message, decision)
                 if player:
-                    send_player_push(db, item["player_id"], "Transferência aprovada" if decision == "APROVADA" else "Transferência recusada", "Sua solicitação de mudança de posição foi aprovada." if decision == "APROVADA" else "Sua solicitação de mudança de posição foi recusada.", "/notificacoes")
-                flash("Solicitação aprovada e posição atualizada." if decision == "APROVADA" else "Solicitação recusada.", "success")
+                    send_player_push(db, item["player_id"], "Transferência deferida" if decision == "APROVADA" else "Transferência indeferida", "Sua solicitação de mudança de posição foi deferida." if decision == "APROVADA" else "Sua solicitação de mudança de posição foi indeferida.", "/notificacoes")
+                flash("Solicitação deferida e posição atualizada." if decision == "APROVADA" else "Solicitação indeferida.", "success")
             except (ValueError, KeyError) as exc:
                 db.rollback(); flash(str(exc), "danger")
             except Exception as exc:
@@ -625,9 +632,17 @@ def transfer_window():
         if player:
             own_request = db.execute("SELECT * FROM football_transfer_requests WHERE player_id=? ORDER BY window_year DESC,id DESC LIMIT 1", (player["id"],)).fetchone()
             own_history = db.execute("SELECT * FROM football_transfer_requests WHERE player_id=? ORDER BY window_year DESC,id DESC", (player["id"],)).fetchall()
+    player_analysis = []
+    if player and (player["football_position"] or "").upper() in TRANSFER_POSITIONS:
+        current_position = (player["football_position"] or "").upper()
+        for requested_position in TRANSFER_POSITIONS:
+            if requested_position != current_position:
+                analysis = _transfer_analysis(db, player, requested_position)
+                analysis["requested_position"] = requested_position
+                player_analysis.append(analysis)
     rows = _transfer_rows(db, window["year"]) if is_manager else []
     position_counts = {key: int(db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND football_position=?", (key,)).fetchone()[0] or 0) for key in TRANSFER_POSITIONS}
-    return render_template("football_transfer.html", window=window, is_manager=is_manager, player=player, own_request=own_request, own_history=own_history, rows=rows, transfer_positions=TRANSFER_POSITIONS, transfer_statuses=TRANSFER_STATUSES, position_counts=position_counts)
+    return render_template("football_transfer.html", window=window, is_manager=is_manager, player=player, own_request=own_request, own_history=own_history, player_analysis=player_analysis, rows=rows, transfer_positions=TRANSFER_POSITIONS, transfer_statuses=TRANSFER_STATUSES, position_counts=position_counts)
 
 
 @bp.route("/notificacoes", methods=["GET", "POST"])
