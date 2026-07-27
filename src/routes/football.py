@@ -4,7 +4,7 @@ from flask import Blueprint, current_app, flash, g, redirect, render_template, r
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
-from src.utils import local_today, month_year_label
+from src.utils import local_today, month_year_label, service_medals
 from src.services.football_stats_pdf import build_football_stats_pdf
 from src.services.football_tenure_pdf import build_football_tenure_pdf
 from src.services.email_reminders import send_gmail_html
@@ -305,6 +305,7 @@ def tenure_report():
             "football_join_date": raw_date, "football_position": player["football_position"],
             "membership_type": player["membership_type"],
             "months": months, "tenure_label": tenure_label,
+            "service_medals": service_medals(raw_date),
         })
     if cadastro_filter == "cadastrados":
         rows = [row for row in rows if row["football_join_date"]]

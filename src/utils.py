@@ -89,6 +89,27 @@ def month_year_label(value):
     except (TypeError, ValueError):
         return "Não informada"
 
+def service_medals(join_date):
+    """Return service medals earned from the presentation month."""
+    raw = str(join_date or "").strip()
+    if len(raw) < 7:
+        return []
+    try:
+        joined = datetime.strptime(raw[:7], "%Y-%m").date()
+    except (TypeError, ValueError):
+        return []
+    today = local_today()
+    years = today.year - joined.year - ((today.month, today.day) < (joined.month, joined.day))
+    medals = (
+        (10, "🥉", "Medalha de Bronze", "Bronze"),
+        (20, "🥈", "Medalha de Prata", "Prata"),
+        (30, "🥇", "Medalha de Ouro", "Ouro"),
+        (40, "🥇", "Medalha de Ouro com Passador de Platina", "Platina"),
+        (50, "🏅", "Medalha de Platina", "Platina"),
+    )
+    return [{"years": threshold, "emoji": emoji, "name": name, "passador": passador, "year": joined.year + threshold}
+            for threshold, emoji, name, passador in medals if years >= threshold]
+
 def cpfmask(value):
     return f"***.***.***-{value[-2:]}" if value else "—"
 

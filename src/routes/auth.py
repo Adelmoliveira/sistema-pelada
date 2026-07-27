@@ -7,7 +7,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 from src.db import get_db
 from src.services.material_photos import process_material_photo
-from src.utils import local_today
+from src.utils import local_today, service_medals
 
 bp = Blueprint("auth", __name__)
 
@@ -370,6 +370,7 @@ def my_account():
         "my_account.html",
         player=player,
         tenure_years=_completed_years(player["football_join_date"]),
+        service_medals=service_medals(player["football_join_date"]),
         push_enabled=push_enabled,
     )
 
