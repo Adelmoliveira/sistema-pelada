@@ -87,10 +87,9 @@ def dashboard():
     ).fetchall()
     due_month = local_today().month
     paid_rows = db.execute(
-        "SELECT player_id,COUNT(*) paid_count FROM membership_months WHERE month>=? AND month<=? GROUP BY player_id",
+        "SELECT player_id,month FROM membership_months WHERE month>=? AND month<=?",
         (f"{local_today().year}-01", f"{local_today().year}-{due_month:02d}"),
     ).fetchall()
-    paid_counts = {row["player_id"]: int(row["paid_count"] or 0) for row in paid_rows}
     debts = []
     for player in contributors:
         first_month = _membership_start_month(player, local_today().year)
