@@ -15,6 +15,15 @@ CREATE TABLE IF NOT EXISTS users (
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id,used_at,expires_at);
 CREATE TABLE IF NOT EXISTS players (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
@@ -62,8 +71,28 @@ CREATE TABLE IF NOT EXISTS bar_restock_requests (
     reviewed_by INTEGER REFERENCES users(id),
     reviewed_at TEXT,
     review_notes TEXT DEFAULT '',
+    workflow_status TEXT NOT NULL DEFAULT 'PENDENTE',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS bar_restock_request_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    changed_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_bar_restock_history_request ON bar_restock_request_history(request_id,created_at);
+CREATE TABLE IF NOT EXISTS bar_restock_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    read_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_bar_restock_notifications_user ON bar_restock_notifications(user_id,read_at,created_at);
 CREATE TABLE IF NOT EXISTS bar_restock_request_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
@@ -890,6 +919,14 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE players ADD COLUMN football_join_date TEXT DEFAULT ''")
     conn.commit()
 
+    conn.execute("""CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id,used_at,expires_at)")
+    conn.commit()
+
     reminder_columns = {row[1] for row in conn.execute("PRAGMA table_info(reminder_settings)")}
     if "push_enabled" not in reminder_columns:
         conn.execute("ALTER TABLE reminder_settings ADD COLUMN push_enabled INTEGER NOT NULL DEFAULT 1")
@@ -962,6 +999,25 @@ def init_sqlite(wrapper):
     if "description" not in restock_item_columns:
         conn.execute("ALTER TABLE bar_restock_request_items ADD COLUMN description TEXT NOT NULL DEFAULT ''")
         conn.commit()
+
+    restock_request_columns = {row[1] for row in conn.execute("PRAGMA table_info(bar_restock_requests)")}
+    if "workflow_status" not in restock_request_columns:
+        conn.execute("ALTER TABLE bar_restock_requests ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'PENDENTE'")
+        conn.execute("UPDATE bar_restock_requests SET workflow_status=status WHERE workflow_status='PENDENTE' AND status<>'PENDENTE'")
+        conn.commit()
+    conn.execute("""CREATE TABLE IF NOT EXISTS bar_restock_request_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
+        status TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', changed_by INTEGER NOT NULL REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bar_restock_history_request ON bar_restock_request_history(request_id,created_at)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS bar_restock_notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL, body TEXT NOT NULL, read_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bar_restock_notifications_user ON bar_restock_notifications(user_id,read_at,created_at)")
+    conn.commit()
     
     user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "password_required" not in user_columns:
@@ -1052,6 +1108,11 @@ def init_postgres(wrapper):
     
     # Run migration to add password_required if not exists in postgres
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_required INTEGER NOT NULL DEFAULT 1")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE, expires_at TIMESTAMP NOT NULL, used_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id,used_at,expires_at)")
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS player_id INTEGER REFERENCES players(id)")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
@@ -1062,6 +1123,18 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE push_inbox ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE bar_restock_request_items ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''")
+    wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS workflow_status TEXT NOT NULL DEFAULT 'PENDENTE'")
+    wrapper.execute("UPDATE bar_restock_requests SET workflow_status=status WHERE workflow_status='PENDENTE' AND status<>'PENDENTE'")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS bar_restock_request_history (
+        id SERIAL PRIMARY KEY, request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
+        status TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', changed_by INTEGER NOT NULL REFERENCES users(id),
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_bar_restock_history_request ON bar_restock_request_history(request_id,created_at)")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS bar_restock_notifications (
+        id SERIAL PRIMARY KEY, request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL, body TEXT NOT NULL, read_at TIMESTAMP, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_bar_restock_notifications_user ON bar_restock_notifications(user_id,read_at,created_at)")
     for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
         wrapper.execute(f"ALTER TABLE players ADD COLUMN IF NOT EXISTS {column} TEXT DEFAULT ''")
     wrapper.execute("""UPDATE users SET player_id=(

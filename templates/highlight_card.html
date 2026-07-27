@@ -30,7 +30,7 @@
     {% if player.war_name %}<div class="full-name">{{player.name}}</div>{% endif %}
     <div class="medals" aria-label="Medalhas">{% for medal in medals %}<span title="{{medal.name}} · {{medal.years}} anos">{{medal.emoji}}</span>{% endfor %}</div>
     <div class="honor">{{medals[-1].name}}</div>
-    <div class="years">{{medals|length * 10}} anos de grupo</div>
+    <div class="years">{{medals[-1].current_years}} anos de grupo</div>
   </main>
 </body>
 </html>

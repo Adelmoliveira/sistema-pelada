@@ -101,13 +101,14 @@ def service_medals(join_date):
     today = local_today()
     years = today.year - joined.year - ((today.month, today.day) < (joined.month, joined.day))
     medals = (
-        (10, "🥉", "Medalha de Bronze", "Bronze"),
-        (20, "🥈", "Medalha de Prata", "Prata"),
-        (30, "🥇", "Medalha de Ouro", "Ouro"),
+        (10, "🥉", "Medalha de Bronze com Passador de Bronze", "Bronze"),
+        (20, "🥈", "Medalha de Prata com Passador de Prata", "Prata"),
+        (30, "🥇", "Medalha de Ouro com Passador de Ouro", "Ouro"),
         (40, "🥇", "Medalha de Ouro com Passador de Platina", "Platina"),
-        (50, "🏅", "Medalha de Platina", "Platina"),
+        (50, "🏅", "Medalha de Platina com Passador de Platina", "Platina"),
     )
-    return [{"years": threshold, "emoji": emoji, "name": name, "passador": passador, "year": joined.year + threshold}
+    return [{"years": threshold, "emoji": emoji, "name": name, "passador": passador,
+             "year": joined.year + threshold, "current_years": years}
             for threshold, emoji, name, passador in medals if years >= threshold]
 
 def cpfmask(value):

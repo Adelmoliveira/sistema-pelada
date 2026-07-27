@@ -11,6 +11,29 @@ from src.utils import local_today
 
 bp = Blueprint("products", __name__)
 
+RESTOCK_STATUS_LABELS = {
+    "PENDENTE": "Pendente",
+    "VISTA": "Vista",
+    "EM_PROCESSO": "Em processo de compra",
+    "COMPRA_EFETUADA": "Compra efetuada",
+    "ATENDIDA": "Solicitação atendida",
+    "CANCELADA": "Cancelada",
+}
+RESTOCK_STATUS_ORDER = ("PENDENTE", "VISTA", "EM_PROCESSO", "COMPRA_EFETUADA", "ATENDIDA", "CANCELADA")
+
+
+def _restock_status_options(status):
+    if status in {"ATENDIDA", "CANCELADA"}:
+        return []
+    index = RESTOCK_STATUS_ORDER.index(status) if status in RESTOCK_STATUS_ORDER else 0
+    options = []
+    if index + 1 < len(RESTOCK_STATUS_ORDER):
+        next_status = RESTOCK_STATUS_ORDER[index + 1]
+        if next_status != "CANCELADA":
+            options.append(next_status)
+    options.append("CANCELADA")
+    return options
+
 @bp.route("/products", methods=["GET", "POST"])
 @roles_allowed("manager", "staff")
 def products():
@@ -257,9 +280,11 @@ def restock_request():
                 raise ValueError("Informe ao menos um item do bar ou material de limpeza.")
             with db:
                 cur = db.execute(
-                    "INSERT INTO bar_restock_requests(submitted_by,cleaning_materials) VALUES(?,?)",
-                    (g.user["id"], cleaning),
+                    "INSERT INTO bar_restock_requests(submitted_by,cleaning_materials,workflow_status) VALUES(?,?,?)",
+                    (g.user["id"], cleaning, "PENDENTE"),
                 )
+                db.execute("INSERT INTO bar_restock_request_history(request_id,status,notes,changed_by) VALUES(?,?,?,?)",
+                           (cur.lastrowid, "PENDENTE", "Solicitação enviada.", g.user["id"]))
                 for product_id, quantity, measure, description in items:
                     db.execute(
                         "INSERT INTO bar_restock_request_items(request_id,product_id,quantity,measure,description) VALUES(?,?,?,?,?)",
@@ -281,7 +306,27 @@ def restock_request():
            WHERE r.submitted_by=? ORDER BY r.id DESC LIMIT 10""",
         (g.user["id"],),
     ).fetchall()
-    return render_template("restock_request.html", products=products, requests=own_requests)
+    notifications = db.execute(
+        """SELECT n.*,r.workflow_status FROM bar_restock_notifications n
+           JOIN bar_restock_requests r ON r.id=n.request_id
+           WHERE n.user_id=? ORDER BY n.id DESC LIMIT 20""", (g.user["id"],)
+    ).fetchall()
+    unread_notifications = sum(1 for notification in notifications if notification["read_at"] is None)
+    if unread_notifications:
+        db.execute("UPDATE bar_restock_notifications SET read_at=CURRENT_TIMESTAMP WHERE user_id=? AND read_at IS NULL", (g.user["id"],))
+        db.commit()
+    histories = {}
+    request_ids = [row["id"] for row in own_requests]
+    if request_ids:
+        placeholders = ",".join("?" for _ in request_ids)
+        for history in db.execute(
+            f"SELECT h.*,u.name changed_by_name FROM bar_restock_request_history h JOIN users u ON u.id=h.changed_by WHERE h.request_id IN ({placeholders}) ORDER BY h.created_at DESC",
+            request_ids,
+        ).fetchall():
+            histories.setdefault(history["request_id"], []).append(history)
+    return render_template("restock_request.html", products=products, requests=own_requests,
+                           notifications=notifications, unread_notifications=unread_notifications,
+                           histories=histories, status_labels=RESTOCK_STATUS_LABELS)
 
 
 @bp.route("/stock/restock-requests", methods=["GET", "POST"])
@@ -293,15 +338,31 @@ def restock_requests():
         try:
             request_id = int(request.form["request_id"])
             status = request.form.get("status", "VISTA")
-            if status not in {"VISTA", "ATENDIDA", "CANCELADA"}:
+            if status not in RESTOCK_STATUS_LABELS or status == "PENDENTE":
                 raise ValueError("Situação inválida.")
+            current = db.execute("SELECT * FROM bar_restock_requests WHERE id=?", (request_id,)).fetchone()
+            if not current:
+                raise ValueError("Solicitação não encontrada.")
+            current_status = current["workflow_status"] if "workflow_status" in current.keys() else current["status"]
+            if status not in _restock_status_options(current_status):
+                raise ValueError("Essa transição de situação não é permitida.")
+            notes = request.form.get("review_notes", "").strip()
+            if status == "CANCELADA" and not notes:
+                raise ValueError("Informe o motivo do cancelamento.")
+            legacy_status = "ATENDIDA" if status == "ATENDIDA" else ("CANCELADA" if status == "CANCELADA" else "VISTA")
             updated = db.execute(
-                """UPDATE bar_restock_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,review_notes=?
+                """UPDATE bar_restock_requests SET status=?,workflow_status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,review_notes=?
                    WHERE id=?""",
-                (status, g.user["id"], request.form.get("review_notes", "").strip(), request_id),
+                (legacy_status, status, g.user["id"], notes, request_id),
             )
             if updated.rowcount != 1:
                 raise ValueError("Solicitação não encontrada.")
+            db.execute("INSERT INTO bar_restock_request_history(request_id,status,notes,changed_by) VALUES(?,?,?,?)",
+                       (request_id, status, notes, g.user["id"]))
+            db.execute("""INSERT INTO bar_restock_notifications(request_id,user_id,title,body)
+                       VALUES(?,?,?,?)""", (request_id, current["submitted_by"],
+                       f"Reposição #{request_id}: {RESTOCK_STATUS_LABELS[status]}",
+                       notes or f"A situação da sua solicitação foi atualizada para {RESTOCK_STATUS_LABELS[status]}."))
             db.commit()
             flash("Solicitação atualizada.", "success")
         except (TypeError, ValueError) as exc:
@@ -326,7 +387,18 @@ def restock_requests():
            ORDER BY p.name"""
     ).fetchall():
         items_by_request.setdefault(item["request_id"], []).append(item)
-    return render_template("restock_requests.html", requests=rows, items_by_request=items_by_request)
+    histories = {}
+    request_ids = [row["id"] for row in rows]
+    if request_ids:
+        placeholders = ",".join("?" for _ in request_ids)
+        for history in db.execute(
+            f"SELECT h.*,u.name changed_by_name FROM bar_restock_request_history h JOIN users u ON u.id=h.changed_by WHERE h.request_id IN ({placeholders}) ORDER BY h.created_at DESC",
+            request_ids,
+        ).fetchall():
+            histories.setdefault(history["request_id"], []).append(history)
+    return render_template("restock_requests.html", requests=rows, items_by_request=items_by_request,
+                           histories=histories, status_labels=RESTOCK_STATUS_LABELS,
+                           status_options={row["id"]: _restock_status_options(row["workflow_status"] if "workflow_status" in row.keys() else row["status"]) for row in rows})
 
 
 @bp.get("/stock/report.pdf")
