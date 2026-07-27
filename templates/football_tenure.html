@@ -3,7 +3,17 @@
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div><h1>Tempo de futebol</h1><p class="text-muted mb-0">Peladeiros ordenados pelo tempo desde a apresentação no grupo.</p></div>
-  <a class="btn btn-outline-primary" href="{{url_for('football.tenure_report', pdf=1)}}" target="_blank" rel="noopener">Gerar PDF</a>
+  <div class="d-flex flex-wrap align-items-center gap-2">
+    <form method="get" class="d-flex align-items-center gap-2">
+      <label for="cadastro-filter" class="visually-hidden">Filtrar cadastro</label>
+      <select id="cadastro-filter" name="cadastro" class="form-select" onchange="this.form.submit()">
+        <option value="todos" {{'selected' if cadastro_filter == 'todos'}}>Todos</option>
+        <option value="cadastrados" {{'selected' if cadastro_filter == 'cadastrados'}}>Data cadastrada</option>
+        <option value="nao_cadastrados" {{'selected' if cadastro_filter == 'nao_cadastrados'}}>Data não cadastrada</option>
+      </select>
+    </form>
+    <a class="btn btn-outline-primary" href="{{url_for('football.tenure_report', pdf=1, cadastro=cadastro_filter)}}" target="_blank" rel="noopener">Gerar PDF</a>
+  </div>
   <span class="badge text-bg-primary fs-6">{{rows|length}} peladeiro(s)</span>
 </div>
 <div class="alert alert-info">A lista considera todos os peladeiros ativos, incluindo veteranos e aposentados. Mulheres permanecem fora por não participarem das partidas.</div>

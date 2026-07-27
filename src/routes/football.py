@@ -277,6 +277,9 @@ def tenure_report():
     """Lista os peladeiros pelo tempo desde a apresentação no grupo."""
     db = get_db()
     today = local_today()
+    cadastro_filter = request.args.get("cadastro", "todos").strip().lower()
+    if cadastro_filter not in {"todos", "cadastrados", "nao_cadastrados"}:
+        cadastro_filter = "todos"
     players = db.execute(
         """SELECT id,name,war_name,football_join_date,football_position,membership_type
            FROM players
@@ -303,13 +306,17 @@ def tenure_report():
             "membership_type": player["membership_type"],
             "months": months, "tenure_label": tenure_label,
         })
+    if cadastro_filter == "cadastrados":
+        rows = [row for row in rows if row["football_join_date"]]
+    elif cadastro_filter == "nao_cadastrados":
+        rows = [row for row in rows if not row["football_join_date"]]
     rows.sort(key=lambda item: (item["months"] is None, -(item["months"] or 0), (item["war_name"] or item["name"]).lower()))
     for row in rows:
         row["position_label"] = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque", "APOSENTADO": "Aposentado"}.get(row["football_position"], "Não definida")
         row["join_date_label"] = month_year_label(row["football_join_date"])
     if request.args.get("pdf") == "1":
         return send_file(build_football_tenure_pdf(rows, today), mimetype="application/pdf", as_attachment=False, download_name="tempo-de-futebol.pdf")
-    return render_template("football_tenure.html", rows=rows, today=today)
+    return render_template("football_tenure.html", rows=rows, today=today, cadastro_filter=cadastro_filter)
 
 
 @bp.get("/estatisticas")
