@@ -509,6 +509,30 @@ def birthdays():
               "julho", "agosto", "setembro", "outubro", "novembro", "dezembro")
     return render_template("birthdays.html", players=players, month_name=months[today.month - 1])
 
+
+@bp.get("/destaques")
+@roles_allowed("client")
+def highlights():
+    """Show active peladeiros who have earned a service medal."""
+    db = get_db()
+    players = db.execute(
+        """SELECT name, war_name, football_join_date, thumbnail_data
+           FROM players
+           WHERE active=1 AND football_join_date<>''
+           ORDER BY LOWER(COALESCE(war_name, name))"""
+    ).fetchall()
+    featured = []
+    for player in players:
+        medals = service_medals(player["football_join_date"])
+        if medals:
+            featured.append({
+                "name": player["name"], "war_name": player["war_name"],
+                "football_join_date": player["football_join_date"],
+                "thumbnail_data": player["thumbnail_data"], "medals": medals,
+            })
+    featured.sort(key=lambda player: (-len(player["medals"]), (player["war_name"] or player["name"]).casefold()))
+    return render_template("highlights.html", players=featured)
+
 @bp.route("/users", methods=["GET", "POST"])
 @roles_allowed("manager")
 def users():
