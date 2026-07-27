@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS bar_restock_request_items (
     request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
     product_id INTEGER NOT NULL REFERENCES products(id),
     quantity INTEGER NOT NULL CHECK(quantity > 0),
-    measure TEXT NOT NULL CHECK(measure IN ('caixas','unidades'))
+    measure TEXT NOT NULL CHECK(measure IN ('caixas','unidades')),
+    description TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_bar_restock_requests_status ON bar_restock_requests(status,created_at);
 CREATE TABLE IF NOT EXISTS sales (
@@ -956,6 +957,11 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE products ADD COLUMN supplier_email TEXT DEFAULT ''")
     conn.commit()
     migrate_product_categories(conn)
+
+    restock_item_columns = {row[1] for row in conn.execute("PRAGMA table_info(bar_restock_request_items)")}
+    if "description" not in restock_item_columns:
+        conn.execute("ALTER TABLE bar_restock_request_items ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+        conn.commit()
     
     user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "password_required" not in user_columns:
@@ -1055,6 +1061,7 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE reminder_settings ADD COLUMN IF NOT EXISTS push_enabled INTEGER NOT NULL DEFAULT 1")
     wrapper.execute("ALTER TABLE push_inbox ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE bar_restock_request_items ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''")
     for column in ("birth_date", "postal_code", "address_street", "address_number", "address_complement", "address_neighborhood", "address_city", "address_state"):
         wrapper.execute(f"ALTER TABLE players ADD COLUMN IF NOT EXISTS {column} TEXT DEFAULT ''")
     wrapper.execute("""UPDATE users SET player_id=(
