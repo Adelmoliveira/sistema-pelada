@@ -526,12 +526,30 @@ def highlights():
         medals = service_medals(player["football_join_date"])
         if medals:
             featured.append({
+                "id": player["id"],
                 "name": player["name"], "war_name": player["war_name"],
                 "football_join_date": player["football_join_date"],
                 "thumbnail_data": player["thumbnail_data"], "medals": medals,
             })
     featured.sort(key=lambda player: (-len(player["medals"]), (player["war_name"] or player["name"]).casefold()))
     return render_template("highlights.html", players=featured)
+
+
+@bp.get("/destaques/<int:player_id>/cartao")
+@roles_allowed("client")
+def highlight_card(player_id):
+    """Render a print-ready recognition card for a medalist."""
+    db = get_db()
+    player = db.execute(
+        """SELECT id, name, war_name, football_join_date, thumbnail_data
+           FROM players WHERE id=? AND active=1""",
+        (player_id,),
+    ).fetchone()
+    medals = service_medals(player["football_join_date"]) if player else []
+    if not player or not medals:
+        flash("Este peladeiro ainda não possui uma condecoração por tempo de grupo.", "warning")
+        return redirect(url_for("auth.highlights"))
+    return render_template("highlight_card.html", player=player, medals=medals)
 
 @bp.route("/users", methods=["GET", "POST"])
 @roles_allowed("manager")
