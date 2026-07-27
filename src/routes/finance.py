@@ -25,6 +25,18 @@ from src.utils import alphabetical_key, money, brdate, cents, month_bounds, add_
 bp = Blueprint("finance", __name__)
 
 
+def _membership_start_month(player, year):
+    """Return the first billable month in *year*, or None when unknown/future."""
+    raw = (player["football_join_date"] or "").strip()
+    try:
+        joined = date.fromisoformat(raw + "-01" if len(raw) == 7 else raw[:10])
+    except (TypeError, ValueError):
+        return None
+    if joined.year > year:
+        return None
+    return joined.month if joined.year == year else 1
+
+
 def _finance_ledger_filters():
     today = local_today()
     start_text = request.args.get("start", today.replace(day=1).isoformat())
@@ -71,7 +83,7 @@ def dashboard():
            FROM players WHERE active=1"""
     ).fetchone()
     contributors = db.execute(
-        "SELECT id FROM players WHERE active=1 AND membership_type='regular'"
+        "SELECT id,football_join_date FROM players WHERE active=1 AND membership_type='regular'"
     ).fetchall()
     due_month = local_today().month
     paid_rows = db.execute(
@@ -79,7 +91,17 @@ def dashboard():
         (f"{local_today().year}-01", f"{local_today().year}-{due_month:02d}"),
     ).fetchall()
     paid_counts = {row["player_id"]: int(row["paid_count"] or 0) for row in paid_rows}
-    debts = [max(0, due_month - paid_counts.get(player["id"], 0)) for player in contributors]
+    debts = []
+    for player in contributors:
+        first_month = _membership_start_month(player, local_today().year)
+        if first_month is None or not due_month or first_month > due_month:
+            continue
+        paid = sum(
+            1 for row in paid_rows
+            if row["player_id"] == player["id"]
+            and first_month <= int(str(row["month"])[-2:]) <= due_month
+        )
+        debts.append(max(0, due_month - first_month + 1 - paid))
     membership_chart = {
         "up_to_date": sum(debt == 0 for debt in debts),
         "owing": sum(debt > 0 for debt in debts),
@@ -320,7 +342,13 @@ def finance():
     paid_by_player = {}
     for row in paid_rows:
         paid_by_player.setdefault(row["player_id"], set()).add(int(row["month"][-2:]))
-    all_status_rows = [{"player": player, "months": paid_by_player.get(player["id"], set())} for player in players_rows]
+    all_status_rows = []
+    for player in players_rows:
+        all_status_rows.append({
+            "player": player,
+            "months": paid_by_player.get(player["id"], set()),
+            "start_month": _membership_start_month(player, year),
+        })
     
     try:
         members_page = max(1, int(request.args.get("members_page", 1)))
@@ -347,8 +375,17 @@ def finance():
                              (f"{year}-01-01", f"{year + 1}-01-01")).fetchone()[0]
     today = local_today()
     due_month = 12 if year < today.year else (today.month if year == today.year else 0)
-    expected_to_date = len(players_rows) * due_month * monthly_fee
-    covered_to_date = sum(sum(1 for month in row["months"] if month <= due_month) for row in all_status_rows) * monthly_fee
+    expected_months = sum(
+        max(0, due_month - row["start_month"] + 1)
+        for row in all_status_rows
+        if row["start_month"] is not None and row["start_month"] <= due_month
+    )
+    covered_months = sum(
+        sum(1 for month in row["months"] if row["start_month"] is not None and row["start_month"] <= month <= due_month)
+        for row in all_status_rows
+    )
+    expected_to_date = expected_months * monthly_fee
+    covered_to_date = covered_months * monthly_fee
     
     return render_template("finance.html", players=players_rows, statuses=status_rows, history=history,
                            year=year, monthly_fee=monthly_fee, collected=collected,

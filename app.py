@@ -13,7 +13,7 @@ except ImportError:
     pass
 
 from src.db import get_db
-from src.utils import money, brdate, cpfmask, local_today
+from src.utils import money, brdate, cpfmask, local_today, month_year_label
 from src.routes.auth import bp as auth_bp, home_endpoint
 from src.routes.players import bp as players_bp
 from src.routes.products import bp as products_bp
@@ -127,6 +127,7 @@ csrf.exempt(push_unsubscribe)
 app.template_filter("money")(money)
 app.template_filter("brdate")(brdate)
 app.template_filter("cpfmask")(cpfmask)
+app.template_filter("month_year")(month_year_label)
 
 # Security check for default secret key
 if not app.debug and app.config["SECRET_KEY"] == "troque-esta-chave-em-producao":

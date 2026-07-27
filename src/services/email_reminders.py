@@ -2,6 +2,7 @@ import html
 import re
 import smtplib
 import ssl
+from datetime import date
 from email.message import EmailMessage
 
 from src.utils import alphabetical_key, money
@@ -46,7 +47,7 @@ def get_reminder_settings(db):
 
 def outstanding_players(db, today, monthly_fee=1500):
     players = db.execute(
-        "SELECT id,name,email FROM players "
+        "SELECT id,name,email,football_join_date FROM players "
         "WHERE active=1 AND membership_type='regular'"
     ).fetchall()
     players = sorted(players, key=lambda player: alphabetical_key(player["name"]))
@@ -60,7 +61,17 @@ def outstanding_players(db, today, monthly_fee=1500):
 
     debtors = []
     for player in players:
-        missing = [month for month in range(1, today.month + 1) if month not in paid.get(player["id"], set())]
+        raw_join = (player["football_join_date"] or "").strip()
+        try:
+            joined = date.fromisoformat(raw_join + "-01" if len(raw_join) == 7 else raw_join[:10])
+            if joined.year > today.year:
+                continue
+            first_month = joined.month if joined.year == today.year else 1
+        except (TypeError, ValueError):
+            # Mantém compatibilidade com cadastros antigos sem data; novos
+            # cadastros devem informar a apresentação antes da cobrança.
+            first_month = 1
+        missing = [month for month in range(first_month, today.month + 1) if month not in paid.get(player["id"], set())]
         if not missing:
             continue
         amount = len(missing) * monthly_fee
