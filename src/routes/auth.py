@@ -1,5 +1,7 @@
 import os
-from datetime import date
+import hashlib
+import secrets
+from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from urllib.parse import urlsplit
 from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app, jsonify
@@ -156,6 +158,81 @@ def login():
             )
         flash("Usuário ou senha inválidos.", "danger")
     return render_template("login.html")
+
+
+@bp.route("/esqueci-senha", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        # Always show the same response so the page does not reveal whether an
+        # address is registered. Only client accounts can use this flow.
+        if "@" in email:
+            db = get_db()
+            account = db.execute(
+                """SELECT u.id,p.name,p.war_name,p.email FROM users u
+                   JOIN players p ON p.id=u.player_id
+                   WHERE u.role='client' AND u.active=1 AND p.active=1 AND LOWER(p.email)=LOWER(?)""",
+                (email,),
+            ).fetchone()
+            if account:
+                raw_token = secrets.token_urlsafe(32)
+                token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+                expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(microsecond=0).isoformat(sep=" ")
+                try:
+                    db.execute("UPDATE password_reset_tokens SET used_at=CURRENT_TIMESTAMP WHERE user_id=? AND used_at IS NULL", (account["id"],))
+                    db.execute("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES(?,?,?)", (account["id"], token_hash, expires_at))
+                    db.commit()
+                    from src.services.email_reminders import send_gmail_html
+                    sender = current_app.config.get("GMAIL_SMTP_USER") or ""
+                    app_password = current_app.config.get("GMAIL_APP_PASSWORD") or ""
+                    link = url_for("auth.reset_password", token=raw_token, _external=True)
+                    name = account["war_name"] or account["name"]
+                    plain = f"Olá, {name}!\n\nRecebemos um pedido para trocar sua senha no PELADEIROS GPCTA.\n\nAcesse o link (válido por 1 hora):\n{link}\n\nSe você não solicitou essa troca, ignore este e-mail."
+                    html = f"""<div style='font-family:Arial,sans-serif;color:#183247;line-height:1.55'><h2 style='color:#07558c'>Troca de senha · PELADEIROS GPCTA</h2><p>Olá, {name}!</p><p>Recebemos um pedido para trocar sua senha.</p><p><a href='{link}' style='display:inline-block;background:#07558c;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none'>Trocar minha senha</a></p><p>O link é válido por 1 hora. Se você não solicitou essa troca, ignore este e-mail.</p></div>"""
+                    if sender and app_password:
+                        send_gmail_html(sender, app_password, email, "Troca de senha · PELADEIROS GPCTA", plain, html)
+                except Exception as exc:
+                    db.rollback()
+                    current_app.logger.error(f"Erro ao enviar recuperação de senha: {exc}")
+        flash("Se o e-mail estiver cadastrado, você receberá um link para trocar a senha.", "info")
+        return redirect(url_for("auth.forgot_password"), code=303)
+    return render_template("forgot_password.html")
+
+
+@bp.route("/redefinir-senha", methods=["GET", "POST"])
+def reset_password():
+    token = request.values.get("token", "").strip()
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
+    db = get_db()
+    reset = db.execute(
+        """SELECT t.*,u.id user_id FROM password_reset_tokens t JOIN users u ON u.id=t.user_id
+           WHERE t.token_hash=? AND t.used_at IS NULL AND u.active=1""", (token_hash,)
+    ).fetchone() if token_hash else None
+    valid = False
+    if reset:
+        try:
+            expiry = datetime.fromisoformat(str(reset["expires_at"]).replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            valid = expiry > datetime.now(timezone.utc)
+        except ValueError:
+            valid = False
+    if not valid:
+        return render_template("reset_password.html", token=token, invalid=True), 400
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirmation = request.form.get("password_confirm", "")
+        if len(password) < 8:
+            flash("A nova senha deve ter ao menos 8 caracteres.", "danger")
+        elif password != confirmation:
+            flash("As senhas não coincidem.", "danger")
+        else:
+            db.execute("UPDATE users SET password_hash=?,password_required=1 WHERE id=?", (make_password_hash(password), reset["user_id"]))
+            db.execute("UPDATE password_reset_tokens SET used_at=CURRENT_TIMESTAMP WHERE id=?", (reset["id"],))
+            db.commit()
+            flash("Senha alterada com sucesso. Entre com sua nova senha.", "success")
+            return redirect(url_for("auth.login"), code=303)
+    return render_template("reset_password.html", token=token, invalid=False)
 
 @bp.route("/cliente", methods=["GET", "POST"])
 def client_access():

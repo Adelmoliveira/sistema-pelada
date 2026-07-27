@@ -12,7 +12,7 @@
       <a href="{{url_for('auth.highlight_card', player_id=player.id)}}" target="_blank" rel="noopener" class="d-inline-block" title="Abrir cartão para impressão">{% if player.thumbnail_data %}<img src="{{player.thumbnail_data}}" alt="Foto de {{player.war_name or player.name}}" class="rounded-circle border mb-3" width="96" height="96" style="object-fit:cover">{% else %}<div class="rounded-circle border bg-light d-flex align-items-center justify-content-center text-muted mx-auto mb-3" style="width:96px;height:96px;font-size:2rem">{{(player.war_name or player.name)[:1]|upper}}</div>{% endif %}</a>
       <h2 class="h5 mb-1">{{player.war_name or player.name}}</h2>{% if player.war_name %}<div class="small text-muted mb-3">{{player.name}}</div>{% endif %}
       <div class="account-medals justify-content-center mb-2" aria-label="Medalhas por tempo de grupo">{% for medal in player.medals %}<span title="{{medal.name}} · {{medal.years}} anos">{{medal.emoji}}</span>{% endfor %}</div>
-      <div class="small text-muted">{{player.medals[-1].name}} · {{player.medals|length * 10}} anos</div>
+      <div class="small text-muted">{{player.medals[-1].name}} · {{player.medals[-1].current_years}} anos</div>
       <a class="btn btn-sm btn-outline-primary mt-3" target="_blank" rel="noopener" href="{{url_for('auth.highlight_card', player_id=player.id)}}">Imprimir cartão</a>
     </div></div></div>{% endfor %}
   </div>

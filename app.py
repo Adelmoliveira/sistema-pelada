@@ -193,7 +193,7 @@ def load_user_and_protect_routes():
             return None
         return redirect(url_for("auth.setup"))
 
-    public_endpoints = {"auth.login", "auth.client_access", "auth.client_password_setup"}
+    public_endpoints = {"auth.login", "auth.client_access", "auth.client_password_setup", "auth.forgot_password", "auth.reset_password"}
     if request.endpoint in public_endpoints or request.endpoint is None:
         return None
 
@@ -209,6 +209,7 @@ def inject_user():
     player = None
     today_birthdays = []
     unread_notifications = 0
+    unread_restock_notifications = 0
     pending_restock_requests = 0
     user = g.get("user")
     if user:
@@ -219,6 +220,8 @@ def inject_user():
                 unread_notifications = db.execute("SELECT COUNT(*) AS total FROM push_inbox WHERE player_id=? AND read_at IS NULL", (user["player_id"],)).fetchone()["total"]
             if user["role"] == "manager":
                 pending_restock_requests = db.execute("SELECT COUNT(*) AS total FROM bar_restock_requests WHERE status='PENDENTE'").fetchone()["total"]
+            if user["role"] == "staff":
+                unread_restock_notifications = db.execute("SELECT COUNT(*) AS total FROM bar_restock_notifications WHERE user_id=? AND read_at IS NULL", (user["id"],)).fetchone()["total"]
             today_birthdays = db.execute("""SELECT id, name, war_name, gender, thumbnail_data
                 FROM players WHERE active=1 AND birth_date<>'' AND substr(birth_date,6,5)=?
                 ORDER BY LOWER(COALESCE(war_name, name))""",
@@ -227,9 +230,10 @@ def inject_user():
             player = None
             today_birthdays = []
             unread_notifications = 0
+            unread_restock_notifications = 0
             pending_restock_requests = 0
     medals = service_medals(player["football_join_date"]) if player else []
-    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "pending_restock_requests": pending_restock_requests, "service_medals": medals}
+    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "unread_restock_notifications": unread_restock_notifications, "pending_restock_requests": pending_restock_requests, "service_medals": medals}
 
 if __name__ == "__main__":
     app.run(debug=True)
