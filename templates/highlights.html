@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block title %}Destaques · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="container-fluid px-0">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
+    <div><h1 class="h3 mb-1">Destaques</h1><p class="text-muted mb-0">Peladeiros reconhecidos pelo tempo de grupo.</p></div>
+    <a class="btn btn-outline-secondary" href="{{url_for('sales.sale')}}">← Voltar</a>
+  </div>
+  {% if players %}
+  <div class="row g-3">
+    {% for player in players %}<div class="col-sm-6 col-lg-4 col-xl-3"><div class="card shadow-sm h-100"><div class="card-body text-center">
+      {% if player.thumbnail_data %}<img src="{{player.thumbnail_data}}" alt="Foto de {{player.war_name or player.name}}" class="rounded-circle border mb-3" width="96" height="96" style="object-fit:cover">{% else %}<div class="rounded-circle border bg-light d-flex align-items-center justify-content-center text-muted mx-auto mb-3" style="width:96px;height:96px;font-size:2rem">{{(player.war_name or player.name)[:1]|upper}}</div>{% endif %}
+      <h2 class="h5 mb-1">{{player.war_name or player.name}}</h2>{% if player.war_name %}<div class="small text-muted mb-3">{{player.name}}</div>{% endif %}
+      <div class="account-medals justify-content-center mb-2" aria-label="Medalhas por tempo de grupo">{% for medal in player.medals %}<span title="{{medal.name}} · {{medal.years}} anos">{{medal.emoji}}</span>{% endfor %}</div>
+      <div class="small text-muted">{{player.medals[-1].name}} · {{player.medals|length * 10}} anos</div>
+    </div></div></div>{% endfor %}
+  </div>
+  {% else %}<div class="card shadow-sm"><div class="card-body text-center py-5"><div class="display-5 mb-2">🏅</div><h2 class="h5">Ainda não há medalhistas</h2><p class="text-muted mb-0">Os destaques aparecerão quando os primeiros marcos de tempo forem alcançados.</p></div></div>{% endif %}
+</div>
+{% endblock %}
