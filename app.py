@@ -13,7 +13,7 @@ except ImportError:
     pass
 
 from src.db import get_db
-from src.utils import money, brdate, cpfmask, local_today, month_year_label
+from src.utils import money, brdate, cpfmask, local_today, month_year_label, service_medals
 from src.routes.auth import bp as auth_bp, home_endpoint
 from src.routes.players import bp as players_bp
 from src.routes.products import bp as products_bp
@@ -224,7 +224,8 @@ def inject_user():
             player = None
             today_birthdays = []
             unread_notifications = 0
-    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications}
+    medals = service_medals(player["football_join_date"]) if player else []
+    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "service_medals": medals}
 
 if __name__ == "__main__":
     app.run(debug=True)
