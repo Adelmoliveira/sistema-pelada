@@ -563,6 +563,14 @@ CREATE INDEX IF NOT EXISTS idx_football_matches_sumula ON football_matches(sumul
 CREATE INDEX IF NOT EXISTS idx_football_incidents_sumula ON football_incidents(sumula_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_football_historical_player ON football_historical_stats(player_id,stat_date);
 CREATE INDEX IF NOT EXISTS idx_football_transfer_status ON football_transfer_requests(status,window_year);
+CREATE TABLE IF NOT EXISTS football_transfer_window_settings (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    is_open INTEGER NOT NULL DEFAULT 0,
+    manual_override INTEGER NOT NULL DEFAULT 0,
+    window_year INTEGER,
+    updated_by INTEGER REFERENCES users(id),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 class CursorWrapper:
@@ -949,6 +957,16 @@ def init_sqlite(wrapper):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_football_transfer_status ON football_transfer_requests(status,window_year)")
         conn.commit()
 
+    conn.execute("""CREATE TABLE IF NOT EXISTS football_transfer_window_settings (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        is_open INTEGER NOT NULL DEFAULT 0,
+        manual_override INTEGER NOT NULL DEFAULT 0,
+        window_year INTEGER,
+        updated_by INTEGER REFERENCES users(id),
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.commit()
+
     incident_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_incidents)")}
     if "card" not in incident_columns:
         conn.execute("ALTER TABLE football_incidents ADD COLUMN card TEXT DEFAULT ''")
@@ -1201,6 +1219,14 @@ def init_postgres(wrapper):
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(player_id, window_year))""")
     wrapper.execute("CREATE INDEX IF NOT EXISTS idx_football_transfer_status ON football_transfer_requests(status,window_year)")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS football_transfer_window_settings (
+        id SERIAL PRIMARY KEY CHECK(id = 1),
+        is_open INTEGER NOT NULL DEFAULT 0,
+        manual_override INTEGER NOT NULL DEFAULT 0,
+        window_year INTEGER,
+        updated_by INTEGER REFERENCES users(id),
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
     wrapper.execute("ALTER TABLE maintenance_requests DROP CONSTRAINT IF EXISTS maintenance_requests_area_code_check")
     wrapper.execute("ALTER TABLE maintenance_requests ADD CONSTRAINT maintenance_requests_area_code_check CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','EXT'))")
     wrapper.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")

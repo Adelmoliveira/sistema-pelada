@@ -1,4 +1,5 @@
 from datetime import date
+from html import escape
 
 from flask import Blueprint, current_app, flash, g, redirect, render_template, request, send_file, url_for
 
@@ -126,12 +127,15 @@ def _match_day(value):
     return parsed
 
 
-def _transfer_window(today=None):
-    """A janela anual fica aberta durante todo o mês de fevereiro."""
+def _transfer_window(today=None, db=None):
+    """Retorna a janela anual, respeitando a abertura/fechamento manual do gerente."""
     today = today or local_today()
-    is_open = today.month == 2
+    setting = db.execute("SELECT is_open,manual_override,window_year FROM football_transfer_window_settings WHERE id=1").fetchone() if db is not None else None
     next_year = today.year if today.month < 2 else today.year + 1
-    return {"is_open": is_open, "year": today.year if is_open else next_year, "next_date": date(next_year, 2, 1)}
+    if setting and int(setting["manual_override"] or 0):
+        return {"is_open": bool(setting["is_open"]), "year": int(setting["window_year"] or today.year), "next_date": date(next_year, 2, 1), "manual_override": True}
+    is_open = today.month == 2
+    return {"is_open": is_open, "year": today.year if is_open else next_year, "next_date": date(next_year, 2, 1), "manual_override": False}
 
 
 def _transfer_metrics(db, player):
@@ -147,7 +151,17 @@ def _transfer_metrics(db, player):
         tenure_months = max(0, (today.year - start.year) * 12 + today.month - start.month - (today.day < start.day))
     except (TypeError, ValueError):
         pass
-    return {"tenure_months": tenure_months, "frequency": round(attended / total * 100, 1) if total else 0, "attended": attended, "total_sumulas": total}
+    if tenure_months is None:
+        tenure_label = "Não informado"
+    else:
+        years, months = divmod(tenure_months, 12)
+        parts = []
+        if years:
+            parts.append(f"{years} ano" + ("s" if years != 1 else ""))
+        if months:
+            parts.append(f"{months} mês" + ("es" if months != 1 else ""))
+        tenure_label = " e ".join(parts) if parts else "menos de 1 mês"
+    return {"tenure_months": tenure_months, "tenure_label": tenure_label, "frequency": round(attended / total * 100, 1) if total else 0, "attended": attended, "total_sumulas": total}
 
 
 def _transfer_analysis(db, player, requested_position):
@@ -163,22 +177,55 @@ def _transfer_analysis(db, player, requested_position):
     targets = {"DEFESA": 30, "MEIO": 30, "ATAQUE": 40}
     impact = {key: {"current": round(counts[key] / total * 100, 1), "projected": round(projected[key] / total * 100, 1), "target": targets[key]} for key in TRANSFER_POSITIONS}
     max_deviation = max(abs(item["projected"] - item["target"]) for item in impact.values())
+    reasons = []
+    if metrics["tenure_months"] is None:
+        reasons.append("não há data de apresentação cadastrada")
+    elif metrics["tenure_months"] < 6:
+        reasons.append("tempo de pelada inferior a 6 meses")
+    if metrics["frequency"] < 40:
+        reasons.append("frequência inferior a 40%")
+    if max_deviation > 15:
+        reasons.append("o impacto ultrapassa 15 pontos percentuais do equilíbrio 30/30/40")
     if metrics["tenure_months"] is None or metrics["tenure_months"] < 6 or metrics["frequency"] < 40 or max_deviation > 15:
         recommendation = "DESFAVORÁVEL"
+        recommendation_reason = "Não atende aos critérios: " + "; ".join(reasons) + "."
     elif metrics["tenure_months"] < 12 or metrics["frequency"] < 65 or max_deviation > 8:
         recommendation = "ATENÇÃO"
+        attention = []
+        if metrics["tenure_months"] < 12:
+            attention.append("tempo de pelada ainda inferior a 12 meses")
+        if metrics["frequency"] < 65:
+            attention.append("frequência inferior a 65%")
+        if max_deviation > 8:
+            attention.append("impacto acima de 8 pontos percentuais no equilíbrio")
+        recommendation_reason = "Requer análise: " + "; ".join(attention) + "."
     else:
         recommendation = "FAVORÁVEL"
-    return {"metrics": metrics, "impact": impact, "recommendation": recommendation}
+        recommendation_reason = "Atende às regras de tempo de pelada (12 meses ou mais), frequência (65% ou mais) e equilíbrio 30/30/40."
+    return {"metrics": metrics, "impact": impact, "recommendation": recommendation, "recommendation_reason": recommendation_reason}
 
 
-def _notify_transfer(current_app, recipient, subject, text):
+def _notify_transfer(current_app, recipient, subject, text, status="PENDENTE"):
     sender = current_app.config.get("GMAIL_SMTP_USER")
     password = current_app.config.get("GMAIL_APP_PASSWORD")
     if not recipient or not sender or not password:
         return
     try:
-        html = "<div style='font-family:Arial,sans-serif;line-height:1.55;color:#183042'><h2 style='color:#07558c'>PELADEIROS GPCTA</h2>" + text.replace("\n", "<br>") + "</div>"
+        colors = {"APROVADA": "#198754", "RECUSADA": "#dc3545", "PENDENTE": "#07558c"}
+        labels = {"APROVADA": "Aprovada", "RECUSADA": "Recusada", "PENDENTE": "Em análise"}
+        color = colors.get(status, colors["PENDENTE"])
+        label = labels.get(status, labels["PENDENTE"])
+        body = escape(text).replace("\n", "<br>")
+        html = f"""<div style='margin:0;background:#f2f6f9;padding:24px;font-family:Arial,sans-serif;color:#183247'>
+          <div style='max-width:620px;margin:auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 3px 12px #1232'>
+            <div style='background:#07558c;padding:20px;text-align:center'><img src='https://sistema-pelada-one.vercel.app/static/logo-gpcta.jpeg' alt='Logo GPCTA' style='max-width:110px;max-height:90px;object-fit:contain'><h1 style='color:#fff;font-size:22px;margin:10px 0 0'>PELADEIROS GPCTA</h1></div>
+            <div style='padding:24px'><h2 style='margin-top:0;color:#07558c'>Solicitação de transferência</h2>
+              <div style='display:inline-block;background:{color};color:#fff;border-radius:6px;padding:8px 14px;font-weight:bold;margin-bottom:18px'>Status: {label}</div>
+              <div style='font-size:16px;line-height:1.55;color:#183042'>{body}</div>
+              <p style='margin-top:24px;color:#607d8b;font-size:13px'>Mensagem enviada pelo sistema PELADEIROS GPCTA.</p>
+            </div>
+          </div>
+        </div>"""
         send_gmail_html(sender, password, recipient, subject, text, html)
     except Exception as exc:
         current_app.logger.warning("Não foi possível enviar notificação de transferência: %s", exc)
@@ -486,7 +533,7 @@ def client_panel():
 @roles_allowed("client", "manager", "football_manager")
 def transfer_window():
     db = get_db()
-    window = _transfer_window()
+    window = _transfer_window(db=db)
     is_manager = g.user["role"] in ("manager", "football_manager")
     if request.method == "POST":
         if not is_manager:
@@ -520,14 +567,20 @@ def transfer_window():
                     flash("Não foi possível registrar a solicitação.", "danger")
         else:
             try:
-                if request.form.get("action") == "important_notice":
-                    title = request.form.get("title", "Aviso da pelada").strip()[:80]
-                    body = request.form.get("body", "").strip()[:500]
-                    if not body:
-                        raise ValueError("Informe o texto do aviso.")
-                    recipients = db.execute("SELECT id FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran'").fetchall()
-                    sent = sum(int(send_player_push(db, row["id"], title or "Aviso da pelada", body, "/futebol/minha-pelada").get("sent", 0)) for row in recipients)
-                    flash(f"Aviso enviado para {sent} dispositivo(s) ativo(s).", "success")
+                window_action = request.form.get("action", "")
+                if window_action in ("open_window", "close_window", "calendar_window"):
+                    if window_action == "calendar_window":
+                        db.execute("DELETE FROM football_transfer_window_settings WHERE id=1")
+                        message = "A janela voltou a seguir o calendário automático de fevereiro."
+                    else:
+                        is_open = 1 if window_action == "open_window" else 0
+                        db.execute("""INSERT INTO football_transfer_window_settings(id,is_open,manual_override,window_year,updated_by)
+                            VALUES(1,?,?,?,?)
+                            ON CONFLICT(id) DO UPDATE SET is_open=excluded.is_open,manual_override=1,window_year=excluded.window_year,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP""",
+                            (is_open, 1, local_today().year, g.user["id"]))
+                        message = "Janela de transferência aberta." if is_open else "Janela de transferência fechada."
+                    db.commit()
+                    flash(message, "success")
                     return redirect(url_for("football.transfer_window"))
                 if request.form.get("action") == "join_date":
                     player_id = int(request.form["player_id"])
@@ -553,8 +606,8 @@ def transfer_window():
                 if player and player["email"]:
                     message = f"Olá, {player['war_name'] or player['name']}!\n\nSua solicitação de transferência de posição foi {'aprovada' if decision == 'APROVADA' else 'recusada'}."
                     if notes:
-                        message += f"\n\nObservação do gestor: {notes}"
-                    _notify_transfer(current_app, player["email"], "Resultado da solicitação de transferência", message)
+                        message += f"\n\nMotivo da diretoria: {notes}"
+                    _notify_transfer(current_app, player["email"], "Resultado da solicitação de transferência", message, decision)
                 if player:
                     send_player_push(db, item["player_id"], "Transferência aprovada" if decision == "APROVADA" else "Transferência recusada", "Sua solicitação de mudança de posição foi aprovada." if decision == "APROVADA" else "Sua solicitação de mudança de posição foi recusada.", "/notificacoes")
                 flash("Solicitação aprovada e posição atualizada." if decision == "APROVADA" else "Solicitação recusada.", "success")
