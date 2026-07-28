@@ -176,7 +176,7 @@ def _transfer_analysis(db, player, requested_position):
     if requested_position in projected:
         projected[requested_position] += 1
     total = sum(projected.values()) or 1
-    targets = {"DEFESA": 30, "MEIO": 30, "ATAQUE": 40}
+    targets = {"DEFESA": 40, "MEIO": 30, "ATAQUE": 30}
     impact = {key: {"current": round(counts[key] / total * 100, 1), "projected": round(projected[key] / total * 100, 1), "target": targets[key]} for key in TRANSFER_POSITIONS}
     max_deviation = max(abs(item["projected"] - item["target"]) for item in impact.values())
     reasons = []
@@ -187,7 +187,7 @@ def _transfer_analysis(db, player, requested_position):
     if metrics["frequency"] < 40:
         reasons.append("frequência inferior a 40%")
     if max_deviation > 15:
-        reasons.append("o impacto ultrapassa 15 pontos percentuais do equilíbrio 30/30/40")
+        reasons.append("o impacto ultrapassa 15 pontos percentuais do equilíbrio 40/30/30 (defesa/meio/ataque)")
     criteria = {
         "tenure_ok": metrics["tenure_months"] is not None and metrics["tenure_months"] >= 4,
         "frequency_ok": metrics["frequency"] >= 40,
@@ -207,7 +207,7 @@ def _transfer_analysis(db, player, requested_position):
         recommendation_reason = "Requer análise: " + "; ".join(attention) + "."
     else:
         recommendation = "FAVORÁVEL"
-        recommendation_reason = "Atende às regras mínimas de tempo de pelada (4 meses ou mais), frequência (40% ou mais) e equilíbrio 30/30/40."
+        recommendation_reason = "Atende às regras mínimas de tempo de pelada (4 meses ou mais), frequência (40% ou mais) e equilíbrio 40/30/30 (defesa/meio/ataque)."
     return {"metrics": metrics, "impact": impact, "recommendation": recommendation, "recommendation_reason": recommendation_reason,
             "criteria": criteria, "max_deviation": round(max_deviation, 1)}
 
@@ -291,7 +291,7 @@ def _position_distribution(db):
         position_players[category].append(player)
     positioned_total = sum(distribution[key] for key in ("ATAQUE", "MEIO", "DEFESA"))
     position_summary = []
-    for key, label, target in (("ATAQUE", "Ataque", 40), ("MEIO", "Meio", 30), ("DEFESA", "Defesa", 30)):
+    for key, label, target in (("ATAQUE", "Ataque", 30), ("MEIO", "Meio", 30), ("DEFESA", "Defesa", 40)):
         count = distribution[key]
         percentage = round((count / positioned_total) * 100, 2) if positioned_total else 0
         position_summary.append({"key": key, "label": label, "count": count, "percentage": percentage, "target": target, "difference": round(percentage - target, 2)})
