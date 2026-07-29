@@ -176,7 +176,7 @@ def player_membership_type(player_id):
 
 
 @bp.route("/players/positions", methods=["GET", "POST"])
-@roles_allowed("manager", "football_manager")
+@roles_allowed("manager")
 def football_positions():
     db = get_db()
     if request.method == "POST":

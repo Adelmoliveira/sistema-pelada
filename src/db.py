@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS players (
     thumbnail_data TEXT DEFAULT '',
     football_position TEXT DEFAULT '',
     football_join_date TEXT DEFAULT '',
+    historical_only INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -951,6 +952,11 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE push_announcements ADD COLUMN status TEXT NOT NULL DEFAULT 'ENVIADO'")
         conn.commit()
 
+    player_columns = {row[1] for row in conn.execute("PRAGMA table_info(players)")}
+    if "historical_only" not in player_columns:
+        conn.execute("ALTER TABLE players ADD COLUMN historical_only INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+
     transfer_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_transfer_requests)")}
     if not transfer_columns:
         conn.execute("""CREATE TABLE IF NOT EXISTS football_transfer_requests (
@@ -1146,6 +1152,7 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE reminder_settings ADD COLUMN IF NOT EXISTS push_enabled INTEGER NOT NULL DEFAULT 1")
     wrapper.execute("ALTER TABLE push_inbox ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE push_announcements ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ENVIADO'")
+    wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS historical_only INTEGER NOT NULL DEFAULT 0")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE bar_restock_request_items ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''")
     wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS workflow_status TEXT NOT NULL DEFAULT 'PENDENTE'")

@@ -23,7 +23,7 @@ def home_endpoint(role):
     if role == "display":
         return "display.panel"
     if role == "football_manager":
-        return "football.dashboard"
+        return "football.sumulas"
     return "finance.dashboard"
 
 def safe_next_url(value):
