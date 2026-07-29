@@ -652,20 +652,41 @@ def notifications():
         return redirect(url_for("auth.notifications_inbox"))
     db = get_db()
     if request.method == "POST":
+        action = request.form.get("action", "send")
+        announcement_id = request.form.get("announcement_id", type=int)
         title = request.form.get("title", "").strip()[:80]
         body = request.form.get("body", "").strip()[:500]
         audience = request.form.get("audience", "all")
         if audience not in ("all", "football"):
             audience = "all"
         try:
+            draft = None
+            if action == "send_draft":
+                draft = db.execute("SELECT * FROM push_announcements WHERE id=? AND status='RASCUNHO'", (announcement_id,)).fetchone()
+                if not draft:
+                    raise ValueError("Rascunho não encontrado ou já enviado.")
+                title, body, audience = draft["title"], draft["body"], draft["audience"]
             if not title or not body:
                 raise ValueError("Informe o título e a mensagem do aviso.")
+            if action == "save_draft":
+                if announcement_id:
+                    updated = db.execute("UPDATE push_announcements SET title=?,body=?,audience=?,status='RASCUNHO' WHERE id=? AND status='RASCUNHO'", (title, body, audience, announcement_id))
+                    if updated.rowcount != 1:
+                        raise ValueError("Rascunho não encontrado ou já enviado.")
+                else:
+                    db.execute("INSERT INTO push_announcements(title,body,audience,status,sent_count,created_by) VALUES(?,?,?,?,?,?)", (title, body, audience, "RASCUNHO", 0, g.user["id"]))
+                db.commit()
+                flash("Rascunho salvo. Nenhuma notificação foi enviada.", "success")
+                return redirect(url_for("football.notifications"))
             clause = "active=1" if audience == "all" else "active=1 AND gender!='female' AND membership_type!='veteran'"
             recipients = db.execute(f"SELECT id FROM players WHERE {clause}").fetchall()
             sent = 0
             for player in recipients:
-                    sent += int(send_player_push(db, player["id"], title, body, "/notificacoes").get("sent", 0))
-            db.execute("INSERT INTO push_announcements(title,body,audience,sent_count,created_by) VALUES(?,?,?,?,?)", (title, body, audience, sent, g.user["id"]))
+                sent += int(send_player_push(db, player["id"], title, body, "/notificacoes").get("sent", 0))
+            if action == "send_draft" and announcement_id:
+                db.execute("UPDATE push_announcements SET status='ENVIADO',sent_count=?,title=?,body=?,audience=? WHERE id=?", (sent, title, body, audience, announcement_id))
+            else:
+                db.execute("INSERT INTO push_announcements(title,body,audience,status,sent_count,created_by) VALUES(?,?,?,?,?,?)", (title, body, audience, "ENVIADO", sent, g.user["id"]))
             db.commit()
             flash(f"Aviso enviado para {sent} dispositivo(s) inscrito(s).", "success")
         except ValueError as exc:
@@ -674,9 +695,11 @@ def notifications():
             db.rollback(); current_app.logger.error("Erro ao enviar aviso push: %s", exc)
             flash("Não foi possível enviar o aviso.", "danger")
         return redirect(url_for("football.notifications"))
+    edit_id = request.args.get("edit_id", type=int)
+    draft = db.execute("SELECT * FROM push_announcements WHERE id=? AND status='RASCUNHO'", (edit_id,)).fetchone() if edit_id else None
     history = db.execute("""SELECT pa.*,u.name user_name FROM push_announcements pa
         LEFT JOIN users u ON u.id=pa.created_by ORDER BY pa.id DESC LIMIT 50""").fetchall()
-    return render_template("football_notifications.html", history=history)
+    return render_template("football_notifications.html", history=history, draft=draft)
 
 
 @bp.post("/notificacoes/historico/limpar")
