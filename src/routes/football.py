@@ -1116,7 +1116,9 @@ def detail(sumula_id):
         db.rollback()
         current_app.logger.warning("football.detail: tabela football_participant_matches ausente; exibindo sem vínculos (%s)", type(exc).__name__)
         participant_matches = []
-    match_options = [{"id": row["id"], "number": row["number"]} for row in data[2]]
+    # Each match entry returned by _sumula contains the database row under
+    # ``row`` together with its lineups and goals.
+    match_options = [{"id": item["row"]["id"], "number": item["row"]["number"]} for item in data[2]]
     auto_roles = []
     for responsible in data[4]:
         observation = responsible["observation"] or ""
