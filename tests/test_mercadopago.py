@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
@@ -1012,6 +1013,36 @@ class MercadoPagoFlowTest(unittest.TestCase):
             static_response = self.client.get("/static/pwa.js")
         self.assertEqual(static_response.status_code, 200)
         static_response.close()
+
+    def test_two_simultaneous_session_reads_are_read_only(self):
+        """Concurrent page/unread-count requests must not race on the user row."""
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO players(name,war_name) VALUES(?,?)", ("Leitor", "leitor"))
+            player_id = db.execute("SELECT id FROM players WHERE war_name=?", ("leitor",)).fetchone()["id"]
+            db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("leitor", "Leitor", "hash", player_id),
+            )
+            db.commit()
+            client_user_id = db.execute("SELECT id FROM users WHERE username=?", ("leitor",)).fetchone()["id"]
+
+        clients = [app.test_client(), app.test_client()]
+        for client in clients:
+            with client.session_transaction() as session:
+                session["user_id"] = client_user_id
+
+        def fetch_unread(client):
+            return client.get("/notifications/push/unread-count", headers={"Accept": "application/json"})
+
+        # The schema is already prepared by setUp; prevent this test's two
+        # independent connections from needlessly rerunning SQLite setup.
+        with patch("src.db.init_sqlite"):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                responses = list(pool.map(fetch_unread, clients))
+
+        self.assertEqual([response.status_code for response in responses], [200, 200])
+        self.assertEqual([response.get_json()["count"] for response in responses], [0, 0])
 
     def test_password_hash_is_compatible_with_local_python(self):
         password_hash = make_password_hash("senha-segura-123")

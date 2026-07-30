@@ -45,6 +45,19 @@ Abra `http://127.0.0.1:5000`. O banco SQLite `bar.db` é criado automaticamente 
 
 Em desenvolvimento local, `DATABASE_URL` é opcional e o sistema usa automaticamente o arquivo `bar.db`. Em produção na Vercel, `DATABASE_URL` deve apontar para o PostgreSQL/Supabase.
 
+### Migração do PostgreSQL/Supabase
+
+As tabelas e alterações de esquema do PostgreSQL não são executadas durante
+requisições HTTP. Depois de publicar uma alteração que inclua schema, execute
+uma vez, em ambiente controlado, antes de liberar o deploy:
+
+```bash
+DATABASE_URL='postgresql://...' .venv/bin/python scripts/migrate_postgres_schema.py
+```
+
+O comando é idempotente, mas deve ser executado fora da função serverless para
+evitar que instâncias concorrentes alterem o catálogo do PostgreSQL.
+
 ## Mercado Pago Pix
 
 1. Em [Suas integrações do Mercado Pago](https://www.mercadopago.com.br/developers/panel/app), habilite o **Checkout Transparente via Orders** com Pix.
