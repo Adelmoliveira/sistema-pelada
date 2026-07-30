@@ -299,8 +299,13 @@ def _position_distribution(db):
 
 
 @bp.get("")
-@roles_allowed("manager")
+@roles_allowed("manager", "football_manager")
 def dashboard():
+    # O Gestor da Súmula deve permanecer restrito ao módulo de súmulas.
+    # Se acessar a raiz antiga (/futebol), encaminhe-o para a listagem em vez
+    # de exibir um erro de permissão (por exemplo, ao voltar pelo navegador).
+    if g.user["role"] == "football_manager":
+        return redirect(url_for("football.sumulas"))
     db = get_db()
     today = local_today()
     month_start = today.replace(day=1)
