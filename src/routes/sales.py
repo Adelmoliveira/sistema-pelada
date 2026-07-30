@@ -15,6 +15,7 @@ from src.services.mercadopago import (
 from src.services.stock_alerts import notify_low_stock
 from src.services.purchase_receipts import send_purchase_receipt, send_delivery_update
 from src.services.push_notifications import send_player_push_once
+from src.services.bar_credits import approve_topup, balance as credit_balance, consume as consume_credit, notify_low_balance
 
 bp = Blueprint("sales", __name__)
 PIX_TOKEN_MAX_AGE = 60 * 60
@@ -136,12 +137,13 @@ def sale():
             method = request.form["payment_method"]
             if method == "Pix" and mercadopago_enabled():
                 raise ValueError("Para pagamentos Pix, gere o QR Code e aguarde a confirmação automática.")
-            if g.user["role"] == "client" and method not in ("Pix", "Dinheiro"):
+            if g.user["role"] == "client" and method not in ("Pix", "Dinheiro", "Créditos"):
                 raise ValueError("Clientes podem registrar pagamentos somente em Pix ou Dinheiro.")
             
             cash_pending = method == "Dinheiro"
             paid = 0 if cash_pending else 1
             payment_status = "pending_cash" if cash_pending else "approved"
+            low_credit_balance = None
             with db:
                 cur = db.execute(
                     """INSERT INTO sales
@@ -150,6 +152,12 @@ def sale():
                     (player_id, method, total, paid, payment_status, paid,
                      request.form.get("notes", "").strip())
                 )
+                if method == "Créditos":
+                    if g.user["role"] != "client":
+                        raise ValueError("Somente o peladeiro pode pagar com créditos.")
+                    paid = 1
+                    payment_status = "approved"
+                    db.execute("UPDATE sales SET paid=1,payment_status='approved',paid_at=CURRENT_TIMESTAMP WHERE id=?", (cur.lastrowid,))
                 for pid, qty in requested.items():
                     product = products_by_id[pid]
                     db.execute(
@@ -162,7 +170,11 @@ def sale():
                     )
                     if updated.rowcount != 1:
                         raise ValueError("O estoque mudou durante a venda. Tente novamente.")
+                if method == "Créditos":
+                    low_credit_balance, should_notify = consume_credit(db, player_id, total, cur.lastrowid, g.user["id"])
             notify_low_stock(db, requested.keys())
+            if method == "Créditos" and low_credit_balance is not None:
+                notify_low_balance(db, player_id, low_credit_balance)
             
             flash(f"Pedido registrado com sucesso! Pedido #{cur.lastrowid}.", "success")
             return redirect(url_for("sales.sale"), code=303)
@@ -201,6 +213,7 @@ def sale():
         product_data.append(product)
     product_data.sort(key=lambda product: (-int(product.get("sold_quantity") or 0), (product.get("category") or "").lower(), (product.get("name") or "").lower()))
     product_rows = product_data
+    client_credit_balance = credit_balance(db, g.user["player_id"])["balance_cents"] if g.user["role"] == "client" and g.user["player_id"] else 0
     product_groups = [group for group in ("Bebidas", "Alimentos", "Salgados", "Outros") if any(product["group"] == group for product in product_data)]
     return render_template(
         "sale.html",
@@ -217,6 +230,7 @@ def sale():
         } for player in player_rows],
         pix_token=pix_access_token(g.user),
         mercadopago_enabled=mercadopago_enabled(),
+        client_credit_balance=int(client_credit_balance or 0),
     )
 
 @bp.post("/sales/<int:sale_id>/delete")
@@ -335,7 +349,7 @@ def delivery_order_data(db, sale):
 def orders_feed():
     db = get_db()
     payment_method = request.args.get("payment_method", "").strip()
-    if payment_method not in {"", "Pix", "Dinheiro", "Débito", "Cortesia"}:
+    if payment_method not in {"", "Pix", "Dinheiro", "Débito", "Cortesia", "Créditos"}:
         payment_method = ""
     payment_clause = " AND s.payment_method=?" if payment_method else ""
     payment_params = (payment_method,) if payment_method else ()
@@ -689,6 +703,24 @@ def mercadopago_webhook():
             (str(data_id or ""), notification_data.get("external_reference")),
         ).fetchone()
         if not sale:
+            topup = db.execute(
+                "SELECT * FROM bar_credit_topups WHERE mercadopago_order_id=? OR external_reference=?",
+                (str(data_id or ""), notification_data.get("external_reference")),
+            ).fetchone()
+            if topup:
+                order = notification_data
+                if not order.get("status"):
+                    access_token, _ = mercadopago_config()
+                    if not access_token:
+                        return "", 503
+                    order = get_order(access_token, str(data_id))
+                if order.get("status") == "processed" and order.get("status_detail") == "accredited":
+                    with db:
+                        approve_topup(db, topup, order_payment_id(order))
+                elif order.get("status") in ("expired", "canceled"):
+                    db.execute("UPDATE bar_credit_topups SET payment_status=? WHERE id=? AND paid=0", (order["status"], topup["id"]))
+                    db.commit()
+                return "", 200
             # O simulador usa IDs fictícios. Uma notificação válida, mas sem uma
             # cobrança local correspondente, deve apenas ser reconhecida.
             return "", 200

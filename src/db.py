@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_bar_restock_requests_status ON bar_restock_reques
 CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL REFERENCES players(id),
-    payment_method TEXT NOT NULL CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia')),
+    payment_method TEXT NOT NULL CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia','Créditos')),
     total_cents INTEGER NOT NULL,
     paid INTEGER NOT NULL DEFAULT 1,
     payment_status TEXT NOT NULL DEFAULT 'approved',
@@ -129,6 +129,54 @@ CREATE TABLE IF NOT EXISTS sale_items (
     unit_price_cents INTEGER NOT NULL,
     unit_cost_cents INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS bar_credit_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL UNIQUE REFERENCES players(id) ON DELETE CASCADE,
+    balance_cents INTEGER NOT NULL DEFAULT 0 CHECK(balance_cents >= 0),
+    low_balance_notified INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS bar_credit_topups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    payment_method TEXT NOT NULL DEFAULT 'Pix',
+    paid INTEGER NOT NULL DEFAULT 0,
+    payment_status TEXT NOT NULL DEFAULT 'creating',
+    mercadopago_order_id TEXT,
+    mercadopago_payment_id TEXT,
+    external_reference TEXT UNIQUE,
+    idempotency_key TEXT,
+    paid_at TEXT,
+    refunded_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS bar_credit_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK(type IN ('PURCHASE','CONSUMPTION','ADJUSTMENT','REFUND')),
+    amount_cents INTEGER NOT NULL,
+    balance_after_cents INTEGER NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    sale_id INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+    topup_id INTEGER REFERENCES bar_credit_topups(id) ON DELETE SET NULL,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_bar_credit_transactions_player ON bar_credit_transactions(player_id,created_at);
+CREATE TABLE IF NOT EXISTS bar_credit_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    topup_id INTEGER REFERENCES bar_credit_topups(id) ON DELETE SET NULL,
+    transaction_id INTEGER REFERENCES bar_credit_transactions(id) ON DELETE SET NULL,
+    actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_bar_credit_audit_player ON bar_credit_audit(player_id,created_at);
 CREATE TABLE IF NOT EXISTS sale_item_deliveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
@@ -710,7 +758,7 @@ def migrate_payment_method(connection):
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='sales'"
     ).fetchone()
-    if not row or "Fiado" not in (row[0] or ""):
+    if not row or "'Créditos'" in (row[0] or ""):
         return
     connection.execute("PRAGMA foreign_keys = OFF")
     connection.executescript("""
@@ -720,7 +768,7 @@ def migrate_payment_method(connection):
         CREATE TABLE sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             player_id INTEGER NOT NULL REFERENCES players(id),
-            payment_method TEXT NOT NULL CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia')),
+            payment_method TEXT NOT NULL CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia','Créditos')),
             total_cents INTEGER NOT NULL,
             paid INTEGER NOT NULL DEFAULT 1,
             notes TEXT DEFAULT '',
@@ -745,6 +793,46 @@ def migrate_payment_method(connection):
         COMMIT;
     """)
     connection.execute("PRAGMA foreign_keys = ON")
+
+def migrate_credit_payment_method(connection):
+    """Allow the new credit wallet payment method on existing SQLite databases."""
+    row = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='sales'").fetchone()
+    sql = (row[0] or "") if row else ""
+    if not row or "'Créditos'" in sql:
+        return
+    columns = {item[1] for item in connection.execute("PRAGMA table_info(sales)").fetchall()}
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("ALTER TABLE sales RENAME TO sales_credit_old")
+    connection.executescript("""
+        CREATE TABLE sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL REFERENCES players(id),
+            payment_method TEXT NOT NULL CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia','Créditos')),
+            total_cents INTEGER NOT NULL,
+            paid INTEGER NOT NULL DEFAULT 1,
+            payment_status TEXT NOT NULL DEFAULT 'approved',
+            mercadopago_order_id TEXT,
+            mercadopago_payment_id TEXT,
+            external_reference TEXT,
+            idempotency_key TEXT,
+            paid_at TEXT,
+            ready_for_delivery INTEGER NOT NULL DEFAULT 0,
+            delivered_at TEXT,
+            delivered_by INTEGER REFERENCES users(id),
+            notes TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            receipt_sent_at TEXT,
+            receipt_error TEXT DEFAULT ''
+        );
+    """)
+    target = ["id","player_id","payment_method","total_cents","paid","payment_status","mercadopago_order_id","mercadopago_payment_id","external_reference","idempotency_key","paid_at","ready_for_delivery","delivered_at","delivered_by","notes","created_at","receipt_sent_at","receipt_error"]
+    source = [name if name in columns else "NULL" for name in target]
+    connection.execute(f"INSERT INTO sales({','.join(target)}) SELECT {','.join(source)} FROM sales_credit_old")
+    connection.execute("DROP TABLE sales_credit_old")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at)")
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.commit()
 
 def migrate_user_roles(connection):
     row = connection.execute(
@@ -899,7 +987,14 @@ def init_sqlite(wrapper):
     conn = wrapper.conn
     migrate_user_roles(conn)
     migrate_payment_method(conn)
+    migrate_credit_payment_method(conn)
     conn.executescript(SCHEMA)
+    topup_columns = {row[1] for row in conn.execute("PRAGMA table_info(bar_credit_topups)")}
+    if "refunded_at" not in topup_columns:
+        conn.execute("ALTER TABLE bar_credit_topups ADD COLUMN refunded_at TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_bar_credit_topups_idempotency ON bar_credit_topups(player_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bar_credit_audit_player ON bar_credit_audit(player_id,created_at)")
+    conn.commit()
     migrate_maintenance_areas(conn)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(players)")}
     if "email" not in columns:
@@ -1185,6 +1280,36 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_sent_at TIMESTAMP")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_error TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_payment_method_check")
+    wrapper.execute("ALTER TABLE sales ADD CONSTRAINT sales_payment_method_check CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia','Créditos'))")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS bar_credit_accounts (
+        id SERIAL PRIMARY KEY, player_id INTEGER NOT NULL UNIQUE REFERENCES players(id) ON DELETE CASCADE,
+        balance_cents INTEGER NOT NULL DEFAULT 0 CHECK(balance_cents >= 0), low_balance_notified INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS bar_credit_topups (
+        id SERIAL PRIMARY KEY, player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+        amount_cents INTEGER NOT NULL CHECK(amount_cents > 0), payment_method TEXT NOT NULL DEFAULT 'Pix',
+        paid INTEGER NOT NULL DEFAULT 0, payment_status TEXT NOT NULL DEFAULT 'creating',
+        mercadopago_order_id TEXT, mercadopago_payment_id TEXT, external_reference TEXT UNIQUE,
+        idempotency_key TEXT, paid_at TIMESTAMP, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS bar_credit_transactions (
+        id SERIAL PRIMARY KEY, player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+        type TEXT NOT NULL CHECK(type IN ('PURCHASE','CONSUMPTION','ADJUSTMENT','REFUND')),
+        amount_cents INTEGER NOT NULL, balance_after_cents INTEGER NOT NULL, description TEXT NOT NULL DEFAULT '',
+        sale_id INTEGER REFERENCES sales(id) ON DELETE SET NULL, topup_id INTEGER REFERENCES bar_credit_topups(id) ON DELETE SET NULL,
+        created_by INTEGER REFERENCES users(id), created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_bar_credit_transactions_player ON bar_credit_transactions(player_id,created_at)")
+    wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_bar_credit_topups_mp_order ON bar_credit_topups(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
+    wrapper.execute("ALTER TABLE bar_credit_topups ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP")
+    wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_bar_credit_topups_idempotency ON bar_credit_topups(player_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS bar_credit_audit (
+        id SERIAL PRIMARY KEY, player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+        action TEXT NOT NULL, amount_cents INTEGER NOT NULL DEFAULT 0,
+        topup_id INTEGER REFERENCES bar_credit_topups(id) ON DELETE SET NULL,
+        transaction_id INTEGER REFERENCES bar_credit_transactions(id) ON DELETE SET NULL,
+        actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        reason TEXT NOT NULL DEFAULT '', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_bar_credit_audit_player ON bar_credit_audit(player_id,created_at)")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS sale_item_deliveries (
         id SERIAL PRIMARY KEY,
         sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,

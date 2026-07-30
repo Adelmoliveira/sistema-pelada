@@ -18,6 +18,7 @@ from src.routes.auth import bp as auth_bp, home_endpoint
 from src.routes.players import bp as players_bp
 from src.routes.products import bp as products_bp
 from src.routes.sales import bp as sales_bp
+from src.routes.credits import bp as credits_bp
 from src.routes.finance import bp as finance_bp
 from src.routes.infra import bp as infra_bp
 from src.routes.maintenance import bp as maintenance_bp
@@ -51,6 +52,8 @@ app.config.update(
     VAPID_PUBLIC_KEY=os.environ.get("VAPID_PUBLIC_KEY"),
     VAPID_PRIVATE_KEY=os.environ.get("VAPID_PRIVATE_KEY"),
     VAPID_SUBJECT=os.environ.get("VAPID_SUBJECT", "mailto:diretoriagpcta@gmail.com"),
+    BAR_CREDIT_LOW_THRESHOLD_CENTS=int(os.environ.get("BAR_CREDIT_LOW_THRESHOLD_CENTS", "1000") or 1000),
+    BAR_CREDIT_MAX_TOPUP_CENTS=int(os.environ.get("BAR_CREDIT_MAX_TOPUP_CENTS", "50000") or 50000),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=is_vercel,
@@ -90,6 +93,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(players_bp)
 app.register_blueprint(products_bp)
 app.register_blueprint(sales_bp)
+app.register_blueprint(credits_bp)
 app.register_blueprint(finance_bp)
 app.register_blueprint(infra_bp)
 app.register_blueprint(maintenance_bp)
@@ -114,12 +118,14 @@ def offline():
 # Exempt public/authentication routes from CSRF to avoid login issues in local/dev deployments
 from src.routes.auth import setup, login, client_access, logout, push_subscribe, push_unsubscribe
 from src.routes.sales import mercadopago_create_order, mercadopago_webhook
+from src.routes.credits import purchase as credit_purchase
 csrf.exempt(setup)
 csrf.exempt(login)
 csrf.exempt(client_access)
 csrf.exempt(logout)
 csrf.exempt(mercadopago_create_order)
 csrf.exempt(mercadopago_webhook)
+csrf.exempt(credit_purchase)
 csrf.exempt(push_subscribe)
 csrf.exempt(push_unsubscribe)
 

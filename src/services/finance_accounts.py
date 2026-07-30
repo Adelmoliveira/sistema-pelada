@@ -11,6 +11,7 @@ MOVEMENT_CATEGORY_LABELS = {
 }
 ALL_CATEGORY_LABELS = {
     "membership": "Mensalidade",
+    "bar_credit_topup": "Recarga de créditos do bar",
     **MOVEMENT_CATEGORY_LABELS,
     "transfer": "Transferência entre áreas",
 }
@@ -28,7 +29,7 @@ def create_finance_movement(
         raise ValueError("Conta financeira inválida.")
     if direction not in {"in", "out"}:
         raise ValueError("Tipo de movimentação inválido.")
-    if category not in {*MOVEMENT_CATEGORY_LABELS, "membership", "transfer"}:
+    if category not in {*MOVEMENT_CATEGORY_LABELS, "membership", "bar_credit_topup", "transfer"}:
         raise ValueError("Categoria financeira inválida.")
     if int(amount_cents or 0) <= 0:
         raise ValueError("O valor deve ser maior que zero.")
