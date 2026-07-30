@@ -1114,12 +1114,19 @@ def detail(sumula_id):
         return redirect(url_for("football.detail", sumula_id=sumula_id))
     # Além dos peladeiros aptos atuais, mantém disponíveis os históricos já
     # lançados nesta súmula para que possam ser reutilizados em outra partida.
-    players = db.execute("""SELECT DISTINCT p.id,p.name,p.war_name,p.football_position
-        FROM players p LEFT JOIN football_participants fp
-          ON fp.player_id=p.id AND fp.sumula_id=?
-        WHERE (p.active=1 AND p.gender!='female' AND p.membership_type!='veteran'
-               AND COALESCE(p.football_position,'')!='APOSENTADO') OR fp.id IS NOT NULL
-        ORDER BY LOWER(COALESCE(p.war_name,p.name)),LOWER(p.name)""", (sumula_id,)).fetchall()
+    # PostgreSQL does not allow ORDER BY expressions that are absent from a
+    # SELECT DISTINCT list.  Keep the DISTINCT in a subquery (the join can
+    # otherwise duplicate a player) and sort in the outer query so this page
+    # works consistently on SQLite and PostgreSQL.
+    players = db.execute("""SELECT id,name,war_name,football_position
+        FROM (
+            SELECT DISTINCT p.id,p.name,p.war_name,p.football_position
+            FROM players p LEFT JOIN football_participants fp
+              ON fp.player_id=p.id AND fp.sumula_id=?
+            WHERE (p.active=1 AND p.gender!='female' AND p.membership_type!='veteran'
+                   AND COALESCE(p.football_position,'')!='APOSENTADO') OR fp.id IS NOT NULL
+        ) AS eligible_players
+        ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)""", (sumula_id,)).fetchall()
     player_positions = {str(player["id"]): _lineup_position(player["football_position"]) for player in players}
     used_orders = {int(row["draw_order"]) for row in db.execute("SELECT draw_order FROM football_participants WHERE sumula_id=? AND draw_order IS NOT NULL", (sumula_id,)).fetchall()}
     next_draw_order = next((number for number in range(1, 45) if number not in used_orders), 44)
