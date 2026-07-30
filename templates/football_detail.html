@@ -88,5 +88,27 @@ var participants=[];
 </script>
 {% if sumula['locked_at'] %}<script>document.querySelectorAll('.app-page .badge.text-bg-primary').forEach((badge)=>{badge.classList.remove('text-bg-primary');badge.classList.add('text-bg-danger');badge.textContent='Encerrada definitivamente';});</script>{% endif %}
 {% if sumula['locked_at'] %}<script>document.querySelectorAll('main form').forEach((form)=>form.remove());</script>{% elif sumula['situacao'] == 'FINALIZADA' %}<script>document.querySelectorAll('main form').forEach((form)=>{const action=form.querySelector('input[name="action"][value="status"]');const situation=form.querySelector('input[name="situacao"][value="EM_ANDAMENTO"]');if(action&&situation){form.addEventListener('submit',(event)=>{const justification=window.prompt('Informe a justificativa para reabrir a súmula:');if(!justification||justification.trim().length<5){event.preventDefault();window.alert('A justificativa deve ter pelo menos 5 caracteres.');return;}const input=document.createElement('input');input.type='hidden';input.name='justification';input.value=justification.trim();form.appendChild(input);});}});</script>{% endif %}
-{% endblock %}
 <script>var participants=[];</script>
+<script>
+// Garantia de compatibilidade: o seletor de partida precisa existir no
+// formulário mesmo quando algum aprimoramento JavaScript anterior falhar.
+(function(){
+  const form=document.querySelector('form input[name="action"][value="participant"]')?.closest('form');
+  const matches={{match_options|tojson}};
+  if(!form||!Array.isArray(matches)||!matches.length)return;
+  let select=form.querySelector('[name="participant_match_id"]');
+  if(!select){
+    const draw=form.querySelector('[name="draw_order"]');
+    if(!draw)return;
+    const wrapper=document.createElement('div'); wrapper.className='col-4';
+    select=document.createElement('select'); select.className='form-select'; select.name='participant_match_id'; select.setAttribute('aria-label','Partida do participante');
+    select.innerHTML='<option value="">Partida (opcional)</option>'+matches.map(m=>`<option value="${m.id}">${m.number}ª partida</option>`).join('');
+    wrapper.appendChild(select); draw.closest('[class*="col-"]')?.before(wrapper);
+  }
+  document.querySelectorAll('[data-participant-tab]').forEach(tab=>tab.addEventListener('click',()=>{
+    const match=matches.find(m=>String(m.number)===tab.dataset.participantTab);
+    if(match)select.value=String(match.id);
+  }));
+})();
+</script>
+{% endblock %}
