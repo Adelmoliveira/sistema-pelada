@@ -257,7 +257,7 @@ def _sumula(db, sumula_id, audit_page=None):
     row = db.execute("SELECT fs.*,u.name created_by_name FROM football_sumulas fs LEFT JOIN users u ON u.id=fs.created_by WHERE fs.id=?", (sumula_id,)).fetchone()
     if not row:
         return None
-    participants = db.execute("SELECT fp.*,p.name,p.war_name,p.photo_data,p.thumbnail_data,p.football_position FROM football_participants fp JOIN players p ON p.id=fp.player_id WHERE fp.sumula_id=? ORDER BY COALESCE(fp.draw_order,999999),LOWER(p.war_name),LOWER(p.name)", (sumula_id,)).fetchall()
+    participants = db.execute("SELECT fp.*,p.name,p.war_name,p.photo_data,p.thumbnail_data,p.football_position,p.historical_only FROM football_participants fp JOIN players p ON p.id=fp.player_id WHERE fp.sumula_id=? ORDER BY COALESCE(fp.draw_order,999999),LOWER(p.war_name),LOWER(p.name)", (sumula_id,)).fetchall()
     matches = []
     for match in db.execute("SELECT * FROM football_matches WHERE sumula_id=? ORDER BY number", (sumula_id,)).fetchall():
         lineups = [dict(item) for item in db.execute("SELECT fl.*,p.name,p.war_name FROM football_lineups fl JOIN players p ON p.id=fl.player_id WHERE fl.match_id=? ORDER BY fl.period,fl.team,fl.position,COALESCE(fl.draw_order,999999),LOWER(p.name)", (match["id"],)).fetchall()]
@@ -299,7 +299,7 @@ def _position_distribution(db):
 
 
 @bp.get("")
-@roles_allowed("manager", "football_manager")
+@roles_allowed("manager")
 def dashboard():
     db = get_db()
     today = local_today()
@@ -318,7 +318,7 @@ def dashboard():
 
 
 @bp.get("/gestao/posicoes")
-@roles_allowed("manager", "football_manager")
+@roles_allowed("manager")
 def position_distribution():
     db = get_db()
     position_summary, eligible_total, positioned_total = _position_distribution(db)
@@ -326,7 +326,7 @@ def position_distribution():
 
 
 @bp.get("/gestao/tempo-futebol")
-@roles_allowed("manager", "football_manager")
+@roles_allowed("manager")
 def tenure_report():
     """Lista os peladeiros pelo tempo desde a apresentação no grupo."""
     db = get_db()
@@ -375,7 +375,7 @@ def tenure_report():
 
 
 @bp.get("/estatisticas")
-@roles_allowed("manager", "football_manager")
+@roles_allowed("manager")
 def statistics():
     db = get_db()
     year = request.args.get("year", "").strip()
@@ -405,7 +405,7 @@ def statistics():
     totals = db.execute(f"SELECT COUNT(DISTINCT fs.id) sumulas,COUNT(DISTINCT fm.id) partidas,COUNT(DISTINCT fg.id) gols FROM football_sumulas fs LEFT JOIN football_matches fm ON fm.sumula_id=fs.id AND fm.status='ENCERRADA' LEFT JOIN football_goals fg ON fg.match_id=fm.id WHERE fs.situacao='FINALIZADA'{fs_filter}", tuple(fs_params)).fetchone()
     finalized_sumulas = int(totals["sumulas"] or 0)
     player_stats = []
-    player_where = "WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO'"
+    player_where = "WHERE (active=1 OR historical_only=1) AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO'"
     player_params = []
     if player_int:
         player_where += " AND id=?"; player_params.append(player_int)
@@ -442,7 +442,7 @@ def statistics():
 
 
 @bp.get("/frequencia")
-@roles_allowed("manager", "football_manager")
+@roles_allowed("manager")
 def attendance():
     db = get_db()
     total_sumulas = int(db.execute(
@@ -454,7 +454,7 @@ def attendance():
            FROM players p
            LEFT JOIN football_participants fp ON fp.player_id=p.id
            LEFT JOIN football_sumulas fs ON fs.id=fp.sumula_id AND fs.situacao='FINALIZADA'
-           WHERE p.active=1 AND p.gender!='female' AND p.membership_type!='veteran' AND COALESCE(p.football_position,'')!='APOSENTADO'
+           WHERE (p.active=1 OR p.historical_only=1) AND p.gender!='female' AND p.membership_type!='veteran' AND COALESCE(p.football_position,'')!='APOSENTADO'
            GROUP BY p.id,p.name,p.war_name,p.football_position
            ORDER BY participacoes DESC,LOWER(COALESCE(p.war_name,p.name)),LOWER(p.name)"""
     ).fetchall()
@@ -537,11 +537,11 @@ def client_panel():
 
 
 @bp.route("/transferencia", methods=["GET", "POST"])
-@roles_allowed("client", "manager", "football_manager")
+@roles_allowed("client", "manager")
 def transfer_window():
     db = get_db()
     window = _transfer_window(db=db)
-    is_manager = g.user["role"] in ("manager", "football_manager")
+    is_manager = g.user["role"] == "manager"
     if request.method == "POST":
         if not is_manager:
             if not window["is_open"]:
@@ -646,7 +646,7 @@ def transfer_window():
 
 
 @bp.route("/notificacoes", methods=["GET", "POST"])
-@roles_allowed("manager", "football_manager", "client")
+@roles_allowed("manager", "client")
 def notifications():
     if g.user["role"] == "client":
         return redirect(url_for("auth.notifications_inbox"))
@@ -703,7 +703,7 @@ def notifications():
 
 
 @bp.post("/notificacoes/historico/limpar")
-@roles_allowed("manager", "football_manager")
+@roles_allowed("manager")
 def clear_notification_history():
     db = get_db()
     db.execute("DELETE FROM push_announcements")
@@ -800,6 +800,38 @@ def detail(sumula_id):
                         raise ValueError("Esta ordem de sorteio já está ocupada.")
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, draw_order or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
+            elif action == "historical_participant":
+                historical_name = request.form.get("historical_name", "").strip()[:120]
+                if len(historical_name) < 2:
+                    raise ValueError("Informe o nome do peladeiro histórico.")
+                existing = db.execute(
+                    "SELECT id,active,historical_only FROM players WHERE LOWER(name)=LOWER(?) OR LOWER(war_name)=LOWER(?) ORDER BY active DESC,id LIMIT 1",
+                    (historical_name, historical_name),
+                ).fetchone()
+                if existing:
+                    player_id = int(existing["id"])
+                    # Reuse an inactive record without reactivating it. This
+                    # keeps former peladeiros available to historical súmulas
+                    # while excluding them from current operations.
+                    if not int(existing["active"] or 0) and not int(existing["historical_only"] or 0):
+                        db.execute("UPDATE players SET historical_only=1 WHERE id=?", (player_id,))
+                else:
+                    player = db.execute(
+                        "INSERT INTO players(name,war_name,membership_type,historical_only,active) VALUES(?,?, 'historical',1,0)",
+                        (historical_name, historical_name),
+                    )
+                    player_id = int(player.lastrowid)
+                if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND player_id=?", (sumula_id, player_id)).fetchone():
+                    raise ValueError("Este peladeiro já está na súmula.")
+                draw_order = request.form.get("historical_draw_order", "").strip()
+                if draw_order:
+                    draw_order = int(draw_order)
+                    if draw_order < 1 or draw_order > 44:
+                        raise ValueError("A ordem do sorteio deve estar entre 1 e 44.")
+                    if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND draw_order=?", (sumula_id, draw_order)).fetchone():
+                        raise ValueError("Esta ordem de sorteio já está ocupada.")
+                db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), "", draw_order or None, "Cadastro histórico"))
+                _audit(db, sumula_id, "PARTICIPANTE_HISTORICO_ADICIONADO", historical_name)
             elif action == "lineup":
                 if not request.form.get("player_id"):
                     flash("Nenhum jogador selecionado. A escalação é opcional.", "info")
@@ -809,8 +841,6 @@ def detail(sumula_id):
                 period = int(raw_period) if raw_period else 1
                 if period not in (1, 2):
                     raise ValueError("O tempo da partida é inválido.")
-                if not _eligible_player(db, player_id):
-                    raise ValueError("Veteranos e mulheres não podem ser escalados nas partidas de futebol.")
                 if not _participant_player(db, sumula_id, player_id):
                     raise ValueError("Escale somente peladeiros participantes desta súmula.")
                 lineup_position = _lineup_position(request.form.get("position", ""))

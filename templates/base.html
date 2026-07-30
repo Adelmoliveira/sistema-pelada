@@ -27,12 +27,12 @@
 {% set football_active=endpoint.startswith('football.') and not football_management_active %}
 {% set urgent_active=endpoint == 'players.urgent' %}
 {% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) %}
-{% set role_label={'manager':'Gerente','staff':'Staff','client':'Peladeiro','infra':'Infra','maintenance':'Manutenção','football_manager':'Gestor do Futebol'}.get(current_user.role,current_user.role) %}
+{% set role_label={'manager':'Gerente','staff':'Staff','client':'Peladeiro','infra':'Infra','maintenance':'Manutenção','football_manager':'Gestor da Súmula'}.get(current_user.role,current_user.role) %}
 <div class="app-shell" id="app-shell">
   <aside class="offcanvas-lg offcanvas-start app-sidebar" tabindex="-1" id="app-sidebar" aria-labelledby="sidebar-title">
     <div class="offcanvas-header sidebar-mobile-header"><span class="fw-semibold">Menu</span><button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" data-bs-target="#app-sidebar" aria-label="Fechar"></button></div>
     <div class="offcanvas-body sidebar-body">
-      <a class="sidebar-brand" href="{{url_for('maintenance.new_request') if current_user.role == 'maintenance' else (url_for('infra.load_relation') if current_user.role == 'infra' else (url_for('sales.sale') if current_user.role == 'client' else url_for('finance.dashboard')))}}" id="sidebar-title">
+      <a class="sidebar-brand" href="{{url_for('maintenance.new_request') if current_user.role == 'maintenance' else (url_for('infra.load_relation') if current_user.role == 'infra' else (url_for('sales.sale') if current_user.role == 'client' else (url_for('football.sumulas') if current_user.role == 'football_manager' else url_for('finance.dashboard'))))}}" id="sidebar-title">
         <img src="{{url_for('static',filename='logo-gpcta.jpeg')}}" alt="Logo GPCTA"><span><small>Grupo de Peladas do CTA</small><strong>PELADEIROS GPCTA</strong></span>
       </a>
       <nav class="sidebar-nav" id="sidebar-nav" aria-label="Menu principal">
@@ -52,7 +52,7 @@
           <button class="sidebar-module {{'active' if football_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-football" aria-expanded="{{'true' if football_active else 'false'}}" aria-controls="sidebar-football"><span class="sidebar-module-icon">⚽</span><span>Súmula</span><span class="sidebar-chevron">⌄</span></button>
           <div class="collapse {{'show' if football_active}}" id="sidebar-football" data-bs-parent="#sidebar-nav"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'football.sumulas'}}" href="{{url_for('football.sumulas')}}">Súmulas</a><a class="{{'active' if endpoint == 'football.historical_stats'}}" href="{{url_for('football.historical_stats')}}">Gols e assistências anteriores</a><a class="{{'active' if endpoint == 'football.new_sumula'}}" href="{{url_for('football.new_sumula')}}">Nova súmula</a></div></div>
         </div>{% endif %}
-        {% if current_user.role in ['manager','football_manager'] %}<div class="sidebar-group">
+        {% if current_user.role == 'manager' %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if football_management_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-football-management" aria-expanded="{{'true' if football_management_active else 'false'}}" aria-controls="sidebar-football-management"><span class="sidebar-module-icon">⚽</span><span>Gestão do futebol</span><span class="sidebar-chevron">⌄</span></button>
           <div class="collapse {{'show' if football_management_active}}" id="sidebar-football-management" data-bs-parent="#sidebar-nav"><div class="sidebar-submenu"><a class="{{'active' if endpoint in ['football.dashboard','football.position_distribution']}}" href="{{url_for('football.dashboard')}}">Dashboard</a><a class="{{'active' if endpoint == 'football.tenure_report'}}" href="{{url_for('football.tenure_report')}}">Tempo de futebol</a><a class="{{'active' if endpoint == 'football.statistics'}}" href="{{url_for('football.statistics')}}">Estatísticas</a><a class="{{'active' if endpoint == 'football.attendance'}}" href="{{url_for('football.attendance')}}">Frequência geral</a><a class="{{'active' if endpoint == 'football.transfer_window'}}" href="{{url_for('football.transfer_window')}}">Janela de transferência</a><a class="{{'active' if endpoint == 'football.notifications'}}" href="{{url_for('football.notifications')}}">Notificações</a></div></div>
         </div>{% endif %}
@@ -68,9 +68,9 @@
         </div>{% endif %}
         {% if current_user.role == 'client' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}"><span class="sidebar-module-icon">M</span><span>Novo chamado</span></a>{% endif %}
         {% if current_user.role == 'maintenance' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}"><span class="sidebar-module-icon">M</span><span>Novo chamado</span></a>{% endif %}
-        <a class="sidebar-module sidebar-direct urgent {{'active' if urgent_active}}" href="{{url_for('players.urgent')}}"><span class="sidebar-module-icon">!</span><span>Urgente</span></a>
+        {% if current_user.role != 'football_manager' %}<a class="sidebar-module sidebar-direct urgent {{'active' if urgent_active}}" href="{{url_for('players.urgent')}}"><span class="sidebar-module-icon">!</span><span>Urgente</span></a>{% endif %}
         {% if current_user.role in ['client','manager'] %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'auth.birthdays'}}" href="{{url_for('auth.birthdays')}}"><span class="sidebar-module-icon">🎂</span><span>Aniversariantes do mês</span></a>{% endif %}
-        {% if current_user.role in ['manager','football_manager'] %}<div class="sidebar-group">
+        {% if current_user.role == 'manager' %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if admin_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-admin" aria-expanded="{{'true' if admin_active else 'false'}}" aria-controls="sidebar-admin"><span class="sidebar-module-icon">A</span><span>Administração</span><span class="sidebar-chevron">⌄</span></button>
           <div class="collapse {{'show' if admin_active}}" id="sidebar-admin" data-bs-parent="#sidebar-nav"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'players.players'}}" href="{{url_for('players.players')}}">Peladeiros</a><a class="{{'active' if endpoint == 'players.football_positions'}}" href="{{url_for('players.football_positions')}}">Posições de futebol</a>{% if current_user.role == 'manager' %}<a class="{{'active' if endpoint == 'players.players_report'}}" href="{{url_for('players.players_report')}}">Cadastro completo / PDF</a><a class="{{'active' if endpoint.startswith('auth.user')}}" href="{{url_for('auth.users')}}">Usuários</a>{% endif %}</div></div>
         </div>{% endif %}
