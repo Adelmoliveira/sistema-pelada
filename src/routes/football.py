@@ -23,6 +23,10 @@ INCIDENT_LEVELS = {"INFORMATIVO": "Informativo", "ATENCAO": "Atenção", "GRAVE"
 CARD_TYPES = {"AMARELO": "Amarelo", "AZUL": "Azul", "VERMELHO": "Vermelho"}
 TRANSFER_POSITIONS = {"DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque"}
 TRANSFER_STATUSES = {"PENDENTE": "Pendente", "APROVADA": "Deferido", "RECUSADA": "Indeferido"}
+# Avisos de partidas matemáticas começam na nova fase de registros de julho de
+# 2026. Súmulas históricas cadastradas de janeiro a junho não devem disparar
+# notificações ao serem finalizadas.
+MATEMATICO_PUSH_START_DATE = date(2026, 7, 1)
 
 
 def _audit(db, sumula_id, action, details=""):
@@ -120,6 +124,14 @@ def _matematico_results(db, sumula_id):
     if not rows or any(abs(int(row["blue_score"] or 0) - int(row["white_score"] or 0)) > 2 for row in rows):
         return []
     return rows
+
+
+def _matematico_push_enabled(match_date):
+    """Indica se a data da súmula pertence ao período de avisos PWA."""
+    try:
+        return date.fromisoformat((match_date or "").strip()) >= MATEMATICO_PUSH_START_DATE
+    except (TypeError, ValueError):
+        return False
 
 
 def _match_day(value):
@@ -1030,7 +1042,7 @@ def detail(sumula_id):
                     if mismatches and not request.form.get("justification", "").strip():
                         raise ValueError("O placar não corresponde aos gols registrados (" + ", ".join(mismatches) + "). Informe uma justificativa.")
                     db.execute("UPDATE football_sumulas SET situacao=?,finalized_at=CURRENT_TIMESTAMP,reopen_justification=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, request.form.get("justification", "").strip(), sumula_id))
-                    math_results = _matematico_results(db, sumula_id)
+                    math_results = _matematico_results(db, sumula_id) if _matematico_push_enabled(sumula["match_date"]) else []
                 elif new_status == "CANCELADA": db.execute("UPDATE football_sumulas SET situacao=?,canceled_at=CURRENT_TIMESTAMP,canceled_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, g.user["id"], sumula_id))
                 else: db.execute("UPDATE football_sumulas SET situacao=?,reopen_justification=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, request.form.get("justification", "").strip(), sumula_id))
                 _audit(db, sumula_id, "SITUACAO_ATUALIZADA", f"{new_status}: {request.form.get('justification', '').strip()}")
