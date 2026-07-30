@@ -17,6 +17,8 @@ def send_player_push(db, player_id, title, body, url="/", image_url=""):
     except ImportError:
         return {"sent": 0, "skipped": 1, "reason": "pywebpush não instalado"}
     subscriptions = db.execute("SELECT id,endpoint,p256dh,auth FROM push_subscriptions WHERE player_id=?", (player_id,)).fetchall()
+    if not subscriptions:
+        return {"sent": 0, "skipped": 1, "reason": "sem inscrição ativa"}
     unread = int(db.execute("SELECT COUNT(*) FROM push_inbox WHERE player_id=? AND read_at IS NULL", (player_id,)).fetchone()[0] or 0)
     badge_count = unread + 1
     sent = 0
@@ -41,9 +43,22 @@ def send_player_push(db, player_id, title, body, url="/", image_url=""):
 def send_player_push_once(db, player_id, kind, period, title, body, url="/", image_url=""):
     existing = db.execute("SELECT 1 FROM push_dispatches WHERE player_id=? AND kind=? AND period=?", (player_id, kind, period)).fetchone()
     if existing:
-        return {"sent": 0, "skipped": 1, "reason": "já enviado"}
+        # Versões anteriores registravam o dispatch mesmo quando não havia
+        # inscrição ativa. Se não existe a mensagem correspondente na caixa
+        # de avisos, trata-se de uma tentativa sem entrega e pode ser refeita.
+        delivered = db.execute(
+            "SELECT 1 FROM push_inbox WHERE player_id=? AND title=? AND body=? LIMIT 1",
+            (player_id, title, body),
+        ).fetchone()
+        if delivered:
+            return {"sent": 0, "skipped": 1, "reason": "já enviado"}
+        db.execute("DELETE FROM push_dispatches WHERE player_id=? AND kind=? AND period=?", (player_id, kind, period))
+        db.commit()
     result = send_player_push(db, player_id, title, body, url, image_url)
-    if result.get("reason") not in ("VAPID não configurado", "pywebpush não instalado"):
+    # Só registra o dispatch após uma entrega efetiva. Assim, se a súmula for
+    # finalizada antes de o peladeiro ativar o PWA, o aviso poderá ser tentado
+    # novamente sem ficar bloqueado por uma marca falsa de envio.
+    if result.get("sent", 0) > 0:
         db.execute("INSERT INTO push_dispatches(player_id,kind,period) VALUES(?,?,?) ON CONFLICT(player_id,kind,period) DO NOTHING", (player_id, kind, period))
         db.commit()
     return result
