@@ -1143,7 +1143,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
             "/finance/reminders/settings",
             data={
                 "enabled": "1",
-                "schedule_day": str(local_today().day),
+                # O agendamento mensal aceita dias de 1 a 28 para funcionar
+                # inclusive em fevereiro; o teste deve continuar válido nos
+                # dias 29, 30 e 31 do mês corrente.
+                "schedule_day": str(min(local_today().day, 28)),
                 "subject": "Cobrança para {{ nome }}",
                 "body": "Total: {{ total }}",
             },
@@ -1154,9 +1157,11 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with patch("src.routes.finance.dispatch_reminders", return_value={
             "sent": 1, "failed": 0, "skipped": 0, "without_email": 0,
         }) as dispatch_mock:
-            authorized = self.client.get(
-                "/cron/payment-reminders", headers={"Authorization": "Bearer cron-secret-test"}
-            )
+            cron_day = local_today().replace(day=min(local_today().day, 28))
+            with patch("src.routes.finance.local_today", return_value=cron_day):
+                authorized = self.client.get(
+                    "/cron/payment-reminders", headers={"Authorization": "Bearer cron-secret-test"}
+                )
         self.assertEqual(authorized.status_code, 200)
         dispatch_mock.assert_called_once()
 
