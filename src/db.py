@@ -1414,6 +1414,18 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE football_incidents ADD COLUMN IF NOT EXISTS card TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE football_responsibles ADD COLUMN IF NOT EXISTS match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL")
     wrapper.execute("ALTER TABLE football_lineups ADD COLUMN IF NOT EXISTS period INTEGER NOT NULL DEFAULT 1")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS football_participant_matches (
+        id SERIAL PRIMARY KEY,
+        sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
+        match_id INTEGER NOT NULL REFERENCES football_matches(id) ON DELETE CASCADE,
+        player_id INTEGER NOT NULL REFERENCES players(id),
+        status TEXT NOT NULL DEFAULT 'CONFIRMADO' CHECK(status IN ('CONFIRMADO','AUSENTE','DESISTENTE','RESERVA')),
+        draw_order INTEGER,
+        observation TEXT DEFAULT '',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(sumula_id, match_id, player_id)
+    )""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_football_participant_matches_sumula ON football_participant_matches(sumula_id,match_id)")
     wrapper.execute("ALTER TABLE football_lineups DROP CONSTRAINT IF EXISTS football_lineups_match_id_player_id_key")
     wrapper.execute("""DO $$
     DECLARE item RECORD;

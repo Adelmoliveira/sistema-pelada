@@ -41,6 +41,14 @@ def _participant_player(db, sumula_id, player_id):
     return db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND player_id=?", (sumula_id, player_id)).fetchone()
 
 
+def _participant_matches_table_missing(exc):
+    """Return True only for the expected pre-migration missing-table error."""
+    message = str(exc).lower()
+    return "football_participant_matches" in message and (
+        "does not exist" in message or "undefinedtable" in message or "no such table" in message
+    )
+
+
 def _fallback_roles(db, sumula_id):
     """Calcula os papéis de emergência da segunda partida pela ordem do sorteio."""
     match = db.execute("SELECT id FROM football_matches WHERE sumula_id=? AND number=2", (sumula_id,)).fetchone()
@@ -862,10 +870,25 @@ def detail(sumula_id):
                     raise ValueError("Cadastre o peladeiro como participante antes de vinculá-lo a uma partida.")
                 if not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
                     raise ValueError("Partida inválida para esta súmula.")
-                if db.execute("SELECT 1 FROM football_participant_matches WHERE sumula_id=? AND match_id=? AND player_id=?", (sumula_id, match_id, player_id)).fetchone():
+                try:
+                    already_linked = db.execute("SELECT 1 FROM football_participant_matches WHERE sumula_id=? AND match_id=? AND player_id=?", (sumula_id, match_id, player_id)).fetchone()
+                except Exception as exc:
+                    if not _participant_matches_table_missing(exc):
+                        raise
+                    db.rollback()
+                    current_app.logger.warning("participant_match: tabela football_participant_matches ainda não foi migrada (%s)", type(exc).__name__)
+                    raise ValueError("A reutilização por partida ainda não está disponível. Execute a migração do banco de produção.")
+                if already_linked:
                     raise ValueError("Este peladeiro já está vinculado a esta partida.")
                 draw_order = request.form.get("draw_order", "").strip() or None
-                db.execute("INSERT INTO football_participant_matches(sumula_id,match_id,player_id,status,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, match_id, player_id, request.form.get("status", "CONFIRMADO"), draw_order, request.form.get("observation", "").strip()))
+                try:
+                    db.execute("INSERT INTO football_participant_matches(sumula_id,match_id,player_id,status,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, match_id, player_id, request.form.get("status", "CONFIRMADO"), draw_order, request.form.get("observation", "").strip()))
+                except Exception as exc:
+                    if not _participant_matches_table_missing(exc):
+                        raise
+                    db.rollback()
+                    current_app.logger.warning("participant_match: INSERT bloqueado antes da migração (%s)", type(exc).__name__)
+                    raise ValueError("A reutilização por partida ainda não está disponível. Execute a migração do banco de produção.")
                 _audit(db, sumula_id, "PARTICIPANTE_VINCULADO_PARTIDA", f"{player_id}:{match_id}")
             elif action == "lineup":
                 if not request.form.get("player_id"):
@@ -1079,10 +1102,20 @@ def detail(sumula_id):
     audit_total = int(db.execute("SELECT COUNT(*) FROM football_audit WHERE sumula_id=?", (sumula_id,)).fetchone()[0] or 0)
     audit_pages = max(1, (audit_total + 4) // 5)
     score_mismatches = _score_mismatches(db, data[2])
-    participant_matches = [dict(row) for row in db.execute("""SELECT fpm.*,p.name,p.war_name,fm.number match_number
-        FROM football_participant_matches fpm JOIN players p ON p.id=fpm.player_id
-        JOIN football_matches fm ON fm.id=fpm.match_id WHERE fpm.sumula_id=?
-        ORDER BY fm.number,COALESCE(fpm.draw_order,999999),LOWER(COALESCE(p.war_name,p.name))""", (sumula_id,)).fetchall()]
+    try:
+        participant_matches = [dict(row) for row in db.execute("""SELECT fpm.*,p.name,p.war_name,fm.number match_number
+            FROM football_participant_matches fpm JOIN players p ON p.id=fpm.player_id
+            JOIN football_matches fm ON fm.id=fpm.match_id WHERE fpm.sumula_id=?
+            ORDER BY fm.number,COALESCE(fpm.draw_order,999999),LOWER(COALESCE(p.war_name,p.name))""", (sumula_id,)).fetchall()]
+    except Exception as exc:
+        if not _participant_matches_table_missing(exc):
+            raise
+        # PostgreSQL marks the current transaction as failed after an
+        # undefined-table error. Reset it so the page can still be rendered
+        # while the one-time migration is being run.
+        db.rollback()
+        current_app.logger.warning("football.detail: tabela football_participant_matches ausente; exibindo sem vínculos (%s)", type(exc).__name__)
+        participant_matches = []
     match_options = [{"id": row["id"], "number": row["number"]} for row in data[2]]
     auto_roles = []
     for responsible in data[4]:
