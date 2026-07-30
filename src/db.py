@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from flask import g, current_app
@@ -709,6 +710,74 @@ def get_db():
         g.db = connect_db(current_app)
     return g.db
 
+
+TRANSIENT_POSTGRES_SQLSTATES = {"40001", "40P01"}
+
+
+def is_transient_database_error(exc):
+    """Return True only for retryable PostgreSQL concurrency failures."""
+    sqlstate = getattr(exc, "pgcode", None) or getattr(exc, "sqlstate", None)
+    if sqlstate in TRANSIENT_POSTGRES_SQLSTATES:
+        return True
+    # Supabase/PostgreSQL may surface this catalog-update race without a
+    # populated SQLSTATE in the serverless log.
+    return "tuple concurrently updated" in str(exc).lower()
+
+
+def read_user_from_session(user_id, retries=2):
+    """Read an authenticated user without changing schema or user state.
+
+    A short retry is limited to PostgreSQL's transient serialization/catalog
+    races. Every failed attempt is rolled back before another query is sent.
+    """
+    db = get_db()
+    sql = "SELECT * FROM users WHERE id=? AND active=1"
+    for attempt in range(retries + 1):
+        try:
+            return db.execute(sql, (user_id,)).fetchone()
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if not is_transient_database_error(exc) or attempt >= retries:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def run_postgres_migrations(database_url):
+    """Run the complete PostgreSQL schema setup explicitly, outside HTTP.
+
+    This is intentionally callable from a deploy/maintenance command only;
+    ``connect_db`` must never invoke it for a normal request.
+    """
+    import psycopg2
+    import psycopg2.extras
+
+    conn = psycopg2.connect(
+        database_url,
+        sslmode="require",
+        connect_timeout=10,
+        cursor_factory=psycopg2.extras.DictCursor,
+    )
+    try:
+        # Protect an explicitly-run migration from two release jobs touching
+        # PostgreSQL's catalog at the same time.
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_lock(hashtext('sistema-pelada-schema'))")
+        wrapper = DbWrapper(conn, is_postgres=True)
+        init_postgres(wrapper)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(hashtext('sistema-pelada-schema'))")
+        except Exception:
+            pass
+        conn.close()
+
 def connect_db(app):
     db_url = os.environ.get("DATABASE_URL") or app.config.get("DATABASE_URL")
     if not db_url:
@@ -750,9 +819,12 @@ def connect_db(app):
     )
     with conn.cursor() as cursor:
         cursor.execute("SET TIME ZONE 'UTC'")
-    wrapper = DbWrapper(conn, is_postgres=True)
-    init_postgres(wrapper)
-    return wrapper
+    # PostgreSQL schema creation/migrations are deliberately not run here.
+    # Vercel may create several instances concurrently; running DDL and data
+    # UPDATEs from each request can make PostgreSQL report "tuple concurrently
+    # updated". Run ``scripts/migrate_postgres_schema.py`` explicitly during
+    # deployment/maintenance instead.
+    return DbWrapper(conn, is_postgres=True)
 
 def migrate_payment_method(connection):
     row = connection.execute(

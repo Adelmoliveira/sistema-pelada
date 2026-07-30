@@ -12,7 +12,7 @@ try:
 except ImportError:
     pass
 
-from src.db import get_db
+from src.db import get_db, read_user_from_session
 from src.utils import money, brdate, cpfmask, local_today, month_year_label, service_medals
 from src.routes.auth import bp as auth_bp, home_endpoint
 from src.routes.players import bp as players_bp
@@ -166,7 +166,20 @@ def load_user_and_protect_routes():
         return None
 
     def database_unavailable(exc, operation):
-        app.logger.error(f"Erro ao {operation}: {exc}")
+        db = g.get("db")
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        app.logger.error(
+            "Erro ao %s | operation=%s | sql=%s | exception_type=%s | detail=%s",
+            operation,
+            operation,
+            "SELECT users WHERE id=? AND active=1" if operation == "carregar usuário da sessão" else "SELECT 1 FROM users LIMIT 1",
+            type(exc).__name__,
+            exc,
+        )
         message = "Não foi possível conectar ao sistema agora. Sua sessão foi preservada; tente novamente."
         if request.accept_mimetypes.best == "application/json":
             response = jsonify(error=message)
@@ -179,7 +192,10 @@ def load_user_and_protect_routes():
     user_id = session.get("user_id")
     if user_id:
         try:
-            g.user = get_db().execute("SELECT * FROM users WHERE id=? AND active=1", (user_id,)).fetchone()
+            # This must remain a read-only operation. In particular, do not
+            # update last_login/last_seen or repair schema while loading the
+            # signed session cookie.
+            g.user = read_user_from_session(user_id)
             if not g.user:
                 session.clear()
         except Exception as exc:
