@@ -510,6 +510,18 @@ CREATE TABLE IF NOT EXISTS football_matches (
     observation TEXT DEFAULT '',
     UNIQUE(sumula_id, number)
 );
+CREATE TABLE IF NOT EXISTS football_participant_matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
+    match_id INTEGER NOT NULL REFERENCES football_matches(id) ON DELETE CASCADE,
+    player_id INTEGER NOT NULL REFERENCES players(id),
+    status TEXT NOT NULL DEFAULT 'CONFIRMADO' CHECK(status IN ('CONFIRMADO','AUSENTE','DESISTENTE','RESERVA')),
+    draw_order INTEGER,
+    observation TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(sumula_id, match_id, player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_football_participant_matches_sumula ON football_participant_matches(sumula_id,match_id);
 CREATE TABLE IF NOT EXISTS football_lineups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id INTEGER NOT NULL REFERENCES football_matches(id) ON DELETE CASCADE,

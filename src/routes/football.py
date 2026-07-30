@@ -808,7 +808,8 @@ def detail(sumula_id):
                 player_id = int(request.form.get("player_id", ""))
                 if not _eligible_player(db, player_id):
                     raise ValueError("Veteranos e mulheres não participam das partidas de futebol.")
-                if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND player_id=?", (sumula_id, player_id)).fetchone(): raise ValueError("Este peladeiro já está na súmula.")
+                if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND player_id=?", (sumula_id, player_id)).fetchone():
+                    raise ValueError("Este peladeiro já está cadastrado na súmula. Para colocá-lo na 2ª ou 3ª partida, use ‘Escalação e gols’ e selecione a partida desejada.")
                 preferred_position = request.form.get("preferred_position", "").strip().upper()
                 if not preferred_position:
                     player_position = db.execute("SELECT football_position FROM players WHERE id=?", (player_id,)).fetchone()
@@ -854,6 +855,18 @@ def detail(sumula_id):
                         raise ValueError("Esta ordem de sorteio já está ocupada.")
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), "", draw_order or None, "Cadastro histórico"))
                 _audit(db, sumula_id, "PARTICIPANTE_HISTORICO_ADICIONADO", historical_name)
+            elif action == "participant_match":
+                player_id = int(request.form.get("player_id", ""))
+                match_id = int(request.form.get("match_id", ""))
+                if not _participant_player(db, sumula_id, player_id):
+                    raise ValueError("Cadastre o peladeiro como participante antes de vinculá-lo a uma partida.")
+                if not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
+                    raise ValueError("Partida inválida para esta súmula.")
+                if db.execute("SELECT 1 FROM football_participant_matches WHERE sumula_id=? AND match_id=? AND player_id=?", (sumula_id, match_id, player_id)).fetchone():
+                    raise ValueError("Este peladeiro já está vinculado a esta partida.")
+                draw_order = request.form.get("draw_order", "").strip() or None
+                db.execute("INSERT INTO football_participant_matches(sumula_id,match_id,player_id,status,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, match_id, player_id, request.form.get("status", "CONFIRMADO"), draw_order, request.form.get("observation", "").strip()))
+                _audit(db, sumula_id, "PARTICIPANTE_VINCULADO_PARTIDA", f"{player_id}:{match_id}")
             elif action == "lineup":
                 if not request.form.get("player_id"):
                     flash("Nenhum jogador selecionado. A escalação é opcional.", "info")
@@ -1066,12 +1079,17 @@ def detail(sumula_id):
     audit_total = int(db.execute("SELECT COUNT(*) FROM football_audit WHERE sumula_id=?", (sumula_id,)).fetchone()[0] or 0)
     audit_pages = max(1, (audit_total + 4) // 5)
     score_mismatches = _score_mismatches(db, data[2])
+    participant_matches = [dict(row) for row in db.execute("""SELECT fpm.*,p.name,p.war_name,fm.number match_number
+        FROM football_participant_matches fpm JOIN players p ON p.id=fpm.player_id
+        JOIN football_matches fm ON fm.id=fpm.match_id WHERE fpm.sumula_id=?
+        ORDER BY fm.number,COALESCE(fpm.draw_order,999999),LOWER(COALESCE(p.war_name,p.name))""", (sumula_id,)).fetchall()]
+    match_options = [{"id": row["id"], "number": row["number"]} for row in data[2]]
     auto_roles = []
     for responsible in data[4]:
         observation = responsible["observation"] or ""
         if observation.startswith("REGRA_AUTOMATICA_"):
             auto_roles.append({"role": "Goleiro" if "_GOLEIRO_" in observation else "Juiz", "name": responsible["war_name"] or responsible["name"] or "Não informado"})
-    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=1, score_mismatches=score_mismatches)
+    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, participant_matches=participant_matches, match_options=match_options, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=1, score_mismatches=score_mismatches)
 
 
 @bp.get("/sumulas/<int:sumula_id>/imprimir")
