@@ -107,12 +107,17 @@ def _score_mismatches(db, matches):
 
 
 def _matematico_results(db, sumula_id):
-    """Retorna os placares quando todas as partidas encerradas têm diferença de até dois gols."""
+    """Retorna os placares encerrados com diferença de até dois gols.
+
+    Uma súmula pode ter partidas futuras/planejadas cadastradas (por exemplo,
+    quando a segunda partida foi criada mas não aconteceu). Elas não devem
+    impedir o aviso da partida que efetivamente foi disputada.
+    """
     rows = db.execute(
-        "SELECT number,blue_score,white_score,status FROM football_matches WHERE sumula_id=? ORDER BY number",
+        "SELECT number,blue_score,white_score,status FROM football_matches WHERE sumula_id=? AND status='ENCERRADA' ORDER BY number",
         (sumula_id,),
     ).fetchall()
-    if not rows or any(row["status"] != "ENCERRADA" or abs(int(row["blue_score"] or 0) - int(row["white_score"] or 0)) > 2 for row in rows):
+    if not rows or any(abs(int(row["blue_score"] or 0) - int(row["white_score"] or 0)) > 2 for row in rows):
         return []
     return rows
 
