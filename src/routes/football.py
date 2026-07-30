@@ -816,22 +816,8 @@ def detail(sumula_id):
                 player_id = int(request.form.get("player_id", ""))
                 if not _eligible_player(db, player_id):
                     raise ValueError("Veteranos e mulheres não participam das partidas de futebol.")
-                match_id = request.form.get("participant_match_id", "").strip()
-                existing_participant = db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND player_id=?", (sumula_id, player_id)).fetchone()
-                if existing_participant and not match_id:
-                    raise ValueError("Este peladeiro já está cadastrado na súmula. Selecione uma partida para reutilizá-lo.")
-                if match_id:
-                    match_id = int(match_id)
-                    if not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
-                        raise ValueError("Partida inválida para esta súmula.")
-                    if existing_participant:
-                        if db.execute("SELECT 1 FROM football_participant_matches WHERE sumula_id=? AND match_id=? AND player_id=?", (sumula_id, match_id, player_id)).fetchone():
-                            raise ValueError("Este peladeiro já está cadastrado nesta partida.")
-                        db.execute("INSERT INTO football_participant_matches(sumula_id,match_id,player_id,status,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, match_id, player_id, request.form.get("status", "CONFIRMADO"), None, "Participante reutilizado"))
-                        _audit(db, sumula_id, "PARTICIPANTE_VINCULADO_PARTIDA", f"{player_id}:{match_id}")
-                        db.commit()
-                        flash("Peladeiro adicionado à partida.", "success")
-                        return redirect(url_for("football.detail", sumula_id=sumula_id))
+                if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND player_id=?", (sumula_id, player_id)).fetchone():
+                    raise ValueError("Este peladeiro já está cadastrado na súmula. Para colocá-lo na 2ª ou 3ª partida, use ‘Escalação e gols’ e selecione a partida desejada.")
                 preferred_position = request.form.get("preferred_position", "").strip().upper()
                 if not preferred_position:
                     player_position = db.execute("SELECT football_position FROM players WHERE id=?", (player_id,)).fetchone()
@@ -845,8 +831,6 @@ def detail(sumula_id):
                         raise ValueError("Esta ordem de sorteio já está ocupada.")
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, draw_order or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
-                if match_id:
-                    db.execute("INSERT INTO football_participant_matches(sumula_id,match_id,player_id,status,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, match_id, player_id, request.form.get("status", "CONFIRMADO"), draw_order or None, "Participante da partida"))
             elif action == "historical_participant":
                 historical_name = request.form.get("historical_name", "").strip()[:120]
                 if len(historical_name) < 2:

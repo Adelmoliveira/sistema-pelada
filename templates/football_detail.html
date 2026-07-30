@@ -58,23 +58,6 @@ if(incidentForm){const card=incidentForm.querySelector('select[name="card"]');co
 const participantMatches={{participant_matches|tojson}};const matchOptions={{match_options|tojson}};if(participantPlayer&&matchOptions.length){const card=document.createElement('div');card.className='card shadow-sm mb-3';card.innerHTML='<div class="card-header"><strong>Reutilizar participante em outra partida</strong></div><div class="card-body"><p class="small text-muted">Use quando um peladeiro da partida anterior precisar completar a partida seguinte. O cadastro original e as estatísticas permanecem únicos.</p><form method="post" class="row g-2"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="action" value="participant_match"><div class="col-md-5"><select class="form-select" name="player_id" required></select></div><div class="col-md-4"><select class="form-select" name="match_id" required></select></div><div class="col-md-3"><button class="btn btn-outline-primary w-100">Adicionar à partida</button></div></form><div class="small mt-3" data-reused-list></div></div>';const participantCard=[...document.querySelectorAll('.card')].find(item=>item.querySelector('.card-header strong')?.textContent.trim().startsWith('Participantes'));const playerSelect=card.querySelector('[name="player_id"]');const matchSelect=card.querySelector('[name="match_id"]');participants.forEach?.(()=>{});document.querySelectorAll('select[name="player_id"]').forEach(select=>{if(select!==playerSelect&&select.closest('form')?.querySelector('[name="action"]')?.value==='participant'){[...select.options].forEach(option=>playerSelect.appendChild(option.cloneNode(true)));}});matchOptions.forEach(match=>{const option=document.createElement('option');option.value=match.id;option.textContent=`${match.number}ª partida`;matchSelect.appendChild(option);});const list=card.querySelector('[data-reused-list]');list.innerHTML=participantMatches.length?participantMatches.map(item=>`<div>${item.war_name||item.name} · ${item.match_number}ª partida</div>`).join(''):'Nenhum participante reutilizado ainda.';participantCard?.after(card);}
 var participants=[];
 </script>
-<script>
-// Permite registrar o mesmo peladeiro em outra partida diretamente no bloco
-// Participantes. O cadastro principal continua único na súmula.
-(function(){
-  const form=document.querySelector('form input[name="action"][value="participant"]')?.closest('form');
-  const source=document.querySelector('select[name="participant_match_id"]');
-  if(form&&!source){
-    const select=document.createElement('select');
-    select.className='form-select'; select.name='participant_match_id';
-    select.innerHTML='<option value="">Partida (opcional)</option>'+[...document.querySelectorAll('[data-participant-tab]')].map(tab=>`<option value="">${tab.textContent}</option>`).join('');
-    const matches={{match_options|tojson}};
-    select.innerHTML='<option value="">Partida (opcional)</option>'+matches.map(match=>`<option value="${match.id}">${match.number}ª partida</option>`).join('');
-    const wrapper=document.createElement('div'); wrapper.className='col-6'; wrapper.appendChild(select);
-    form.querySelector('[name="preferred_position"]')?.closest('[class*="col-"]')?.after(wrapper);
-  }
-})();
-</script>
 {% if sumula['locked_at'] %}<script>document.querySelectorAll('.app-page .badge.text-bg-primary').forEach((badge)=>{badge.classList.remove('text-bg-primary');badge.classList.add('text-bg-danger');badge.textContent='Encerrada definitivamente';});</script>{% endif %}
 {% if sumula['locked_at'] %}<script>document.querySelectorAll('main form').forEach((form)=>form.remove());</script>{% elif sumula['situacao'] == 'FINALIZADA' %}<script>document.querySelectorAll('main form').forEach((form)=>{const action=form.querySelector('input[name="action"][value="status"]');const situation=form.querySelector('input[name="situacao"][value="EM_ANDAMENTO"]');if(action&&situation){form.addEventListener('submit',(event)=>{const justification=window.prompt('Informe a justificativa para reabrir a súmula:');if(!justification||justification.trim().length<5){event.preventDefault();window.alert('A justificativa deve ter pelo menos 5 caracteres.');return;}const input=document.createElement('input');input.type='hidden';input.name='justification';input.value=justification.trim();form.appendChild(input);});}});</script>{% endif %}
 {% endblock %}
