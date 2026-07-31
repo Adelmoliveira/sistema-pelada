@@ -7,9 +7,16 @@ from src.utils import cents
 from src.services.cash_register import create_movement, get_session
 from src.services.stock_report_pdf import build_stock_report_pdf, stock_report_data, build_low_stock_pdf, low_stock_report_data
 from src.services.stock_alerts import notify_low_stock
+from src.services.material_photos import process_material_photo
 from src.utils import local_today
 
 bp = Blueprint("products", __name__)
+
+PRODUCT_CATEGORIES = (
+    "Cerveja", "Refrigerante", "Água Mineral com gás",
+    "Água Mineral sem gás", "Energético", "Suco", "Isotônico",
+    "Salgadinho", "Alimentos", "Outros",
+)
 
 RESTOCK_STATUS_LABELS = {
     "PENDENTE": "Pendente",
@@ -40,6 +47,11 @@ def products():
     db = get_db()
     if request.method == "POST":
         try:
+            category = request.form.get("category", "")
+            if category not in PRODUCT_CATEGORIES:
+                raise ValueError("Selecione uma categoria válida.")
+            processed_photo = process_material_photo(request.files.get("photo"))
+            photo_data, thumbnail_data = processed_photo or ("", "")
             units_per_case = int(request.form.get("units_per_case") or 0)
             loose_units = int(request.form.get("stock") or 0)
             cases = int(request.form.get("initial_cases") or 0)
@@ -50,11 +62,11 @@ def products():
             
             initial_stock = loose_units + cases * units_per_case
             created = db.execute(
-                """INSERT INTO products(name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,supplier_email)
-                VALUES(?,?,?,?,?,?,?,?,?)""",
+                """INSERT INTO products(name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,supplier_email,photo_data,thumbnail_data)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     request.form["name"].strip(),
-                    request.form["category"],
+                    category,
                     request.form.get("package_type", ""),
                     units_per_case,
                     cents(request.form["price"]),
@@ -62,6 +74,8 @@ def products():
                     initial_stock,
                     int(request.form.get("min_stock", 5)),
                     request.form.get("supplier_email", "").strip().lower(),
+                    photo_data,
+                    thumbnail_data,
                 )
             )
             db.commit()
@@ -78,7 +92,7 @@ def products():
         return redirect(url_for("products.products"))
 
     items = db.execute("SELECT * FROM products ORDER BY active DESC, category, name").fetchall()
-    return render_template("products.html", products=items)
+    return render_template("products.html", products=items, product_categories=PRODUCT_CATEGORIES)
 
 @bp.post("/products/<int:product_id>/toggle")
 @roles_allowed("manager", "staff")
@@ -109,6 +123,16 @@ def edit_product(product_id):
     
     if request.method == "POST":
         try:
+            category = request.form.get("category", "")
+            if category not in PRODUCT_CATEGORIES:
+                raise ValueError("Selecione uma categoria válida.")
+            photo_data = product["photo_data"] or ""
+            thumbnail_data = product["thumbnail_data"] or ""
+            if request.form.get("remove_photo") == "1":
+                photo_data, thumbnail_data = "", ""
+            processed_photo = process_material_photo(request.files.get("photo"))
+            if processed_photo:
+                photo_data, thumbnail_data = processed_photo
             units_per_case = int(request.form.get("units_per_case") or 0)
             min_stock = int(request.form.get("min_stock") or 0)
             new_stock = int(request.form.get("stock") or 0)
@@ -122,10 +146,10 @@ def edit_product(product_id):
 
             db.execute(
                 """UPDATE products SET name=?,category=?,package_type=?,units_per_case=?,
-                price_cents=?,cost_cents=?,min_stock=?,stock=?,supplier_email=? WHERE id=?""",
+                price_cents=?,cost_cents=?,min_stock=?,stock=?,supplier_email=?,photo_data=?,thumbnail_data=? WHERE id=?""",
                 (
                     request.form["name"].strip(),
-                    request.form["category"],
+                    category,
                     request.form.get("package_type", ""),
                     units_per_case,
                     cents(request.form["price"]),
@@ -133,6 +157,8 @@ def edit_product(product_id):
                     min_stock,
                     new_stock,
                     request.form.get("supplier_email", "").strip().lower(),
+                    photo_data,
+                    thumbnail_data,
                     product_id
                 )
             )
@@ -154,7 +180,7 @@ def edit_product(product_id):
             else:
                 flash("Erro interno ao atualizar produto.", "danger")
         product = db.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
-    return render_template("edit_product.html", product=product)
+    return render_template("edit_product.html", product=product, product_categories=PRODUCT_CATEGORIES)
 
 @bp.route("/stock", methods=["GET", "POST"])
 @roles_allowed("manager", "staff")

@@ -208,6 +208,9 @@ def sale():
     snack_categories = {"salgadinho", "salgados", "salgado"}
     for row in product_rows:
         product = dict(row)
+        # A venda rápida usa apenas a miniatura. Evita enviar a foto completa
+        # em base64 dentro do JSON da página para manter o PWA leve no celular.
+        product.pop("photo_data", None)
         category = (product.get("category") or "").strip().lower()
         product["group"] = "Bebidas" if category in beverage_categories or "bebida" in category else "Salgados" if category in snack_categories or "salgad" in category else "Alimentos" if "alimento" in category else "Outros"
         product_data.append(product)
