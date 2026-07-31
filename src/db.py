@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS products (
     stock INTEGER NOT NULL DEFAULT 0 CHECK(stock >= 0),
     min_stock INTEGER NOT NULL DEFAULT 5 CHECK(min_stock >= 0),
     supplier_email TEXT DEFAULT '',
+    photo_data TEXT DEFAULT '',
+    thumbnail_data TEXT DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -970,6 +972,8 @@ def migrate_product_categories(connection):
             stock INTEGER NOT NULL DEFAULT 0 CHECK(stock >= 0),
             min_stock INTEGER NOT NULL DEFAULT 5 CHECK(min_stock >= 0),
             supplier_email TEXT DEFAULT '',
+            photo_data TEXT DEFAULT '',
+            thumbnail_data TEXT DEFAULT '',
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -995,9 +999,9 @@ def migrate_product_categories(connection):
             last_stock INTEGER NOT NULL DEFAULT 0,
             last_notified_at TEXT
         );
-        INSERT INTO products(id,name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,supplier_email,active,created_at)
+        INSERT INTO products(id,name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,supplier_email,photo_data,thumbnail_data,active,created_at)
         SELECT id,name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,
-               COALESCE(supplier_email,''),active,created_at
+               COALESCE(supplier_email,''),COALESCE(photo_data,''),COALESCE(thumbnail_data,''),active,created_at
         FROM products_category_old;
         INSERT INTO sale_items SELECT * FROM sale_items_category_old;
         INSERT INTO restocks SELECT * FROM restocks_category_old;
@@ -1201,6 +1205,10 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE products ADD COLUMN units_per_case INTEGER NOT NULL DEFAULT 0")
     if "supplier_email" not in product_columns:
         conn.execute("ALTER TABLE products ADD COLUMN supplier_email TEXT DEFAULT ''")
+    if "photo_data" not in product_columns:
+        conn.execute("ALTER TABLE products ADD COLUMN photo_data TEXT DEFAULT ''")
+    if "thumbnail_data" not in product_columns:
+        conn.execute("ALTER TABLE products ADD COLUMN thumbnail_data TEXT DEFAULT ''")
     conn.commit()
     migrate_product_categories(conn)
 
@@ -1333,6 +1341,8 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE push_announcements ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ENVIADO'")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS historical_only INTEGER NOT NULL DEFAULT 0")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE bar_restock_request_items ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''")
     wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS workflow_status TEXT NOT NULL DEFAULT 'PENDENTE'")
     wrapper.execute("UPDATE bar_restock_requests SET workflow_status=status WHERE workflow_status='PENDENTE' AND status<>'PENDENTE'")
