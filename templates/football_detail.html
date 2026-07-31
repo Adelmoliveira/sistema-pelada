@@ -55,56 +55,9 @@ if(lineupForm&&!lineupForm.querySelector('select[name="period"]')){const wrapper
 if(lineupPlayer&&lineupPosition){const fillLineupPosition=()=>{const position=playerPositions[lineupPlayer.value];if(position) lineupPosition.value=position;};lineupPlayer.addEventListener('change',fillLineupPosition);fillLineupPosition();}
 const incidentForm=document.querySelector('form input[name="action"][value="incident"]')?.closest('form');
 if(incidentForm){const card=incidentForm.querySelector('select[name="card"]');const level=incidentForm.querySelector('select[name="level"]');const description=incidentForm.querySelector('textarea[name="description"]');const refreshCardFields=()=>{const selected=!!card.value;level.closest('[class*="col-"]').style.display=selected?'none':'';description.closest('[class*="col-"]').style.display=selected?'none':'';description.required=!selected;};card.addEventListener('change',refreshCardFields);refreshCardFields();}
-const participantMatches={{participant_matches|tojson}};const matchOptions={{match_options|tojson}};if(participantPlayer&&matchOptions.length){const card=document.createElement('div');card.className='card shadow-sm mb-3';card.innerHTML='<div class="card-header"><strong>Reutilizar participante em outra partida</strong></div><div class="card-body"><p class="small text-muted">Use quando um peladeiro da partida anterior precisar completar a partida seguinte. O cadastro original e as estatísticas permanecem únicos.</p><form method="post" class="row g-2"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="action" value="participant_match"><div class="col-md-5"><select class="form-select" name="player_id" required></select></div><div class="col-md-4"><select class="form-select" name="match_id" required></select></div><div class="col-md-3"><button class="btn btn-outline-primary w-100">Adicionar à partida</button></div></form><div class="small mt-3" data-reused-list></div></div>';const participantCard=[...document.querySelectorAll('.card')].find(item=>item.querySelector('.card-header strong')?.textContent.trim().startsWith('Participantes'));const playerSelect=card.querySelector('[name="player_id"]');const matchSelect=card.querySelector('[name="match_id"]');participants.forEach?.(()=>{});document.querySelectorAll('select[name="player_id"]').forEach(select=>{if(select!==playerSelect&&select.closest('form')?.querySelector('[name="action"]')?.value==='participant'){[...select.options].forEach(option=>playerSelect.appendChild(option.cloneNode(true)));}});matchOptions.forEach(match=>{const option=document.createElement('option');option.value=match.id;option.textContent=`${match.number}ª partida`;matchSelect.appendChild(option);});const list=card.querySelector('[data-reused-list]');list.innerHTML=participantMatches.length?participantMatches.map(item=>`<div>${item.war_name||item.name} · ${item.match_number}ª partida</div>`).join(''):'Nenhum participante reutilizado ainda.';participantCard?.after(card);}
 var participants=[];
-// Mostra nas abas os peladeiros reutilizados em uma partida adicional.
-(function(){
-  const linked={{participant_matches|tojson}};
-  linked.forEach(item=>{
-    const pane=document.getElementById(`participant-match-${item.match_number}`);
-    if(!pane)return;
-    const list=pane.querySelector('.list-group');
-    if(!list)return;
-    const row=document.createElement('div'); row.className='list-group-item px-0 d-flex justify-content-between align-items-center';
-    row.innerHTML=`<span><strong>↳</strong> ${item.war_name||item.name} <small class="text-muted">(${item.status||'Confirmado'})</small></span>`;
-    list.appendChild(row);
-  });
-})();
-// Permite escolher a partida no formulário principal; ao selecionar uma partida,
-// o mesmo peladeiro pode ser vinculado novamente sem duplicar o cadastro-base.
-(function(){
-  const form=document.querySelector('form input[name="action"][value="participant"]')?.closest('form');
-  const tabs=document.querySelectorAll('[data-participant-tab]');
-  const matches={{match_options|tojson}};
-  if(!form||!matches.length)return;
-  const draw=form.querySelector('[name="draw_order"]');
-  if(!draw||form.querySelector('[name="participant_match_id"]'))return;
-  const select=document.createElement('input'); select.type='hidden'; select.name='participant_match_id'; select.value=String(matches[0].id);
-  form.appendChild(select);
-  tabs.forEach(tab=>tab.addEventListener('click',()=>{const match=matches.find(m=>String(m.number)===tab.dataset.participantTab);if(match)select.value=String(match.id);}));
-})();
 </script>
 {% if sumula['locked_at'] %}<script>document.querySelectorAll('.app-page .badge.text-bg-primary').forEach((badge)=>{badge.classList.remove('text-bg-primary');badge.classList.add('text-bg-danger');badge.textContent='Encerrada definitivamente';});</script>{% endif %}
 {% if sumula['locked_at'] %}<script>document.querySelectorAll('main form').forEach((form)=>form.remove());</script>{% elif sumula['situacao'] == 'FINALIZADA' %}<script>document.querySelectorAll('main form').forEach((form)=>{const action=form.querySelector('input[name="action"][value="status"]');const situation=form.querySelector('input[name="situacao"][value="EM_ANDAMENTO"]');if(action&&situation){form.addEventListener('submit',(event)=>{const justification=window.prompt('Informe a justificativa para reabrir a súmula:');if(!justification||justification.trim().length<5){event.preventDefault();window.alert('A justificativa deve ter pelo menos 5 caracteres.');return;}const input=document.createElement('input');input.type='hidden';input.name='justification';input.value=justification.trim();form.appendChild(input);});}});</script>{% endif %}
-<script>var participants=[];</script>
-<script>
-// Garantia de compatibilidade: o seletor de partida precisa existir no
-// formulário mesmo quando algum aprimoramento JavaScript anterior falhar.
-(function(){
-  const form=document.querySelector('form input[name="action"][value="participant"]')?.closest('form');
-  const matches={{match_options|tojson}};
-  if(!form||!Array.isArray(matches)||!matches.length)return;
-  let select=form.querySelector('[name="participant_match_id"]');
-  if(!select){
-    const draw=form.querySelector('[name="draw_order"]');
-    if(!draw)return;
-    select=document.createElement('input'); select.type='hidden'; select.name='participant_match_id'; select.value=String(matches[0].id);
-    form.appendChild(select);
-  }
-  document.querySelectorAll('[data-participant-tab]').forEach(tab=>tab.addEventListener('click',()=>{
-    const match=matches.find(m=>String(m.number)===tab.dataset.participantTab);
-    if(match)select.value=String(match.id);
-  }));
-})();
-</script>
 {% endblock %}
+<script>var participants=[];</script>
