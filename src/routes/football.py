@@ -50,7 +50,12 @@ def _participant_matches_table_missing(exc):
 
 
 def _link_participant_match(db, sumula_id, match_id, player_id, status="CONFIRMADO", draw_order=None, observation=""):
-    """Vincula um participante a uma partida sem duplicar o vínculo."""
+    """Vincula um participante a uma partida sem duplicar o vínculo.
+
+    A operação é idempotente: repetir o envio do formulário (por exemplo,
+    após um toque duplo ou uma nova tentativa do navegador) não gera erro e
+    não cria uma segunda linha para a mesma partida.
+    """
     if not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
         raise ValueError("Partida inválida para esta súmula.")
     try:
@@ -58,11 +63,12 @@ def _link_participant_match(db, sumula_id, match_id, player_id, status="CONFIRMA
             "SELECT 1 FROM football_participant_matches WHERE sumula_id=? AND match_id=? AND player_id=?",
             (sumula_id, match_id, player_id),
         ).fetchone():
-            raise ValueError("Este peladeiro já está vinculado a esta partida.")
+            return False
         db.execute(
             "INSERT INTO football_participant_matches(sumula_id,match_id,player_id,status,draw_order,observation) VALUES(?,?,?,?,?,?)",
             (sumula_id, match_id, player_id, status, draw_order, observation),
         )
+        return True
     except ValueError:
         raise
     except Exception as exc:
@@ -865,8 +871,11 @@ def detail(sumula_id):
                     db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, status, preferred_position, None if selected_match_id else (draw_order or None), observation))
                     _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
                 if selected_match_id:
-                    _link_participant_match(db, sumula_id, selected_match_id, player_id, status, draw_order or None, observation)
-                    _audit(db, sumula_id, "PARTICIPANTE_VINCULADO_PARTIDA", f"{player_id}:{selected_match_id}")
+                    linked = _link_participant_match(db, sumula_id, selected_match_id, player_id, status, draw_order or None, observation)
+                    if linked:
+                        _audit(db, sumula_id, "PARTICIPANTE_VINCULADO_PARTIDA", f"{player_id}:{selected_match_id}")
+                    else:
+                        flash("Este peladeiro já está vinculado a essa partida.", "info")
             elif action == "historical_participant":
                 historical_name = request.form.get("historical_name", "").strip()[:120]
                 if len(historical_name) < 2:
@@ -905,8 +914,11 @@ def detail(sumula_id):
                 if not _participant_player(db, sumula_id, player_id):
                     raise ValueError("Cadastre o peladeiro como participante antes de vinculá-lo a uma partida.")
                 draw_order = request.form.get("draw_order", "").strip() or None
-                _link_participant_match(db, sumula_id, match_id, player_id, request.form.get("status", "CONFIRMADO"), draw_order, request.form.get("observation", "").strip())
-                _audit(db, sumula_id, "PARTICIPANTE_VINCULADO_PARTIDA", f"{player_id}:{match_id}")
+                linked = _link_participant_match(db, sumula_id, match_id, player_id, request.form.get("status", "CONFIRMADO"), draw_order, request.form.get("observation", "").strip())
+                if linked:
+                    _audit(db, sumula_id, "PARTICIPANTE_VINCULADO_PARTIDA", f"{player_id}:{match_id}")
+                else:
+                    flash("Este peladeiro já está vinculado a essa partida.", "info")
             elif action == "lineup":
                 if not request.form.get("player_id"):
                     flash("Nenhum jogador selecionado. A escalação é opcional.", "info")
