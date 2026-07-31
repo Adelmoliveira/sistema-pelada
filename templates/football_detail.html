@@ -79,9 +79,13 @@ var participants=[];
   if(!form||!matches.length)return;
   const draw=form.querySelector('[name="draw_order"]');
   if(!draw||form.querySelector('[name="participant_match_id"]'))return;
-  const select=document.createElement('input'); select.type='hidden'; select.name='participant_match_id'; select.value=String(matches[0].id);
-  form.appendChild(select);
-  tabs.forEach(tab=>tab.addEventListener('click',()=>{const match=matches.find(m=>String(m.number)===tab.dataset.participantTab);if(match)select.value=String(match.id);}));
+  const wrapper=document.createElement('div'); wrapper.className='col-4';
+  const select=document.createElement('select'); select.className='form-select'; select.name='participant_match_id'; select.setAttribute('aria-label','Partida do participante');
+  select.required=true;
+  select.innerHTML=matches.map(m=>`<option value="${m.id}">${m.number}ª partida</option>`).join('');
+  select.value=String(matches[0].id);
+  wrapper.appendChild(select); draw.closest('[class*="col-"]')?.before(wrapper);
+  tabs.forEach(tab=>tab.addEventListener('click',()=>{const match=matches.find(m=>String(m.number)===tab.dataset.participantTab);if(match)select.value=match.id;}));
 })();
 </script>
 {% if sumula['locked_at'] %}<script>document.querySelectorAll('.app-page .badge.text-bg-primary').forEach((badge)=>{badge.classList.remove('text-bg-primary');badge.classList.add('text-bg-danger');badge.textContent='Encerrada definitivamente';});</script>{% endif %}
@@ -98,8 +102,12 @@ var participants=[];
   if(!select){
     const draw=form.querySelector('[name="draw_order"]');
     if(!draw)return;
-    select=document.createElement('input'); select.type='hidden'; select.name='participant_match_id'; select.value=String(matches[0].id);
-    form.appendChild(select);
+    const wrapper=document.createElement('div'); wrapper.className='col-4';
+    select=document.createElement('select'); select.className='form-select'; select.name='participant_match_id'; select.setAttribute('aria-label','Partida do participante');
+    select.required=true;
+    select.innerHTML=matches.map(m=>`<option value="${m.id}">${m.number}ª partida</option>`).join('');
+    select.value=String(matches[0].id);
+    wrapper.appendChild(select); draw.closest('[class*="col-"]')?.before(wrapper);
   }
   document.querySelectorAll('[data-participant-tab]').forEach(tab=>tab.addEventListener('click',()=>{
     const match=matches.find(m=>String(m.number)===tab.dataset.participantTab);
