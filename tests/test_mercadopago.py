@@ -286,6 +286,63 @@ class MercadoPagoFlowTest(unittest.TestCase):
             player = get_db().execute("SELECT thumbnail_data FROM players WHERE id=?", (self.player_id,)).fetchone()
             self.assertTrue(player["thumbnail_data"].startswith("data:image/jpeg;base64,"))
 
+    def test_product_photo_and_food_category_are_available_in_quick_sale(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        photo = BytesIO()
+        Image.new("RGB", (900, 600), (220, 150, 40)).save(photo, format="PNG")
+        photo.seek(0)
+        response = self.client.post(
+            "/products",
+            data={
+                "name": "Sanduíche natural",
+                "category": "Alimentos",
+                "package_type": "",
+                "units_per_case": "0",
+                "price": "12,50",
+                "cost": "7,00",
+                "stock": "8",
+                "initial_cases": "0",
+                "min_stock": "2",
+                "supplier_email": "",
+                "photo": (photo, "sanduiche.png"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 302)
+        with app.app_context():
+            product = get_db().execute("SELECT * FROM products WHERE name=?", ("Sanduíche natural",)).fetchone()
+            self.assertEqual(product["category"], "Alimentos")
+            self.assertTrue(product["photo_data"].startswith("data:image/jpeg;base64,"))
+            self.assertTrue(product["thumbnail_data"].startswith("data:image/jpeg;base64,"))
+            product_id = product["id"]
+
+        sale_page = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn("Sanduíche natural", sale_page)
+        self.assertIn("Foto de Sanduíche natural", sale_page)
+        self.assertIn('value="Alimentos"', sale_page)
+
+        removed = self.client.post(
+            f"/products/{product_id}/edit",
+            data={
+                "name": "Sanduíche natural",
+                "category": "Alimentos",
+                "package_type": "",
+                "units_per_case": "0",
+                "price": "12,50",
+                "cost": "7,00",
+                "min_stock": "2",
+                "stock": "8",
+                "stock_reason": "",
+                "supplier_email": "",
+                "remove_photo": "1",
+            },
+        )
+        self.assertEqual(removed.status_code, 302)
+        with app.app_context():
+            product = get_db().execute("SELECT photo_data,thumbnail_data FROM products WHERE id=?", (product_id,)).fetchone()
+            self.assertEqual((product["photo_data"], product["thumbnail_data"]), ("", ""))
+
     def test_client_can_update_profile_and_change_own_password(self):
         with app.app_context():
             db = get_db()
