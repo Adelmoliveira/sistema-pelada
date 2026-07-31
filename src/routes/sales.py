@@ -15,7 +15,7 @@ from src.services.mercadopago import (
 from src.services.stock_alerts import notify_low_stock
 from src.services.purchase_receipts import send_purchase_receipt, send_delivery_update
 from src.services.push_notifications import send_player_push_once
-from src.services.bar_credits import approve_topup, balance as credit_balance, consume as consume_credit, notify_low_balance
+from src.services.bar_credits import approve_topup, balance as credit_balance, consume as consume_credit, low_balance_threshold, notify_low_balance
 
 bp = Blueprint("sales", __name__)
 PIX_TOKEN_MAX_AGE = 60 * 60
@@ -234,6 +234,7 @@ def sale():
         pix_token=pix_access_token(g.user),
         mercadopago_enabled=mercadopago_enabled(),
         client_credit_balance=int(client_credit_balance or 0),
+        client_credit_low_threshold=low_balance_threshold(),
     )
 
 @bp.post("/sales/<int:sale_id>/delete")

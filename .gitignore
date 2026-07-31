@@ -11,3 +11,5 @@ android-panel/.gradle/
 android-panel/.idea/
 android-panel/**/build/
 android-panel/local.properties
+.vercel
+.env*
