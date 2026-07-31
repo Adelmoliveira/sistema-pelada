@@ -1,4 +1,4 @@
-const CACHE_NAME = "peladeiros-gpcta-v4";
+const CACHE_NAME = "peladeiros-gpcta-v5";
 const OFFLINE_URL = "/offline";
 const APP_SHELL = [
   OFFLINE_URL,
@@ -27,17 +27,24 @@ self.addEventListener("activate", event => {
 self.addEventListener("push", event => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch (_) { data = {body: event.data ? event.data.text() : ""}; }
+  const badgeCount = Math.max(0, Number(data.badge) || 0);
   event.waitUntil(Promise.all([
     self.registration.showNotification(data.title || "PELADEIROS GPCTA", {
       body: data.body || "Você tem uma nova atualização.",
       icon: "/static/icons/pwa-192.png",
       badge: "/static/icons/pwa-192.png",
       image: data.image || undefined,
-      data: {url: data.url || "/"}
+      data: {url: data.url || "/"},
+      vibrate: [200, 100, 200],
+      timestamp: Date.now(),
+      renotify: false,
+      silent: false
     }),
-    Number.isFinite(Number(data.badge)) && Number(data.badge) > 0 && self.navigator && "setAppBadge" in self.navigator
-      ? self.navigator.setAppBadge(Number(data.badge)).catch(() => undefined)
-      : Promise.resolve()
+    badgeCount > 0 && self.navigator && "setAppBadge" in self.navigator
+      ? self.navigator.setAppBadge(badgeCount).catch(() => undefined)
+      : Promise.resolve(),
+    self.clients.matchAll({type: "window", includeUncontrolled: true})
+      .then(list => Promise.all(list.map(client => client.postMessage({type: "notification-count", count: badgeCount}))))
   ]));
 });
 
