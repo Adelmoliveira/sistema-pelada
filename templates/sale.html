@@ -1,7 +1,15 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="sale-page">
-  <h1 class="h3 mb-3">Venda rápida</h1>
+  <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-3">
+    <h1 class="h3 mb-0">Venda rápida</h1>
+    {% if current_user.role == 'client' %}
+      <a class="sale-credit-balance" href="{{ url_for('credits.index') }}" aria-label="Crédito disponível no bar: {{ client_credit_balance|money }}">
+        <span class="sale-credit-balance-label">Crédito disponível</span>
+        <strong>{{ client_credit_balance|money }}</strong>
+      </a>
+    {% endif %}
+  </div>
   {% if not players or not products %}<div class="alert alert-warning">Cadastre ao menos um peladeiro e um produto com estoque antes de vender.</div>{% endif %}
   <form method="post" id="sale-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
