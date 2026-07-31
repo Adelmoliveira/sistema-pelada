@@ -81,9 +81,7 @@ var participants=[];
   if(!draw||form.querySelector('[name="participant_match_id"]'))return;
   const wrapper=document.createElement('div'); wrapper.className='col-4';
   const select=document.createElement('select'); select.className='form-select'; select.name='participant_match_id'; select.setAttribute('aria-label','Partida do participante');
-  select.required=true;
-  select.innerHTML=matches.map(m=>`<option value="${m.id}">${m.number}ª partida</option>`).join('');
-  select.value=String(matches[0].id);
+  select.innerHTML='<option value="">Partida (opcional)</option>'+matches.map(m=>`<option value="${m.id}">${m.number}ª partida</option>`).join('');
   wrapper.appendChild(select); draw.closest('[class*="col-"]')?.before(wrapper);
   tabs.forEach(tab=>tab.addEventListener('click',()=>{const match=matches.find(m=>String(m.number)===tab.dataset.participantTab);if(match)select.value=match.id;}));
 })();
@@ -104,9 +102,7 @@ var participants=[];
     if(!draw)return;
     const wrapper=document.createElement('div'); wrapper.className='col-4';
     select=document.createElement('select'); select.className='form-select'; select.name='participant_match_id'; select.setAttribute('aria-label','Partida do participante');
-    select.required=true;
-    select.innerHTML=matches.map(m=>`<option value="${m.id}">${m.number}ª partida</option>`).join('');
-    select.value=String(matches[0].id);
+    select.innerHTML='<option value="">Partida (opcional)</option>'+matches.map(m=>`<option value="${m.id}">${m.number}ª partida</option>`).join('');
     wrapper.appendChild(select); draw.closest('[class*="col-"]')?.before(wrapper);
   }
   document.querySelectorAll('[data-participant-tab]').forEach(tab=>tab.addEventListener('click',()=>{
