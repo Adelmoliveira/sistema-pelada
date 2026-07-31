@@ -41,6 +41,39 @@ def index():
     )
 
 
+@bp.get("/saldo")
+@roles_allowed("client")
+def current_balance():
+    """Return the connected player's current balance for live UI updates."""
+    account = balance(get_db(), _player_id())
+    balance_cents = int(account["balance_cents"] or 0)
+    return jsonify(
+        balance_cents=balance_cents,
+        low_balance=balance_cents <= low_balance_threshold(),
+        low_balance_threshold_cents=low_balance_threshold(),
+    )
+
+
+@bp.get("/pendentes")
+@roles_allowed("client")
+def pending_topups():
+    """Return the number of Pix credit top-ups awaiting confirmation.
+
+    This endpoint is intentionally read-only. The Mercado Pago webhook (or the
+    normal top-up status polling on the credits page) is responsible for marking
+    a top-up as approved; the menu indicator simply reflects that persisted
+    state and never changes payment data itself.
+    """
+    row = get_db().execute(
+        """SELECT COUNT(*) AS total
+           FROM bar_credit_topups
+           WHERE player_id=? AND paid=0
+             AND payment_status IN ('creating','pending')""",
+        (_player_id(),),
+    ).fetchone()
+    return jsonify(count=int(row["total"] or 0))
+
+
 @bp.get("/recibo/<int:topup_id>")
 @roles_allowed("client")
 def receipt(topup_id):
