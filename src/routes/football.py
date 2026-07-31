@@ -821,6 +821,20 @@ def detail(sumula_id):
                         raise ValueError("A ordem do sorteio deve estar entre 1 e 44.")
                     if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND draw_order=?", (sumula_id, draw_order)).fetchone():
                         raise ValueError("Esta ordem de sorteio já está ocupada.")
+                else:
+                    # A ordem é automática no cadastro normal.  Isso mantém o
+                    # sorteio sequencial mesmo quando o navegador envia o
+                    # formulário sem o valor visível do campo.
+                    used_orders = {
+                        int(row["draw_order"])
+                        for row in db.execute(
+                            "SELECT draw_order FROM football_participants WHERE sumula_id=? AND draw_order IS NOT NULL",
+                            (sumula_id,),
+                        ).fetchall()
+                    }
+                    draw_order = next((number for number in range(1, 45) if number not in used_orders), None)
+                    if draw_order is None:
+                        raise ValueError("Não há mais ordens disponíveis para esta súmula.")
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, draw_order or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
             elif action == "historical_participant":
