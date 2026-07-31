@@ -343,6 +343,20 @@ class MercadoPagoFlowTest(unittest.TestCase):
             product = get_db().execute("SELECT photo_data,thumbnail_data FROM products WHERE id=?", (product_id,)).fetchone()
             self.assertEqual((product["photo_data"], product["thumbnail_data"]), ("", ""))
 
+    def test_client_quick_sale_has_live_topbar_cart_indicator(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE users SET role='client',player_id=? WHERE id=?", (self.player_id, self.user_id))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn('id="topbar-cart"', page)
+        self.assertIn('id="topbar-cart-count"', page)
+        self.assertIn('href="#sale-cart-panel"', page)
+        self.assertIn("topbarCart.hidden=quantity===0", page)
+        self.assertIn("panel.scrollIntoView({behavior:'smooth'", page)
+
     def test_client_can_update_profile_and_change_own_password(self):
         with app.app_context():
             db = get_db()
