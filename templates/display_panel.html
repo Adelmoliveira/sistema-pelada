@@ -19,50 +19,54 @@
     .panel-grid{display:grid;grid-template-columns:1.6fr 1fr;gap:1.25rem;padding:1.25rem;min-height:calc(100vh - 150px)}
     .panel-grid.single{grid-template-columns:1fr}.panel-card{background:#fff;border-radius:1rem;box-shadow:0 4px 18px #1233;overflow:hidden}.panel-card h2{font-size:clamp(1.3rem,2vw,1.9rem);margin:0;padding:1rem 1.25rem;border-bottom:1px solid #d9e2e8}
     .order-list,.birthday-list,.highlight-list{padding:0;margin:0;list-style:none}.order-item,.birthday-item,.highlight-item{display:flex;align-items:center;gap:1rem;padding:1rem 1.25rem;border-bottom:1px solid #e5edf2}.order-item:last-child,.birthday-item:last-child,.highlight-item:last-child{border-bottom:0}
+    .tv-order-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;padding:1rem}.tv-order-grid .order-item{background:#fff;border:1px solid #e0e9ee;border-radius:1rem;box-shadow:0 3px 12px #1232;align-items:flex-start;border-bottom:1px solid #e0e9ee}.tv-order-grid .empty{grid-column:1/-1}
     .tv-card-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1.25rem;padding:1.25rem;background:var(--soft)}.tv-card-grid .birthday-item,.tv-card-grid .highlight-item{min-height:285px;background:#fff;border:1px solid #e0e9ee;border-radius:1rem;box-shadow:0 4px 15px #1232;flex-direction:column;justify-content:flex-start;text-align:center;padding:1.3rem .8rem;gap:.55rem}.tv-card-grid .avatar{width:clamp(100px,10vw,145px);height:clamp(100px,10vw,145px);font-size:2.2rem;margin-bottom:.35rem}
-    .avatar{width:58px;height:58px;border-radius:50%;object-fit:cover;background:#dcecf5;display:flex;align-items:center;justify-content:center;font-size:1.4rem;font-weight:700;color:var(--blue);flex:none}.order-name{font-size:clamp(1.05rem,1.8vw,1.45rem);font-weight:700}.order-meta{color:#667985}.birthday-name{font-size:clamp(1.15rem,1.8vw,1.55rem);font-weight:750}.birthday-fullname,.highlight-meta{color:#667985;font-size:clamp(.95rem,1.35vw,1.2rem)}.highlight-name{font-size:clamp(1.15rem,2vw,1.6rem);font-weight:750}.highlight-medal-caption{color:#536a78;font-size:clamp(.95rem,1.35vw,1.2rem);margin-top:.2rem}.medals{font-size:1.4rem;letter-spacing:.12rem;white-space:nowrap;margin-top:.35rem}.tv-card-grid .empty{grid-column:1/-1}.empty{padding:2rem;text-align:center;color:#738490;font-size:1.15rem}
-    @media(max-width:1200px){.tv-card-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:800px){.panel-grid{grid-template-columns:1fr}.panel-card{min-height:240px}.panel-header{padding:1rem 1.25rem}.tv-controls{width:100%;justify-content:flex-start}.tv-card-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem;padding:.8rem}}@media(max-width:520px){.tv-card-grid{grid-template-columns:1fr}}
+    .avatar{width:58px;height:58px;border-radius:50%;object-fit:cover;background:#dcecf5;display:flex;align-items:center;justify-content:center;font-size:1.4rem;font-weight:700;color:var(--blue);flex:none}.order-name{font-size:clamp(1.05rem,1.8vw,1.45rem);font-weight:700}.order-meta{color:#667985}.birthday-name{font-size:clamp(1.15rem,1.8vw,1.55rem);font-weight:750}.birthday-fullname,.highlight-meta{color:#667985;font-size:clamp(.95rem,1.35vw,1.2rem)}.birthday-cake{font-size:clamp(1.8rem,3vw,2.6rem);line-height:1;margin-top:.25rem}.birthday-date{font-weight:750;color:var(--blue);font-size:clamp(1rem,1.5vw,1.3rem)}.highlight-name{font-size:clamp(1.15rem,2vw,1.6rem);font-weight:750}.highlight-medal-caption{color:#536a78;font-size:clamp(.95rem,1.35vw,1.2rem);margin-top:.2rem}.medals{font-size:1.4rem;letter-spacing:.12rem;white-space:nowrap;margin-top:.35rem}.tv-card-grid .empty{grid-column:1/-1}.empty{padding:2rem;text-align:center;color:#738490;font-size:1.15rem}
+    @media(max-width:1200px){.tv-card-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:800px){.panel-grid{grid-template-columns:1fr}.panel-card{min-height:240px}.panel-header{padding:1rem 1.25rem}.tv-controls{width:100%;justify-content:flex-start}.tv-card-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem;padding:.8rem}.tv-order-grid{grid-template-columns:1fr;gap:.8rem;padding:.8rem}}@media(max-width:520px){.tv-card-grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
   <header class="panel-header">
-    <div><h1>PELADEIROS GPCTA</h1><small>Controle da TV · pedidos, aniversariantes e destaques</small></div>
+    <div><h1>PELADEIROS GPCTA</h1><small>Pedidos, aniversariantes e destaques</small></div>
     <div class="tv-controls">
+      <button class="btn btn-warning" id="auto-rotate" type="button" aria-pressed="false">▶ Alternar telas</button>
       <button class="btn btn-light" id="fullscreen">Tela cheia</button>
       <form method="post" action="{{url_for('auth.logout')}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-outline-light">Sair</button></form>
     </div>
   </header>
   <nav class="tv-tabs" aria-label="Conteúdo do painel">
-    <button class="tv-tab" type="button" data-view="summary" aria-selected="true">Resumo</button>
-    <button class="tv-tab" type="button" data-view="birthdays" aria-selected="false">Aniversariantes</button>
+    <button class="tv-tab" type="button" data-view="summary" aria-selected="true">Pedidos</button>
+    <button class="tv-tab" type="button" data-view="birthdays-view" aria-selected="false">Aniversariantes</button>
     <button class="tv-tab" type="button" data-view="highlights" aria-selected="false">⭐ Destaques</button>
   </nav>
 
   <section id="summary" class="panel-view active">
-    <main class="panel-grid">
-      <section class="panel-card"><h2>Pedidos em andamento</h2><ul class="order-list" id="orders"><li class="empty">Carregando pedidos...</li></ul></section>
-      <section class="panel-card"><h2>Aniversariantes do mês</h2><ul class="birthday-list" id="birthdays-summary"><li class="empty">Carregando aniversariantes...</li></ul></section>
+    <main class="panel-grid single">
+      <section class="panel-card"><h2>Pedidos em andamento</h2><ul class="order-list tv-order-grid" id="orders"><li class="empty">Carregando pedidos...</li></ul></section>
     </main>
   </section>
-  <section id="birthdays" class="panel-view">
-    <main class="panel-grid single"><section class="panel-card"><h2>Aniversariantes do mês</h2><ul class="birthday-list tv-card-grid" id="birthdays"><li class="empty">Carregando aniversariantes...</li></ul></section></main>
+  <section id="birthdays-view" class="panel-view">
+    <main class="panel-grid single"><section class="panel-card"><h2>Aniversariantes do mês</h2><ul class="birthday-list tv-card-grid" id="birthdays-list"><li class="empty">Carregando aniversariantes...</li></ul></section></main>
   </section>
   <section id="highlights" class="panel-view">
     <main class="panel-grid single"><section class="panel-card"><h2>⭐ Peladeiros mais antigos da pelada</h2><ul class="highlight-list tv-card-grid" id="highlights-list"><li class="empty">Carregando destaques...</li></ul></section></main>
   </section>
 
   <script>
-    const orders=document.querySelector('#orders'), birthdays=document.querySelector('#birthdays'), birthdaysSummary=document.querySelector('#birthdays-summary'), highlights=document.querySelector('#highlights-list');
+    const orders=document.querySelector('#orders'), birthdays=document.querySelector('#birthdays-list'), highlights=document.querySelector('#highlights-list');
     const esc=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
     function avatar(photo,name){return photo?`<img class="avatar" src="${esc(photo)}" alt="">`:`<div class="avatar">${esc((name||'?').slice(0,1).toUpperCase())}</div>`}
-    function birthdayMarkup(data){return data.length?data.map(person=>`<li class="birthday-item">${avatar(person.thumbnail_data,person.war_name||person.name)}<div><div class="birthday-name">${esc(person.war_name||person.name)}</div><div class="birthday-fullname">${esc(person.name||'')}</div><div class="order-meta">🎂 ${esc((person.birth_date||'').slice(8,10))}/${esc((person.birth_date||'').slice(5,7))}</div></div></li>`).join(''):'<li class="empty">Nenhum aniversariante neste mês.</li>'}
+    function birthdayMarkup(data){return data.length?data.map(person=>`<li class="birthday-item">${avatar(person.thumbnail_data,person.war_name||person.name)}<div><div class="birthday-name">${esc(person.war_name||person.name)}</div><div class="birthday-fullname">${esc(person.name||'')}</div><div class="birthday-cake" aria-hidden="true">🎂</div><div class="birthday-date">${esc((person.birth_date||'').slice(8,10))}/${esc((person.birth_date||'').slice(5,7))}</div></div></li>`).join(''):'<li class="empty">Nenhum aniversariante neste mês.</li>'}
     function render(data){
       orders.innerHTML=data.orders.length?data.orders.map(order=>`<li class="order-item">${avatar(order.player_photo,order.player_name)}<div><div class="order-name">${esc(order.player_name)}</div><div class="order-meta">Pedido #${esc(order.id)} · ${order.items.map(item=>`${esc(item.pending_quantity??item.quantity)}× ${esc(item.name)}${item.delivered_quantity?` (restam ${esc(item.pending_quantity)})`:''}`).join(', ')}</div></div></li>`).join(''):'<li class="empty">Nenhum pedido aguardando entrega.</li>';
-      const birthdaysHtml=birthdayMarkup(data.birthdays||[]); birthdays.innerHTML=birthdaysHtml; birthdaysSummary.innerHTML=birthdaysHtml;
+      birthdays.innerHTML=birthdayMarkup(data.birthdays||[]);
       highlights.innerHTML=data.highlights?.length?data.highlights.map(person=>{const medals=person.service_medals||[],latest=medals[medals.length-1];return `<li class="highlight-item">${avatar(person.thumbnail_data,person.war_name||person.name)}<div><div class="highlight-name">${esc(person.war_name||person.name)}</div><div class="highlight-meta">${esc(person.name||'')}</div><div class="medals" title="Condecorações">${medals.map(m=>esc(m.emoji)).join('')}</div><div class="highlight-medal-caption">${latest?esc(latest.name)+' · ':''}${esc(person.tenure_label)}</div></div></li>`}).join(''):'<li class="empty">Nenhum destaque com data de apresentação cadastrada.</li>';
     }
     async function refresh(){try{const response=await fetch('{{url_for("display.feed")}}',{cache:'no-store'});if(response.ok)render(await response.json())}catch(_){} }
-    document.querySelectorAll('.tv-tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tv-tab').forEach(item=>item.setAttribute('aria-selected',String(item===tab)));document.querySelectorAll('.panel-view').forEach(view=>view.classList.toggle('active',view.id===tab.dataset.view));}));
+    const tabs=[...document.querySelectorAll('.tv-tab')], rotateButton=document.querySelector('#auto-rotate');let rotationTimer=null,rotationIndex=0;
+    function selectView(viewId){const index=tabs.findIndex(tab=>tab.dataset.view===viewId);if(index>=0)rotationIndex=index;tabs.forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.view===viewId)));document.querySelectorAll('.panel-view').forEach(view=>view.classList.toggle('active',view.id===viewId));}
+    tabs.forEach(tab=>tab.addEventListener('click',()=>selectView(tab.dataset.view)));
+    rotateButton.addEventListener('click',()=>{if(rotationTimer){clearInterval(rotationTimer);rotationTimer=null;rotateButton.setAttribute('aria-pressed','false');rotateButton.textContent='▶ Alternar telas';return}rotateButton.setAttribute('aria-pressed','true');rotateButton.textContent='⏸ Parar alternância';rotationTimer=setInterval(()=>{rotationIndex=(rotationIndex+1)%tabs.length;selectView(tabs[rotationIndex].dataset.view)},10000)});
     refresh();setInterval(refresh,5000);document.querySelector('#fullscreen').addEventListener('click',()=>document.documentElement.requestFullscreen?.());
   </script>
 </body>
