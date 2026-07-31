@@ -280,7 +280,7 @@ def _sumula(db, sumula_id, audit_page=None):
         lineups = [dict(item) for item in db.execute("SELECT fl.*,p.name,p.war_name FROM football_lineups fl JOIN players p ON p.id=fl.player_id WHERE fl.match_id=? ORDER BY fl.period,fl.team,fl.position,COALESCE(fl.draw_order,999999),LOWER(p.name)", (match["id"],)).fetchall()]
         for lineup in lineups:
             lineup["war_name"] = f"{lineup['war_name'] or lineup['name']} · Tempo {lineup['period']}"
-        goals = db.execute("SELECT fg.*,pa.name author_name,pa.war_name author_war,ps.name assist_name,ps.war_name assist_war FROM football_goals fg LEFT JOIN players pa ON pa.id=fg.author_player_id LEFT JOIN players ps ON ps.id=fg.assist_player_id WHERE fg.match_id=? ORDER BY fg.id", (match["id"],)).fetchall()
+        goals = db.execute("SELECT fg.*, CASE WHEN fg.own_goal=1 THEN 'Gol contra de ' || COALESCE(pa.war_name,pa.name,'autor não identificado') ELSE pa.name END author_name, CASE WHEN fg.own_goal=1 THEN NULL ELSE pa.war_name END author_war, CASE WHEN fg.own_goal=1 THEN NULL ELSE ps.name END assist_name, CASE WHEN fg.own_goal=1 THEN NULL ELSE ps.war_name END assist_war FROM football_goals fg LEFT JOIN players pa ON pa.id=fg.author_player_id LEFT JOIN players ps ON ps.id=fg.assist_player_id WHERE fg.match_id=? ORDER BY fg.id", (match["id"],)).fetchall()
         matches.append({"row": match, "lineups": lineups, "goals": goals})
     incidents = db.execute("SELECT fi.*,p.name,p.war_name FROM football_incidents fi LEFT JOIN players p ON p.id=fi.player_id WHERE fi.sumula_id=? ORDER BY fi.id DESC", (sumula_id,)).fetchall()
     responsibles = db.execute("SELECT fr.*,p.name,p.war_name,fm.number match_number FROM football_responsibles fr LEFT JOIN players p ON p.id=fr.player_id LEFT JOIN football_matches fm ON fm.id=fr.match_id WHERE fr.sumula_id=? ORDER BY fr.id", (sumula_id,)).fetchall()
@@ -443,7 +443,7 @@ def statistics():
             if own > opponent: wins += 1
             elif own == opponent: draws += 1
             else: losses += 1
-        goals = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
+        goals = int(db.execute("SELECT COALESCE(SUM(CASE WHEN fg.own_goal=1 THEN -1 ELSE 1 END),0) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
         assists = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.assist_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
         historical_filter = " AND stat_date >= ? AND stat_date < ?" if start_date else ""
         historical_params = (start_date.isoformat(), end_date.isoformat()) if start_date else ()
@@ -551,7 +551,7 @@ def client_panel():
             if score[0] > score[1]: own["vitorias"] += 1
             elif score[0] == score[1]: own["empates"] += 1
             else: own["derrotas"] += 1
-        own["gols"] = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player_id,)).fetchone()[0] or 0)
+        own["gols"] = int(db.execute("SELECT COALESCE(SUM(CASE WHEN fg.own_goal=1 THEN -1 ELSE 1 END),0) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player_id,)).fetchone()[0] or 0)
         own["assistencias"] = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.assist_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player_id,)).fetchone()[0] or 0)
         historical = db.execute("SELECT COALESCE(SUM(goals),0) goals,COALESCE(SUM(assists),0) assists FROM football_historical_stats WHERE player_id=?", (player_id,)).fetchone()
         own["gols"] += int(historical["goals"] or 0); own["assistencias"] += int(historical["assists"] or 0)
@@ -821,6 +821,20 @@ def detail(sumula_id):
                         raise ValueError("A ordem do sorteio deve estar entre 1 e 44.")
                     if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND draw_order=?", (sumula_id, draw_order)).fetchone():
                         raise ValueError("Esta ordem de sorteio já está ocupada.")
+                else:
+                    # A ordem é automática no cadastro normal.  Isso mantém o
+                    # sorteio sequencial mesmo quando o navegador envia o
+                    # formulário sem o valor visível do campo.
+                    used_orders = {
+                        int(row["draw_order"])
+                        for row in db.execute(
+                            "SELECT draw_order FROM football_participants WHERE sumula_id=? AND draw_order IS NOT NULL",
+                            (sumula_id,),
+                        ).fetchall()
+                    }
+                    draw_order = next((number for number in range(1, 45) if number not in used_orders), None)
+                    if draw_order is None:
+                        raise ValueError("Não há mais ordens disponíveis para esta súmula.")
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, draw_order or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
             elif action == "historical_participant":
@@ -925,7 +939,12 @@ def detail(sumula_id):
                 if benefited_team not in TEAMS or not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
                     raise ValueError("Partida ou time inválido para esta súmula.")
                 _ensure_goal_fits_score(db, match_id, benefited_team)
-                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?)", (match_id, author_player_id, benefited_team, assist_player_id, int(request.form["minute"]) if request.form.get("minute") else None, 1 if request.form.get("own_goal") else 0, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
+                own_goal = 1 if request.form.get("own_goal") == "1" else 0
+                if own_goal:
+                    if not author_player_id:
+                        raise ValueError("Selecione o peladeiro que marcou o gol contra.")
+                    assist_player_id = None
+                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?)", (match_id, author_player_id, benefited_team, assist_player_id, int(request.form["minute"]) if request.form.get("minute") else None, own_goal, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
             elif action in ("update_goal", "move_goal", "delete_goal"):
                 goal_id = int(request.form["goal_id"])
                 goal = db.execute("SELECT fg.id,fg.match_id,fm.sumula_id FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id WHERE fg.id=? AND fm.sumula_id=?", (goal_id, sumula_id)).fetchone()
@@ -952,8 +971,17 @@ def detail(sumula_id):
                         if benefited_team not in TEAMS:
                             raise ValueError("Time inválido.")
                         minute = int(request.form["minute"]) if request.form.get("minute") else None
+                        own_goal_raw = request.form.get("own_goal", "")
+                        if own_goal_raw in ("0", "1"):
+                            own_goal = int(own_goal_raw)
+                        else:
+                            own_goal = int(db.execute("SELECT COALESCE(own_goal,0) FROM football_goals WHERE id=?", (goal_id,)).fetchone()[0] or 0)
+                        if own_goal:
+                            if not author_player_id:
+                                raise ValueError("Selecione o peladeiro que marcou o gol contra.")
+                            assist_player_id = None
                         _ensure_goal_fits_score(db, target_match_id, benefited_team, goal_id)
-                        db.execute("UPDATE football_goals SET match_id=?,author_player_id=?,benefited_team=?,assist_player_id=?,minute=? WHERE id=?", (target_match_id, author_player_id, benefited_team, assist_player_id, minute, goal_id))
+                        db.execute("UPDATE football_goals SET match_id=?,author_player_id=?,benefited_team=?,assist_player_id=?,minute=?,own_goal=? WHERE id=?", (target_match_id, author_player_id, benefited_team, assist_player_id, minute, own_goal, goal_id))
                         _audit(db, sumula_id, "GOL_EDITADO", str(goal_id))
             elif action == "incident":
                 description = request.form.get("description", "").strip()
