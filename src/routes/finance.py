@@ -163,11 +163,11 @@ def dashboard():
         trend_data = [trend_values.get(point.isoformat(), 0) for point in chart_points]
     else:
         trend_rows = db.execute(
-            """SELECT substr(date(COALESCE(paid_at,created_at)),1,7) business_month,
+            """SELECT substr(CAST(date(COALESCE(paid_at,created_at)) AS TEXT),1,7) business_month,
                       COALESCE(SUM(total_cents),0) total
                FROM sales WHERE paid=1 AND payment_method!='Cortesia'
                  AND date(COALESCE(paid_at,created_at))>=? AND date(COALESCE(paid_at,created_at))<?
-               GROUP BY substr(date(COALESCE(paid_at,created_at)),1,7) ORDER BY business_month""",
+               GROUP BY substr(CAST(date(COALESCE(paid_at,created_at)) AS TEXT),1,7) ORDER BY business_month""",
             (start, end),
         ).fetchall()
         chart_points = []
