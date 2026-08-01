@@ -390,6 +390,66 @@ def delete_stock_conference(conference_id):
     return redirect(url_for("products.stock_conference"))
 
 
+@bp.post("/stock/conference/<int:conference_id>/apply")
+@roles_allowed("manager")
+def apply_stock_conference(conference_id):
+    """Apply a confirmed physical count to product stock, exactly once."""
+    db = get_db()
+    conference = db.execute("SELECT * FROM stock_conferences WHERE id=?", (conference_id,)).fetchone()
+    if not conference:
+        flash("Conferência não encontrada.", "warning")
+        return redirect(url_for("products.stock_conference"))
+    applied = db.execute(
+        "SELECT id FROM stock_conference_audit WHERE conference_month=? AND action='APLICADA' LIMIT 1",
+        (conference["conference_month"],),
+    ).fetchone()
+    if applied:
+        flash("Esta conferência já foi aplicada ao estoque.", "warning")
+        return redirect(url_for("products.stock_conference", conference_id=conference_id))
+    items = db.execute(
+        "SELECT * FROM stock_conference_items WHERE conference_id=? ORDER BY product_id",
+        (conference_id,),
+    ).fetchall()
+    changed_products = []
+    try:
+        with db:
+            for item in items:
+                product = db.execute("SELECT id,name,stock FROM products WHERE id=?", (item["product_id"],)).fetchone()
+                if not product:
+                    continue
+                # Do not overwrite sales/restocks made after the count.
+                if int(product["stock"] or 0) != int(item["expected_stock"] or 0):
+                    raise ValueError(
+                        f"O estoque de {product['name']} mudou desde a conferência. Faça uma nova conferência."
+                    )
+                difference = int(item["physical_stock"]) - int(product["stock"] or 0)
+                if difference:
+                    db.execute("UPDATE products SET stock=? WHERE id=?", (item["physical_stock"], product["id"]))
+                    db.execute(
+                        """INSERT INTO stock_adjustments
+                        (product_id,user_id,previous_stock,new_stock,difference,reason)
+                        VALUES(?,?,?,?,?,?)""",
+                        (product["id"], g.user["id"], product["stock"], item["physical_stock"], difference,
+                         f"Conferência mensal {conference['conference_month']}: {item['reason'] or 'ajuste de contagem física'}"),
+                    )
+                    changed_products.append(product["id"])
+            db.execute(
+                "INSERT INTO stock_conference_audit(conference_month,action,details,user_id) VALUES(?,?,?,?)",
+                (conference["conference_month"], "APLICADA", f"Conferência #{conference_id} aplicada ao estoque.", g.user["id"]),
+            )
+        if changed_products:
+            notify_low_stock(db, changed_products)
+        flash("Conferência aplicada ao estoque com sucesso.", "success")
+    except ValueError as exc:
+        db.rollback()
+        flash(str(exc), "danger")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.error("Erro ao aplicar conferência %s: %s", conference_id, exc)
+        flash("Erro interno ao aplicar a conferência.", "danger")
+    return redirect(url_for("products.stock_conference", conference_id=conference_id))
+
+
 @bp.route("/stock/restock-request", methods=["GET", "POST"])
 @roles_allowed("staff", "manager")
 def restock_request():
