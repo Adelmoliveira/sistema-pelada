@@ -279,6 +279,117 @@ def stock():
                            report_end=request.args.get("end", ""))
 
 
+@bp.route("/stock/conference", methods=["GET", "POST"])
+@roles_allowed("manager", "staff")
+def stock_conference():
+    """Register the monthly physical bar-stock count without changing stock."""
+    db = get_db()
+    month = (request.form.get("conference_month") if request.method == "POST" else request.args.get("month")) or local_today().strftime("%Y-%m")
+    products = db.execute(
+        "SELECT id,name,category,stock FROM products WHERE active=1 ORDER BY category,name"
+    ).fetchall()
+    if request.method == "POST":
+        try:
+            try:
+                date.fromisoformat(f"{month}-01")
+            except (TypeError, ValueError):
+                raise ValueError("Informe um mês válido no formato AAAA-MM.")
+            notes = request.form.get("notes", "").strip()
+            counts = []
+            for product in products:
+                raw = (request.form.get(f"physical_{product['id']}") or "").strip()
+                if raw == "":
+                    raise ValueError(f"Informe a contagem física de {product['name']}.")
+                physical = int(raw)
+                if physical < 0:
+                    raise ValueError("A contagem física não pode ser negativa.")
+                expected = int(product["stock"] or 0)
+                difference = physical - expected
+                reason = request.form.get(f"reason_{product['id']}", "").strip()
+                if difference and not reason:
+                    raise ValueError(f"Informe o motivo da diferença de {product['name']}.")
+                counts.append((product["id"], expected, physical, difference, reason))
+            if not counts:
+                raise ValueError("Não há produtos ativos para conferir.")
+            with db:
+                conference = db.execute(
+                    "INSERT INTO stock_conferences(conference_month,notes,performed_by) VALUES(?,?,?)",
+                    (month, notes, g.user["id"]),
+                )
+                for product_id, expected, physical, difference, reason in counts:
+                    db.execute(
+                        "INSERT INTO stock_conference_items(conference_id,product_id,expected_stock,physical_stock,difference,reason) VALUES(?,?,?,?,?,?)",
+                        (conference.lastrowid, product_id, expected, physical, difference, reason),
+                    )
+                db.execute(
+                    "INSERT INTO stock_conference_audit(conference_month,action,details,user_id) VALUES(?,?,?,?)",
+                    (month, "REGISTRADA", f"Conferência #{conference.lastrowid} registrada.", g.user["id"]),
+                )
+            flash(f"Conferência de {month} registrada com sucesso.", "success")
+            return redirect(url_for("products.stock_conference", month=month))
+        except ValueError as exc:
+            flash(str(exc), "danger")
+        except Exception as exc:
+            db.rollback()
+            current_app.logger.error("Erro ao registrar conferência de estoque %s: %s", month, exc)
+            if "unique" in str(exc).lower():
+                flash("Já existe uma conferência registrada para este mês.", "danger")
+            else:
+                flash("Erro interno ao registrar a conferência.", "danger")
+
+    conferences = db.execute(
+        """SELECT c.*,u.name performed_by_name,
+                  (SELECT COUNT(*) FROM stock_conference_items i WHERE i.conference_id=c.id) item_count,
+                  (SELECT COUNT(*) FROM stock_conference_items i WHERE i.conference_id=c.id AND i.difference<>0) difference_count,
+                  (SELECT COALESCE(SUM(ABS(i.difference)),0) FROM stock_conference_items i WHERE i.conference_id=c.id) difference_units
+           FROM stock_conferences c LEFT JOIN users u ON u.id=c.performed_by
+           ORDER BY c.conference_month DESC,c.id DESC"""
+    ).fetchall()
+    selected_id = request.args.get("conference_id", type=int)
+    selected = None
+    selected_items = []
+    if selected_id:
+        selected = db.execute(
+            "SELECT c.*,u.name performed_by_name FROM stock_conferences c LEFT JOIN users u ON u.id=c.performed_by WHERE c.id=?",
+            (selected_id,),
+        ).fetchone()
+        if selected:
+            selected_items = db.execute(
+                """SELECT i.*,p.name product_name,p.category FROM stock_conference_items i
+                   JOIN products p ON p.id=i.product_id WHERE i.conference_id=? ORDER BY p.category,p.name""",
+                (selected_id,),
+            ).fetchall()
+    return render_template(
+        "stock_conference.html", products=products, conferences=conferences,
+        selected=selected, selected_items=selected_items, selected_id=selected_id,
+        conference_month=month, is_manager=g.user["role"] == "manager",
+    )
+
+
+@bp.post("/stock/conference/<int:conference_id>/delete")
+@roles_allowed("manager")
+def delete_stock_conference(conference_id):
+    db = get_db()
+    conference = db.execute("SELECT * FROM stock_conferences WHERE id=?", (conference_id,)).fetchone()
+    if not conference:
+        flash("Conferência não encontrada.", "warning")
+        return redirect(url_for("products.stock_conference"))
+    try:
+        with db:
+            db.execute(
+                "INSERT INTO stock_conference_audit(conference_month,action,details,user_id) VALUES(?,?,?,?)",
+                (conference["conference_month"], "EXCLUIDA", f"Conferência #{conference_id} excluída.", g.user["id"]),
+            )
+            db.execute("DELETE FROM stock_conference_items WHERE conference_id=?", (conference_id,))
+            db.execute("DELETE FROM stock_conferences WHERE id=?", (conference_id,))
+        flash("Conferência excluída. A ação foi registrada na auditoria.", "success")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.error("Erro ao excluir conferência %s: %s", conference_id, exc)
+        flash("Erro interno ao excluir a conferência.", "danger")
+    return redirect(url_for("products.stock_conference"))
+
+
 @bp.route("/stock/restock-request", methods=["GET", "POST"])
 @roles_allowed("staff", "manager")
 def restock_request():
