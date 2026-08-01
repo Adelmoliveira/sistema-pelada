@@ -350,7 +350,10 @@ def stock_conference():
     selected_items = []
     if selected_id:
         selected = db.execute(
-            "SELECT c.*,u.name performed_by_name FROM stock_conferences c LEFT JOIN users u ON u.id=c.performed_by WHERE c.id=?",
+            """SELECT c.*,u.name performed_by_name,
+                      EXISTS(SELECT 1 FROM stock_conference_audit a
+                             WHERE a.conference_month=c.conference_month AND a.action='APLICADA') AS applied
+               FROM stock_conferences c LEFT JOIN users u ON u.id=c.performed_by WHERE c.id=?""",
             (selected_id,),
         ).fetchone()
         if selected:
