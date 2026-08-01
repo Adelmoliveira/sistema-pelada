@@ -2015,6 +2015,79 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("relatorio-estoque-", response.headers["Content-Disposition"])
         self.assertTrue(response.data.startswith(b"%PDF-"))
 
+    def test_monthly_stock_conference_requires_reason_and_preserves_expected_stock(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        invalid = self.client.post(
+            "/stock/conference",
+            data={
+                "conference_month": "2026-08",
+                f"physical_{self.product_id}": "3",
+                f"reason_{self.product_id}": "",
+            },
+        )
+        self.assertEqual(invalid.status_code, 200)
+        self.assertIn("Informe o motivo da diferença", invalid.get_data(as_text=True))
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM stock_conferences").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 5)
+
+        created = self.client.post(
+            "/stock/conference",
+            data={
+                "conference_month": "2026-08",
+                "notes": "Fechamento do bar",
+                f"physical_{self.product_id}": "3",
+                f"reason_{self.product_id}": "Perda registrada",
+            },
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            conference = db.execute("SELECT * FROM stock_conferences WHERE conference_month='2026-08'").fetchone()
+            item = db.execute("SELECT * FROM stock_conference_items WHERE conference_id=?", (conference["id"],)).fetchone()
+            audit = db.execute("SELECT action FROM stock_conference_audit WHERE conference_month='2026-08'").fetchone()
+            self.assertEqual((item["expected_stock"], item["physical_stock"], item["difference"], item["reason"]), (5, 3, -2, "Perda registrada"))
+            self.assertEqual(audit["action"], "REGISTRADA")
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 5)
+
+        duplicate = self.client.post(
+            "/stock/conference",
+            data={"conference_month": "2026-08", f"physical_{self.product_id}": "5"},
+            follow_redirects=True,
+        )
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertIn("Já existe uma conferência", duplicate.get_data(as_text=True))
+
+    def test_manager_can_remove_conference_with_audit_and_staff_cannot(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        created = self.client.post(
+            "/stock/conference",
+            data={"conference_month": "2026-09", f"physical_{self.product_id}": "5"},
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            conference_id = get_db().execute("SELECT id FROM stock_conferences WHERE conference_month='2026-09'").fetchone()["id"]
+            db = get_db()
+            db.execute("UPDATE users SET role='staff' WHERE id=?", (self.user_id,))
+            db.commit()
+        denied = self.client.post(f"/stock/conference/{conference_id}/delete")
+        self.assertIn(denied.status_code, (302, 403))
+        with app.app_context():
+            db = get_db()
+            self.assertIsNotNone(db.execute("SELECT id FROM stock_conferences WHERE id=?", (conference_id,)).fetchone())
+            db.execute("UPDATE users SET role='manager' WHERE id=?", (self.user_id,))
+            db.commit()
+        deleted = self.client.post(f"/stock/conference/{conference_id}/delete")
+        self.assertEqual(deleted.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            self.assertIsNone(db.execute("SELECT id FROM stock_conferences WHERE id=?", (conference_id,)).fetchone())
+            self.assertEqual(db.execute("SELECT action FROM stock_conference_audit WHERE conference_month='2026-09' ORDER BY id DESC").fetchone()["action"], "EXCLUIDA")
+
     def test_low_stock_alert_consolidates_products_for_supplier_once(self):
         with app.app_context(), patch.dict("os.environ", {
             "GMAIL_SMTP_USER": "bar@example.com",

@@ -275,6 +275,34 @@ CREATE TABLE IF NOT EXISTS stock_adjustments (
     reason TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS stock_conferences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conference_month TEXT NOT NULL UNIQUE,
+    notes TEXT NOT NULL DEFAULT '',
+    performed_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS stock_conference_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conference_id INTEGER NOT NULL REFERENCES stock_conferences(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    expected_stock INTEGER NOT NULL CHECK(expected_stock >= 0),
+    physical_stock INTEGER NOT NULL CHECK(physical_stock >= 0),
+    difference INTEGER NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_stock_conferences_month ON stock_conferences(conference_month);
+CREATE INDEX IF NOT EXISTS idx_stock_conference_items_conference ON stock_conference_items(conference_id);
+CREATE TABLE IF NOT EXISTS stock_conference_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conference_month TEXT NOT NULL,
+    action TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '',
+    user_id INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_stock_conference_audit_month ON stock_conference_audit(conference_month,created_at);
 CREATE TABLE IF NOT EXISTS stock_alert_states (
     product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
     alerted INTEGER NOT NULL DEFAULT 0,
