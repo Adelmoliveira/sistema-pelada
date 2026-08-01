@@ -57,12 +57,48 @@ def _finance_ledger_filters():
         category = ""
     return start.isoformat(), end.isoformat(), account, category, query
 
+
+def _dashboard_period():
+    """Return the selected dashboard range and chart granularity."""
+    today = local_today()
+    mode = request.args.get("period", "month")
+    if mode == "year":
+        start = date(today.year, 1, 1)
+        end = date(today.year + 1, 1, 1)
+        granularity = "month"
+    elif mode == "custom":
+        try:
+            start = date.fromisoformat(request.args.get("start", ""))
+            end_inclusive = date.fromisoformat(request.args.get("end", ""))
+            if start > end_inclusive:
+                raise ValueError
+            end = end_inclusive + timedelta(days=1)
+        except ValueError:
+            mode = "month"
+            start = today.replace(day=1)
+            end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        granularity = "day" if (end - start).days <= 31 else "month"
+    else:
+        mode = "month"
+        start = today.replace(day=1)
+        end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        granularity = "day"
+    return mode, start, end, granularity
+
 @bp.route("/")
 @roles_allowed("manager", "staff")
 def dashboard():
     db = get_db()
     today = local_today().isoformat()
-    month, start, end = month_bounds()
+    period, period_start, period_end, granularity = _dashboard_period()
+    start, end = period_start.isoformat(), period_end.isoformat()
+    month = period_start.strftime("%Y-%m")
+    if period == "year":
+        period_label = f"Ano de {period_start.year}"
+    elif period == "custom":
+        period_label = f"{period_start.strftime('%d/%m/%Y')} a {(period_end - timedelta(days=1)).strftime('%d/%m/%Y')}"
+    else:
+        period_label = period_start.strftime("%m/%Y")
     metrics = db.execute("""
         SELECT
           COALESCE(SUM(CASE WHEN date(created_at)=? AND payment_method!='Cortesia' THEN total_cents END),0) day_total,
@@ -111,18 +147,38 @@ def dashboard():
     maintenance = db.execute(
         "SELECT COUNT(*) FROM maintenance_requests WHERE status!='completed'"
     ).fetchone()[0]
-    trend_start = local_today() - timedelta(days=6)
-    trend_rows = db.execute(
-        """SELECT date(COALESCE(paid_at,created_at)) business_date,
-                  COALESCE(SUM(total_cents),0) total
-           FROM sales
-           WHERE paid=1 AND payment_method!='Cortesia'
-             AND date(COALESCE(paid_at,created_at)) BETWEEN ? AND ?
-           GROUP BY date(COALESCE(paid_at,created_at)) ORDER BY business_date""",
-        (trend_start.isoformat(), today),
-    ).fetchall()
-    trend_values = {str(row["business_date"]): int(row["total"] or 0) for row in trend_rows}
-    chart_days = [trend_start + timedelta(days=index) for index in range(7)]
+    if granularity == "day":
+        chart_start = max(period_start, local_today() - timedelta(days=6)) if period == "month" else period_start
+        trend_rows = db.execute(
+            """SELECT date(COALESCE(paid_at,created_at)) business_date,
+                      COALESCE(SUM(total_cents),0) total
+               FROM sales WHERE paid=1 AND payment_method!='Cortesia'
+                 AND date(COALESCE(paid_at,created_at))>=? AND date(COALESCE(paid_at,created_at))<?
+               GROUP BY date(COALESCE(paid_at,created_at)) ORDER BY business_date""",
+            (chart_start.isoformat(), period_end.isoformat()),
+        ).fetchall()
+        chart_points = [chart_start + timedelta(days=index) for index in range((period_end - chart_start).days)]
+        chart_labels = [point.strftime("%d/%m") for point in chart_points]
+        trend_values = {str(row["business_date"]): int(row["total"] or 0) for row in trend_rows}
+        trend_data = [trend_values.get(point.isoformat(), 0) for point in chart_points]
+    else:
+        trend_rows = db.execute(
+            """SELECT substr(date(COALESCE(paid_at,created_at)),1,7) business_month,
+                      COALESCE(SUM(total_cents),0) total
+               FROM sales WHERE paid=1 AND payment_method!='Cortesia'
+                 AND date(COALESCE(paid_at,created_at))>=? AND date(COALESCE(paid_at,created_at))<?
+               GROUP BY substr(date(COALESCE(paid_at,created_at)),1,7) ORDER BY business_month""",
+            (start, end),
+        ).fetchall()
+        chart_points = []
+        cursor = period_start.replace(day=1)
+        while cursor < period_end:
+            chart_points.append(cursor)
+            cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+        trend_values = {str(row["business_month"]): int(row["total"] or 0) for row in trend_rows}
+        month_names = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+        chart_labels = [f"{month_names[point.month - 1]}/{point.year}" for point in chart_points]
+        trend_data = [trend_values.get(point.strftime("%Y-%m"), 0) for point in chart_points]
     payment_rows = db.execute(
         """SELECT payment_method,COALESCE(SUM(total_cents),0) total
            FROM sales WHERE paid=1 AND payment_method!='Cortesia'
@@ -178,8 +234,8 @@ def dashboard():
         (start, end),
     ).fetchall()
     chart_data = {
-        "trend_labels": [day.strftime("%d/%m") for day in chart_days],
-        "trend_values": [trend_values.get(day.isoformat(), 0) for day in chart_days],
+        "trend_labels": chart_labels,
+        "trend_values": trend_data,
         "payment_labels": [row["payment_method"] for row in payment_rows],
         "payment_values": [int(row["total"] or 0) for row in payment_rows],
         "flow_values": [
@@ -199,6 +255,10 @@ def dashboard():
         "dashboard.html", metrics=metrics, low=low, recent=recent, month=month,
         finance=finance, bar=bar, membership=membership, maintenance_open=maintenance,
         chart_data=chart_data, membership_chart=membership_chart,
+        dashboard_period=period, dashboard_start=period_start.isoformat(),
+        dashboard_end=(period_end - timedelta(days=1)).isoformat(),
+        dashboard_period_label=period_label,
+        dashboard_trend_title=("Evolução mensal de vendas" if granularity == "month" else "Vendas por dia"),
     )
 
 @bp.route("/reports")

@@ -55,3 +55,30 @@ def build_players_pdf(players, generated_on=None, query=""):
     document.build(story, onFirstPage=footer, onLaterPages=footer)
     output.seek(0)
     return output
+
+
+def build_incomplete_players_pdf(players, generated_on=None):
+    """Build a concise report containing only players with pending data."""
+    generated_on = generated_on or local_today()
+    output = BytesIO()
+    document = SimpleDocTemplate(output, pagesize=A4, leftMargin=20 * mm, rightMargin=20 * mm,
+                                 topMargin=18 * mm, bottomMargin=18 * mm,
+                                 title="Peladeiros com cadastro pendente", author="PELADEIROS GPCTA")
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="PendingTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=18, textColor=colors.HexColor("#073B5C"), spaceAfter=6))
+    styles.add(ParagraphStyle(name="PendingText", parent=styles["Normal"], fontSize=11, leading=15, textColor=colors.HexColor("#183042")))
+    story = [
+        Paragraph("PELADEIROS GPCTA", styles["PendingTitle"]),
+        Paragraph("Peladeiros com cadastro pendente", styles["PendingTitle"]),
+        Paragraph(f"Gerado em {generated_on.strftime('%d/%m/%Y')} · {len(players)} nome(s)", styles["PendingText"]),
+        Spacer(1, 8 * mm),
+    ]
+    for index, player in enumerate(players, 1):
+        display_name = player["war_name"] or player["name"]
+        story.append(Paragraph(f"{index}. {escape(str(display_name))}", styles["PendingText"]))
+        story.append(Spacer(1, 2 * mm))
+    if not players:
+        story.append(Paragraph("Nenhum cadastro pendente.", styles["PendingText"]))
+    document.build(story)
+    output.seek(0)
+    return output
