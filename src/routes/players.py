@@ -3,14 +3,14 @@ from src.db import get_db
 from src.routes.auth import roles_allowed, make_password_hash
 from src.utils import alphabetical_key, normalize_cpf, spreadsheet_rows
 from src.services.material_photos import process_material_photo
-from src.services.players_pdf import build_players_pdf
+from src.services.players_pdf import build_players_pdf, build_incomplete_players_pdf
 from src.utils import local_today
 
 bp = Blueprint("players", __name__)
 FOOTBALL_POSITIONS = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque", "JUIZ": "Juiz", "APOSENTADO": "Aposentado"}
 
 
-def _player_report_rows(db, query="", address_filter=""):
+def _player_report_rows(db, query="", address_filter="", cadastro_filter=""):
     rows = db.execute("SELECT * FROM players WHERE active=1").fetchall()
     query = (query or "").strip()
     if query:
@@ -20,6 +20,9 @@ def _player_report_rows(db, query="", address_filter=""):
         rows = [row for row in rows if (row["address_street"] or "").strip() or (row["postal_code"] or "").strip()]
     elif address_filter == "missing":
         rows = [row for row in rows if not (row["address_street"] or "").strip() and not (row["postal_code"] or "").strip()]
+    if cadastro_filter == "incomplete":
+        required = ("birth_date", "phone", "emergency_phone", "postal_code", "address_street", "address_number", "address_city", "address_state")
+        rows = [row for row in rows if any(not (row[field] or "").strip() for field in required)]
     return sorted(rows, key=lambda row: alphabetical_key(row["war_name"] or row["name"]))
 
 
@@ -30,7 +33,10 @@ def players_report():
     address_filter = request.args.get("address", "")
     if address_filter not in {"", "registered", "missing"}:
         address_filter = ""
-    all_players = _player_report_rows(get_db(), query, address_filter)
+    cadastro_filter = request.args.get("cadastro", "")
+    if cadastro_filter not in {"", "incomplete"}:
+        cadastro_filter = ""
+    all_players = _player_report_rows(get_db(), query, address_filter, cadastro_filter)
     per_page = 10
     try:
         page = max(1, int(request.args.get("page", 1)))
@@ -39,7 +45,7 @@ def players_report():
     pages = max(1, (len(all_players) + per_page - 1) // per_page)
     page = min(page, pages)
     players = all_players[(page - 1) * per_page:page * per_page]
-    return render_template("players_report.html", players=players, query=query, address_filter=address_filter, page=page, pages=pages, total=len(all_players))
+    return render_template("players_report.html", players=players, query=query, address_filter=address_filter, cadastro_filter=cadastro_filter, page=page, pages=pages, total=len(all_players))
 
 
 @bp.get("/players/report.pdf")
@@ -49,8 +55,17 @@ def players_report_pdf():
     address_filter = request.args.get("address", "")
     if address_filter not in {"", "registered", "missing"}:
         address_filter = ""
-    report = build_players_pdf(_player_report_rows(get_db(), query, address_filter), local_today(), query)
-    return send_file(report, mimetype="application/pdf", as_attachment=True, download_name="cadastro-completo-peladeiros.pdf")
+    cadastro_filter = request.args.get("cadastro", "")
+    if cadastro_filter not in {"", "incomplete"}:
+        cadastro_filter = ""
+    rows = _player_report_rows(get_db(), query, address_filter, cadastro_filter)
+    if cadastro_filter == "incomplete":
+        report = build_incomplete_players_pdf(rows, local_today())
+        filename = "peladeiros-cadastro-pendente.pdf"
+    else:
+        report = build_players_pdf(rows, local_today(), query)
+        filename = "cadastro-completo-peladeiros.pdf"
+    return send_file(report, mimetype="application/pdf", as_attachment=True, download_name=filename)
 
 
 @bp.get("/players/report/<int:player_id>")
