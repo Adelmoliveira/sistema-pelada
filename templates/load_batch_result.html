@@ -1,0 +1,5 @@
+{% extends 'base.html' %}
+{% block title %}Cargas cadastradas · Relação de Carga{% endblock %}
+{% block content %}
+<div class="card shadow-sm"><div class="card-body p-4"><h1 class="h3">{{quantity}} unidade(s) cadastrada(s)</h1><p class="text-success">Os BMPs foram gerados. Use “Código QR” em cada item para abrir os detalhes e imprimir as etiquetas.</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>BMP</th><th>Nº série</th><th class="text-end">Ação</th></tr></thead><tbody>{% for item in generated %}<tr><td><strong>{{item.bmp}}</strong></td><td>{{item.serial or '—'}}</td><td class="text-end"><a class="btn btn-sm btn-outline-primary" href="{{url_for('infra.load_entry_qr_code',entry_id=item.id)}}">Código QR</a></td></tr>{% endfor %}</tbody></table></div><a class="btn btn-primary" href="{{url_for('infra.load_relation')}}">Voltar para Relação de Carga</a></div></div>
+{% endblock %}

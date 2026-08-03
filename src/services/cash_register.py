@@ -109,8 +109,8 @@ def session_summary(db, session):
     ).fetchall()
     sale_rows = db.execute(
         """SELECT s.id,s.payment_method,s.total_cents,COALESCE(s.paid_at,s.created_at) payment_date,
-        p.name player_name
-        FROM sales s JOIN players p ON p.id=s.player_id
+        COALESCE(p.name,s.guest_name,'Convidado') player_name
+        FROM sales s LEFT JOIN players p ON p.id=s.player_id
         WHERE s.paid=1 AND s.payment_method<>'Cortesia'
           AND date(COALESCE(s.paid_at,s.created_at))=?
         ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC""",
@@ -171,14 +171,14 @@ def history_rows(db, start_date, end_date, account="", direction="", category=""
         elif account == "bank":
             sale_conditions.append("sl.payment_method IN ('Pix','Débito')")
         if query:
-            sale_conditions.append("(LOWER(p.name) LIKE ? OR CAST(sl.id AS TEXT) LIKE ?)")
+            sale_conditions.append("(LOWER(COALESCE(p.name,sl.guest_name,'')) LIKE ? OR CAST(sl.id AS TEXT) LIKE ?)")
             term = f"%{query.lower()}%"
             sale_params.extend([term, term])
         sale_rows = db.execute(
             f"""SELECT sl.id,sl.payment_method,sl.total_cents,
-            COALESCE(sl.paid_at,sl.created_at) payment_date,p.name player_name,
+            COALESCE(sl.paid_at,sl.created_at) payment_date,COALESCE(p.name,sl.guest_name,'Convidado') player_name,
             date(COALESCE(sl.paid_at,sl.created_at)) business_date
-            FROM sales sl JOIN players p ON p.id=sl.player_id
+            FROM sales sl LEFT JOIN players p ON p.id=sl.player_id
             WHERE {' AND '.join(sale_conditions)}
             ORDER BY COALESCE(sl.paid_at,sl.created_at) DESC,sl.id DESC LIMIT 1000""",
             tuple(sale_params),

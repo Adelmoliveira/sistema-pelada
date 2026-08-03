@@ -24,16 +24,39 @@ def pix_access_token(user):
     serializer = URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="pix-qrcode")
     return serializer.dumps({"user_id": user["id"], "role": user["role"]})
 
+def event_public_token(event_id):
+    serializer = URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="event-sale")
+    return serializer.dumps({"event_id": int(event_id), "role": "event_guest"})
+
+def validate_event_public_token(token):
+    serializer = URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="event-sale")
+    data = serializer.loads(token, max_age=60 * 60 * 24 * 365)
+    if data.get("role") != "event_guest":
+        raise BadData("token inválido")
+    return int(data["event_id"])
+
 def validate_pix_access_token(token):
     serializer = URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="pix-qrcode")
     data = serializer.loads(token, max_age=PIX_TOKEN_MAX_AGE)
-    return data.get("role") in ("manager", "staff", "client")
+    return data.get("role") in ("manager", "staff", "client", "event_guest")
 
 def require_pix_access_token():
+    # A guest event sale uses the event token in the same header used by the
+    # regular Pix flow.  Try both token formats without allowing an invalid
+    # token to raise a 500 response.
+    pix_token = request.headers.get("X-Pix-Token", "")
     try:
-        return validate_pix_access_token(request.headers.get("X-Pix-Token", ""))
+        if validate_pix_access_token(pix_token):
+            return True
     except BadData:
-        return False
+        pass
+    for token in (request.headers.get("X-Event-Token", ""), pix_token):
+        try:
+            if validate_event_public_token(token):
+                return True
+        except (BadData, ValueError, TypeError):
+            pass
+    return False
 
 def mercadopago_config():
     return (
@@ -104,12 +127,28 @@ def sale():
         quantities = request.form.getlist("quantity")
         requested = {}
         try:
+            sale_type = request.form.get("sale_type", "player").strip().lower()
+            event_id = None
+            guest_name = ""
             if g.user["role"] == "client":
+                sale_type = "player"
                 player_id = int(g.user["player_id"] or request.form.get("player_id") or 0)
                 if not player_id:
                     raise ValueError("Seu usuário ainda não está vinculado a um peladeiro.")
                 if g.user["player_id"] and request.form.get("player_id") and int(request.form["player_id"]) != int(g.user["player_id"]):
                     raise ValueError("O pedido só pode ser registrado para o peladeiro conectado.")
+            elif sale_type == "event":
+                player_id = None
+                try:
+                    event_id = int(request.form.get("event_id") or 0)
+                except (TypeError, ValueError):
+                    event_id = 0
+                guest_name = request.form.get("guest_name", "").strip()
+                if not event_id or not guest_name:
+                    raise ValueError("Selecione o evento e informe o nome do convidado.")
+                event = db.execute("SELECT id FROM bar_events WHERE id=? AND status='open'", (event_id,)).fetchone()
+                if not event:
+                    raise ValueError("Este evento não está aberto para vendas.")
             else:
                 player_id = int(request.form["player_id"])
             for raw_id, raw_qty in zip(product_ids, quantities):
@@ -137,6 +176,8 @@ def sale():
             method = request.form["payment_method"]
             if method == "Pix" and mercadopago_enabled():
                 raise ValueError("Para pagamentos Pix, gere o QR Code e aguarde a confirmação automática.")
+            if sale_type == "event" and method not in ("Pix", "Dinheiro", "Débito", "Cortesia"):
+                raise ValueError("Vendas de evento não podem usar créditos de peladeiro.")
             if g.user["role"] == "client" and method not in ("Pix", "Dinheiro", "Créditos"):
                 raise ValueError("Clientes podem registrar pagamentos somente em Pix ou Dinheiro.")
             
@@ -147,9 +188,9 @@ def sale():
             with db:
                 cur = db.execute(
                     """INSERT INTO sales
-                       (player_id,payment_method,total_cents,paid,payment_status,paid_at,ready_for_delivery,notes)
-                       VALUES(?,?,?,?,?,CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE NULL END,1,?)""",
-                    (player_id, method, total, paid, payment_status, paid,
+                       (player_id,event_id,guest_name,payment_method,total_cents,paid,payment_status,paid_at,ready_for_delivery,notes)
+                       VALUES(?,?,?,?,?,?,?,CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE NULL END,1,?)""",
+                    (player_id, event_id, guest_name, method, total, paid, payment_status, paid,
                      request.form.get("notes", "").strip())
                 )
                 if method == "Créditos":
@@ -217,6 +258,9 @@ def sale():
     product_data.sort(key=lambda product: (-int(product.get("sold_quantity") or 0), (product.get("category") or "").lower(), (product.get("name") or "").lower()))
     product_rows = product_data
     client_credit_balance = credit_balance(db, g.user["player_id"])["balance_cents"] if g.user["role"] == "client" and g.user["player_id"] else 0
+    open_events = db.execute(
+        "SELECT id,name,event_date FROM bar_events WHERE status='open' ORDER BY event_date DESC,id DESC"
+    ).fetchall() if g.user["role"] in ("manager", "staff") else []
     product_groups = [group for group in ("Bebidas", "Alimentos", "Salgados", "Outros") if any(product["group"] == group for product in product_data)]
     return render_template(
         "sale.html",
@@ -235,6 +279,94 @@ def sale():
         mercadopago_enabled=mercadopago_enabled(),
         client_credit_balance=int(client_credit_balance or 0),
         client_credit_low_threshold=low_balance_threshold(),
+        open_events=open_events,
+    )
+
+@bp.route("/evento/<token>/venda", methods=["GET", "POST"])
+def guest_event_sale(token):
+    """Venda pública iniciada pelo QR Code de um evento aberto."""
+    try:
+        event_id = validate_event_public_token(token)
+    except (BadData, ValueError, TypeError):
+        return "Link do evento inválido ou expirado.", 404
+    db = get_db()
+    event = db.execute("SELECT * FROM bar_events WHERE id=? AND status='open'", (event_id,)).fetchone()
+    if not event:
+        return "Este evento já foi encerrado.", 410
+    if request.method == "POST":
+        requested = {}
+        try:
+            guest_name = request.form.get("guest_name", "").strip()
+            method = request.form.get("payment_method", "").strip()
+            if not guest_name:
+                raise ValueError("Informe seu nome para registrar o pedido.")
+            if method == "Pix" and mercadopago_enabled():
+                raise ValueError("Para pagar via Pix, gere o QR Code e aguarde a confirmação.")
+            if method not in ("Pix", "Dinheiro", "Débito", "Cortesia"):
+                raise ValueError("Escolha uma forma de pagamento válida.")
+            for raw_id, raw_qty in zip(request.form.getlist("product_id"), request.form.getlist("quantity")):
+                qty = int(raw_qty or 0)
+                if qty > 0:
+                    requested[int(raw_id)] = requested.get(int(raw_id), 0) + qty
+            if not requested:
+                raise ValueError("Escolha ao menos um produto.")
+            placeholders = ",".join("?" for _ in requested)
+            products = db.execute(f"SELECT * FROM products WHERE active=1 AND id IN ({placeholders})", tuple(requested)).fetchall()
+            products_by_id = {row["id"]: row for row in products}
+            if len(products_by_id) != len(requested):
+                raise ValueError("Produto inválido ou inativo.")
+            for product_id, quantity in requested.items():
+                if products_by_id[product_id]["stock"] < quantity:
+                    raise ValueError(f"Estoque insuficiente de {products_by_id[product_id]['name']}.")
+            total_cents = sum(products_by_id[pid]["price_cents"] * qty for pid, qty in requested.items())
+            with db:
+                paid = 0 if method == "Dinheiro" else 1
+                payment_status = "pending_cash" if method == "Dinheiro" else "approved"
+                cur = db.execute(
+                    """INSERT INTO sales(player_id,event_id,guest_name,payment_method,total_cents,paid,payment_status,ready_for_delivery,notes)
+                       VALUES(NULL,?,?,?,?,?,?,1,?)""",
+                    (event_id, guest_name, method, total_cents, paid, payment_status, request.form.get("notes", "").strip()),
+                )
+                for product_id, quantity in requested.items():
+                    product = products_by_id[product_id]
+                    db.execute(
+                        "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                        (cur.lastrowid, product_id, quantity, product["price_cents"], product["cost_cents"]),
+                    )
+                    updated = db.execute("UPDATE products SET stock=stock-? WHERE id=? AND stock>=?", (quantity, product_id, quantity))
+                    if updated.rowcount != 1:
+                        raise ValueError("O estoque mudou durante a venda. Tente novamente.")
+            notify_low_stock(db, requested.keys())
+            flash(f"Pedido registrado com sucesso! Pedido #{cur.lastrowid}.", "success")
+            return redirect(url_for("sales.guest_event_sale", token=token), code=303)
+        except ValueError as exc:
+            flash(str(exc), "danger")
+        except Exception as exc:
+            current_app.logger.exception("Erro ao registrar venda pública do evento %s: %s", event_id, exc)
+            flash("Erro interno ao processar a venda. Tente novamente.", "danger")
+
+    product_rows = db.execute(
+        """SELECT p.*, COALESCE(SUM(CASE WHEN s.paid=1 THEN si.quantity ELSE 0 END),0) sold_quantity
+           FROM products p LEFT JOIN sale_items si ON si.product_id=p.id LEFT JOIN sales s ON s.id=si.sale_id
+           WHERE p.active=1 AND p.stock>0 GROUP BY p.id"""
+    ).fetchall()
+    product_data = []
+    beverage_categories = {"cerveja", "refrigerante", "água mineral com gás", "água mineral sem gás", "energético", "suco", "isotônico"}
+    snack_categories = {"salgadinho", "salgados", "salgado"}
+    for row in product_rows:
+        product = dict(row)
+        product.pop("photo_data", None)
+        category = (product.get("category") or "").strip().lower()
+        product["group"] = "Bebidas" if category in beverage_categories or "bebida" in category else "Salgados" if category in snack_categories or "salgad" in category else "Alimentos" if "alimento" in category else "Outros"
+        product_data.append(product)
+    product_data.sort(key=lambda product: (-int(product.get("sold_quantity") or 0), (product.get("category") or "").lower(), (product.get("name") or "").lower()))
+    guest_user = {"id": 0, "name": "Convidado", "role": "guest"}
+    return render_template(
+        "sale.html", guest_mode=True, guest_event=event, guest_event_token=token,
+        current_user=guest_user, current_player=None, players=[], player_data=[], products=product_data,
+        product_data=product_data, product_groups=[group for group in ("Bebidas", "Alimentos", "Salgados", "Outros") if any(p["group"] == group for p in product_data)],
+        pix_token=token, event_pix_token=token, mercadopago_enabled=mercadopago_enabled(),
+        client_credit_balance=0, client_credit_low_threshold=0, open_events=[]
     )
 
 @bp.post("/sales/<int:sale_id>/delete")
@@ -276,8 +408,9 @@ def pix():
         day = local_today().isoformat()
         flash("A data informada era inválida; exibimos os pagamentos de hoje.", "warning")
     rows = db.execute(
-        """SELECT s.*,p.name player_name,COALESCE(s.paid_at,s.created_at) payment_time
-        FROM sales s JOIN players p ON p.id=s.player_id
+        """SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,e.name event_name,
+        COALESCE(s.paid_at,s.created_at) payment_time
+        FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id
         WHERE date(COALESCE(s.paid_at,s.created_at))=?
           AND s.payment_method='Pix' AND s.paid=1
         ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC""",
@@ -324,10 +457,13 @@ def delivery_order_data(db, sale):
     pending_quantity = sum(item["pending_quantity"] for item in item_data)
     return {
         "id": sale["id"],
-        "player_name": sale["war_name"] or sale["player_name"],
-        "player_full_name": sale["player_name"],
+        "player_name": sale["guest_name"] or sale["war_name"] or sale["player_name"] or f"Convidado #{sale['id']}",
+        "player_full_name": sale["player_name"] or sale["guest_name"] or "",
         "player_war_name": sale["war_name"] or "",
         "player_photo": sale["player_thumbnail_data"] or "",
+        "event_name": sale["event_name"] if "event_name" in sale.keys() else "",
+        "is_event": bool(sale["event_id"]),
+        "guest_name": sale["guest_name"] or "",
         "total_cents": sale["total_cents"],
         "payment_method": sale["payment_method"],
         "payment_status": sale["payment_status"],
@@ -357,14 +493,15 @@ def orders_feed():
         payment_method = ""
     payment_clause = " AND s.payment_method=?" if payment_method else ""
     payment_params = (payment_method,) if payment_method else ()
-    select = """SELECT s.*,p.name player_name,p.war_name,p.thumbnail_data player_thumbnail_data,
+    select = """SELECT s.*,p.name player_name,p.war_name,p.thumbnail_data player_thumbnail_data,e.name event_name,
                 u.name delivered_by_name,cu.name canceled_by_name,sc.reason cancellation_reason,sc.canceled_at
-                FROM sales s JOIN players p ON p.id=s.player_id
+                FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id
                 LEFT JOIN users u ON u.id=s.delivered_by
                 LEFT JOIN sale_cancellations sc ON sc.sale_id=s.id
                 LEFT JOIN users cu ON cu.id=sc.canceled_by"""
     pending = db.execute(
-        f"""{select} WHERE s.ready_for_delivery=1 AND s.delivered_at IS NULL
+        f"""{select} WHERE (s.ready_for_delivery=1 OR (s.event_id IS NOT NULL AND s.delivered_at IS NULL))
+             AND s.delivered_at IS NULL
              AND (s.paid=1 OR s.payment_status='pending_cash'){payment_clause}
              ORDER BY COALESCE(s.paid_at,s.created_at),s.id""", payment_params
     ).fetchall()
@@ -407,6 +544,10 @@ def deliver_order(sale_id):
     ).fetchall()
     if not item_rows:
         return jsonify(error="O pedido não possui itens para entregar."), 409
+    # Pedidos vinculados a eventos/festas são entregues integralmente. Eles
+    # não participam do fluxo de retirada parcial usado nas compras normais.
+    if sale["event_id"] and requested_item_id is not None:
+        return jsonify(error="Pedidos de eventos devem ser entregues integralmente. Use 'Entregar todos os produtos'."), 400
     if requested_item_id is None:
         deliver_plan = {item["id"]: max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0)) for item in item_rows}
     else:
@@ -437,17 +578,17 @@ def deliver_order(sale_id):
         current_app.logger.error("Erro ao registrar retirada parcial do pedido %s: %s", sale_id, exc)
         return jsonify(error="Não foi possível registrar a retirada."), 500
     delivered_sale = db.execute(
-        """SELECT s.id,s.player_id,s.delivered_at,p.name,p.war_name
-           FROM sales s JOIN players p ON p.id=s.player_id WHERE s.id=?""",
+        """SELECT s.id,s.player_id,s.delivered_at,s.guest_name,p.name,p.war_name
+           FROM sales s LEFT JOIN players p ON p.id=s.player_id WHERE s.id=?""",
         (sale_id,),
     ).fetchone()
     if delivered_sale:
-        display_name = delivered_sale["war_name"] or delivered_sale["name"]
+        display_name = delivered_sale["guest_name"] or delivered_sale["war_name"] or delivered_sale["name"] or f"Convidado #{sale_id}"
         delivery_time = db.execute("SELECT MAX(delivered_at) delivered_at FROM sale_item_deliveries sid JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=?", (sale_id,)).fetchone()["delivered_at"]
         delivered_at = brdate(delivery_time)
         current = delivery_order_data(db, db.execute(
             """SELECT s.*,p.name player_name,p.war_name,p.thumbnail_data player_thumbnail_data,u.name delivered_by_name
-               FROM sales s JOIN players p ON p.id=s.player_id LEFT JOIN users u ON u.id=s.delivered_by WHERE s.id=?""", (sale_id,)
+               FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN users u ON u.id=s.delivered_by WHERE s.id=?""", (sale_id,)
         ).fetchone())
         delivered_items = [{"name": item["name"], "quantity": deliver_plan[item["id"]]} for item in item_rows if item["id"] in deliver_plan]
         remaining_items = [{"name": item["name"], "quantity": item["pending_quantity"]} for item in current["items"] if item["pending_quantity"] > 0]
@@ -461,11 +602,12 @@ def deliver_order(sale_id):
             f"{('Pedido totalmente entregue' if not remaining_items else 'Retirada parcial registrada')}. {delivered_total} item(ns) retirado(s) em {delivered_at}." + (f" Restam {sum(item['quantity'] for item in remaining_items)} item(ns)." if remaining_items else ""),
             url_for("auth.my_purchases"),
         )
-        send_delivery_update(db, sale_id, delivered_items, remaining_items, current_app.config.get("GMAIL_SMTP_USER", ""), current_app.config.get("GMAIL_APP_PASSWORD", ""))
+        if delivered_sale["player_id"]:
+            send_delivery_update(db, sale_id, delivered_items, remaining_items, current_app.config.get("GMAIL_SMTP_USER", ""), current_app.config.get("GMAIL_APP_PASSWORD", ""))
     receipt_status = send_purchase_receipt(
         db, sale_id, current_app.config.get("GMAIL_SMTP_USER", ""),
         current_app.config.get("GMAIL_APP_PASSWORD", ""),
-    )
+    ) if delivered_sale and delivered_sale["player_id"] else "skipped_guest"
     return jsonify(ok=True, sale_id=sale_id, partial=bool(remaining_items), remaining_items=remaining_items, receipt_status=receipt_status)
 
 @bp.post("/orders/<int:sale_id>/cancel")
@@ -506,8 +648,8 @@ def cancel_cash_order(sale_id):
 def receipt(sale_id):
     db = get_db()
     sale = db.execute(
-        """SELECT s.*,p.name player_name,p.war_name,p.cpf,p.email
-           FROM sales s JOIN players p ON p.id=s.player_id WHERE s.id=?""",
+        """SELECT s.*,p.name player_name,p.war_name,p.cpf,p.email,e.name event_name
+           FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id WHERE s.id=?""",
         (sale_id,),
     ).fetchone()
     if not sale or (g.user["role"] == "client" and sale["player_id"] != g.user["player_id"]):
@@ -533,7 +675,7 @@ def receipt(sale_id):
 @bp.get("/pix/qrcode")
 def pix_qrcode():
     try:
-        if not validate_pix_access_token(request.headers.get("X-Pix-Token", "")):
+        if not require_pix_access_token():
             raise BadData
     except BadData:
         return jsonify(error="A autorização do Pix expirou. Recarregue a página e tente novamente."), 401
@@ -573,7 +715,13 @@ def mercadopago_create_order():
 
     body = request.get_json(silent=True) or {}
     try:
-        player_id = int(body.get("player_id"))
+        event_id = int(body.get("event_id") or 0) or None
+        guest_name = str(body.get("guest_name") or "").strip()
+        player_id = int(body.get("player_id")) if body.get("player_id") else None
+        if event_id and not guest_name:
+            raise ValueError("Informe o nome do convidado.")
+        if not event_id and not player_id:
+            raise ValueError("Selecione o peladeiro ou o evento.")
         requested = {}
         for item in body.get("items") or []:
             product_id = int(item.get("product_id"))
@@ -586,30 +734,31 @@ def mercadopago_create_order():
         return jsonify(error="Selecione o peladeiro e produtos válidos."), 400
 
     db = get_db()
-    player = db.execute("SELECT id,email FROM players WHERE id=? AND active=1", (player_id,)).fetchone()
+    event = db.execute("SELECT id,name FROM bar_events WHERE id=? AND status='open'", (event_id,)).fetchone() if event_id else None
+    player = db.execute("SELECT id,email FROM players WHERE id=? AND active=1", (player_id,)).fetchone() if player_id else None
     placeholders = ",".join("?" for _ in requested)
     products = db.execute(
         f"SELECT * FROM products WHERE active=1 AND id IN ({placeholders})", tuple(requested)
     ).fetchall()
     products_by_id = {product["id"]: product for product in products}
-    if not player or len(products_by_id) != len(requested):
-        return jsonify(error="Peladeiro ou produto inválido."), 400
-    payer_email = str(player["email"] or "").strip().lower()
+    if (event_id and not event) or (not event_id and not player) or len(products_by_id) != len(requested):
+        return jsonify(error="Peladeiro, evento ou produto inválido."), 400
+    payer_email = str(player["email"] or "").strip().lower() if player else str(current_app.config.get("GMAIL_SMTP_USER") or "").strip().lower()
     if "@" not in payer_email:
-        return jsonify(error="Cadastre um e-mail válido para o peladeiro antes de gerar o Pix."), 400
+        return jsonify(error="Configure um e-mail válido para gerar o Pix do evento." if event_id else "Cadastre um e-mail válido para o peladeiro antes de gerar o Pix."), 400
     for product_id, quantity in requested.items():
         if products_by_id[product_id]["stock"] < quantity:
             return jsonify(error=f"Estoque insuficiente de {products_by_id[product_id]['name']}."), 409
 
     total_cents = sum(products_by_id[product_id]["price_cents"] * quantity for product_id, quantity in requested.items())
-    external_reference = f"pelada_{uuid.uuid4().hex}"
+    external_reference = f"evento_{uuid.uuid4().hex}" if event_id else f"pelada_{uuid.uuid4().hex}"
     idempotency_key = str(uuid.uuid4())
     try:
         with db:
             sale_cursor = db.execute(
-                """INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,external_reference,idempotency_key,notes)
-                   VALUES(?,?,?,'0','creating',?,?,?)""",
-                (player_id, "Pix", total_cents, external_reference, idempotency_key, str(body.get("notes") or "").strip()),
+                """INSERT INTO sales(player_id,event_id,guest_name,payment_method,total_cents,paid,payment_status,external_reference,idempotency_key,notes)
+                   VALUES(?,?,?,? ,?,'0','creating',?,?,?)""",
+                (player_id, event_id, guest_name, "Pix", total_cents, external_reference, idempotency_key, str(body.get("notes") or "").strip()),
             )
             sale_id = sale_cursor.lastrowid
             for product_id, quantity in requested.items():

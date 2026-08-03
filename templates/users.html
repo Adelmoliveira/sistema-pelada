@@ -61,7 +61,7 @@
                             </td>
                             <td>
                                 <div class="d-flex flex-wrap gap-2">
-                                    <button type="button" class="btn btn-sm btn-outline-success edit-user" data-bs-toggle="modal" data-bs-target="#edit-user-modal" data-id="{{u.id}}" data-name="{{u.name|e}}" data-username="{{u.username|e}}">Editar</button>
+                                    <button type="button" class="btn btn-sm btn-outline-success edit-user" data-bs-toggle="modal" data-bs-target="#edit-user-modal" data-id="{{u.id}}" data-name="{{u.name|e}}" data-username="{{u.username|e}}" data-role="{{u.role}}">Editar</button>
                                     {% if u.role in ['manager','staff','infra','football_manager'] or (u.role == 'client' and u.password_required) %}
                                     <form method="post" action="{{url_for('auth.reset_user_password',user_id=u.id)}}" class="d-flex gap-1">
                                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
@@ -102,7 +102,17 @@
             <div class="modal-body">
                 <label class="form-label">Nome exibido</label><input name="name" id="edit-name" class="form-control mb-3" required>
                 <label class="form-label">Usuário de acesso</label><input name="username" id="edit-username" class="form-control" minlength="3" required>
-                <div class="form-text">A senha e o perfil de acesso não serão alterados.</div>
+                <label class="form-label mt-3">Perfil de acesso</label>
+                <select name="role" id="edit-role" class="form-select">
+                    <option value="client">Peladeiro — somente venda rápida</option>
+                    <option value="infra">Infra — somente Materiais e Relação de Carga</option>
+                    <option value="maintenance">Manutenção — somente novo chamado, sem senha</option>
+                    <option value="display">Painel — exibição de pedidos e aniversariantes</option>
+                    <option value="football_manager">Gestor da Súmula — somente o módulo Súmula</option>
+                    <option value="staff">Staff — sem peladeiros e relatórios</option>
+                    <option value="manager">Gerente — acesso completo</option>
+                </select>
+                <div class="form-text">Ao escolher Manutenção ou Painel, o acesso sem senha é aplicado automaticamente. A senha atual é preservada nos demais perfis.</div>
             </div>
             <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button><button class="btn btn-success">Salvar alterações</button></div>
         </form>
@@ -134,6 +144,7 @@
         document.querySelector('#edit-user-form').action={{ url_for('auth.edit_user',user_id=0)|tojson }}.replace('/0/','/'+button.dataset.id+'/');
         document.querySelector('#edit-name').value=button.dataset.name;
         document.querySelector('#edit-username').value=button.dataset.username;
+        document.querySelector('#edit-role').value=button.dataset.role;
     }));
 </script>
 {% endblock %}

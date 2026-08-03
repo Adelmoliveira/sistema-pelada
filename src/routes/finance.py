@@ -89,7 +89,12 @@ def _dashboard_period():
 @roles_allowed("manager", "staff")
 def dashboard():
     db = get_db()
-    today = local_today().isoformat()
+    # Keep a date object for date arithmetic and a normalized ISO string for
+    # the SQL date comparisons below.  Passing the string to ``timedelta``
+    # (as happened in the stock-conference window query) raises a TypeError.
+    today_date = local_today()
+    today = today_date.isoformat()
+    conference_due_soon = (today_date + timedelta(days=30)).isoformat()
     period, period_start, period_end, granularity = _dashboard_period()
     start, end = period_start.isoformat(), period_end.isoformat()
     month = period_start.strftime("%Y-%m")
@@ -109,7 +114,7 @@ def dashboard():
     """, (today, start, end, start, end, start, end)).fetchone()
     
     low = db.execute("SELECT * FROM products WHERE active=1 AND stock<=min_stock ORDER BY stock, name").fetchall()
-    recent = db.execute("""SELECT s.*, p.name player_name FROM sales s JOIN players p ON p.id=s.player_id
+    recent = db.execute("""SELECT s.*, COALESCE(p.name,s.guest_name,'Convidado') player_name FROM sales s LEFT JOIN players p ON p.id=s.player_id
                             WHERE s.paid=1 ORDER BY s.id DESC LIMIT 8""").fetchall()
     finance = finance_summary(db)
     bar = latest_bar_balances(db)
@@ -147,6 +152,19 @@ def dashboard():
     maintenance = db.execute(
         "SELECT COUNT(*) FROM maintenance_requests WHERE status!='completed'"
     ).fetchone()[0]
+    load_conference = db.execute(
+        """SELECT COUNT(*) total,
+                  COUNT(CASE WHEN next_check_due_at IS NOT NULL
+                                  AND date(next_check_due_at)>? THEN 1 END) checked,
+                  COUNT(CASE WHEN next_check_due_at IS NULL
+                                  OR date(next_check_due_at)<=? THEN 1 END) pending
+                  ,COUNT(CASE WHEN next_check_due_at IS NOT NULL
+                                   AND date(next_check_due_at)>?
+                                   AND date(next_check_due_at)<=? THEN 1 END) due_soon
+           FROM load_entries
+           WHERE status NOT IN ('discharged','lost')""",
+        (today, today, today, conference_due_soon),
+    ).fetchone()
     if granularity == "day":
         chart_start = max(period_start, local_today() - timedelta(days=6)) if period == "month" else period_start
         trend_rows = db.execute(
@@ -217,19 +235,19 @@ def dashboard():
         (start, end),
     ).fetchone()
     player_rows = db.execute(
-        """SELECT p.name,p.war_name,COALESCE(SUM(s.total_cents),0) total
-           FROM sales s JOIN players p ON p.id=s.player_id
+        """SELECT COALESCE(p.name,s.guest_name,'Convidado') name,p.war_name,COALESCE(SUM(s.total_cents),0) total
+           FROM sales s LEFT JOIN players p ON p.id=s.player_id
            WHERE s.paid=1 AND s.payment_method!='Cortesia'
              AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)< ?
-           GROUP BY p.id,p.name,p.war_name ORDER BY total DESC LIMIT 8""",
+           GROUP BY COALESCE(p.name,s.guest_name,'Convidado'),p.war_name ORDER BY total DESC LIMIT 8""",
         (start, end),
     ).fetchall()
     player_product_rows = db.execute(
-        """SELECT p.war_name,p.name player_name,pr.name product_name,COALESCE(SUM(i.quantity),0) quantity
+        """SELECT p.war_name,COALESCE(p.name,s.guest_name,'Convidado') player_name,pr.name product_name,COALESCE(SUM(i.quantity),0) quantity
            FROM sale_items i JOIN sales s ON s.id=i.sale_id
-           JOIN players p ON p.id=s.player_id JOIN products pr ON pr.id=i.product_id
+           LEFT JOIN players p ON p.id=s.player_id JOIN products pr ON pr.id=i.product_id
            WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)< ?
-           GROUP BY p.id,p.war_name,p.name,pr.id,pr.name
+           GROUP BY p.id,p.war_name,COALESCE(p.name,s.guest_name,'Convidado'),pr.id,pr.name
            ORDER BY quantity DESC,player_name,product_name LIMIT 12""",
         (start, end),
     ).fetchall()
@@ -255,6 +273,7 @@ def dashboard():
         "dashboard.html", metrics=metrics, low=low, recent=recent, month=month,
         finance=finance, bar=bar, membership=membership, maintenance_open=maintenance,
         chart_data=chart_data, membership_chart=membership_chart,
+        load_conference=load_conference,
         dashboard_period=period, dashboard_start=period_start.isoformat(),
         dashboard_end=(period_end - timedelta(days=1)).isoformat(),
         dashboard_period_label=period_label,
@@ -289,13 +308,13 @@ def reports():
         FROM sale_items i JOIN sales s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id
         WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<? GROUP BY p.id, p.name ORDER BY quantity DESC""", (start, end)).fetchall()
         
-    by_player = db.execute("""SELECT p.name, COUNT(s.id) purchases, SUM(s.total_cents) total
-        FROM sales s JOIN players p ON p.id=s.player_id
+    by_player = db.execute("""SELECT COALESCE(p.name,s.guest_name,'Convidado') name, COUNT(s.id) purchases, SUM(s.total_cents) total
+        FROM sales s LEFT JOIN players p ON p.id=s.player_id
         WHERE s.paid=1 AND s.payment_method!='Cortesia' AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?
-        GROUP BY p.id, p.name ORDER BY total DESC""", (start, end)).fetchall()
+        GROUP BY COALESCE(p.name,s.guest_name,'Convidado') ORDER BY total DESC""", (start, end)).fetchall()
         
-    sales_rows = db.execute("""SELECT s.*,p.name player_name,COALESCE(s.paid_at,s.created_at) sale_date
-        FROM sales s JOIN players p ON p.id=s.player_id
+    sales_rows = db.execute("""SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,COALESCE(s.paid_at,s.created_at) sale_date
+        FROM sales s LEFT JOIN players p ON p.id=s.player_id
         WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?
         ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC""", (start, end)).fetchall()
         

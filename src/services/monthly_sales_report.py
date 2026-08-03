@@ -59,12 +59,12 @@ def monthly_sales_data(db, requested_month=None):
         (start, end),
     ).fetchall()
     consumers = db.execute(
-        """SELECT p.name,COUNT(s.id) purchases,COALESCE(SUM(s.total_cents),0) total,
+        """SELECT COALESCE(p.name,s.guest_name,'Convidado') name,COUNT(s.id) purchases,COALESCE(SUM(s.total_cents),0) total,
         COALESCE(SUM((SELECT COALESCE(SUM(i.quantity),0) FROM sale_items i WHERE i.sale_id=s.id)),0) items
-        FROM sales s JOIN players p ON p.id=s.player_id
+        FROM sales s LEFT JOIN players p ON p.id=s.player_id
         WHERE s.paid=1 AND s.payment_method<>'Cortesia'
         AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?
-        GROUP BY p.id,p.name ORDER BY total DESC,purchases DESC,p.name""",
+        GROUP BY COALESCE(p.name,s.guest_name,'Convidado') ORDER BY total DESC,purchases DESC,name""",
         (start, end),
     ).fetchall()
     daily = db.execute(

@@ -1,12 +1,59 @@
 {% extends 'base.html' %}
-{% block title %}Conferência de carga · PELADEIROS GPCTA{% endblock %}
+{% block title %}Validar conferência · PELADEIROS GPCTA{% endblock %}
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
-  <div><a class="btn btn-sm btn-outline-secondary mb-2" href="{{url_for('infra.load_relation')}}">← Voltar para Relação de Carga</a><h1 class="h3 mb-1">Conferência de carga</h1><p class="text-muted mb-0">Leia o QR Code fixado em cada carga e confirme a conferência no cadastro.</p></div>
+  <div><a class="btn btn-sm btn-outline-secondary mb-2" href="{{url_for('infra.load_relation')}}">← Voltar para Relação de Carga</a><h1 class="h3 mb-1">Validar conferência</h1><p class="text-muted mb-0">Aponte a câmera para o QR Code de cada carga. A conferência será registrada automaticamente.</p></div>
   <div class="text-end"><div class="fs-4 fw-bold text-danger">{{entries|length}}</div><small class="text-muted">pendente(s) de {{total}}</small></div>
 </div>
-<div class="alert alert-info">Cada carga deve ser conferida a cada 6 meses. Ao ler o QR Code, abra a página da carga e toque em <strong>Validar conferência</strong>.</div>
-<div class="card shadow-sm"><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>BMP</th><th>Material</th><th>Localização</th><th>Vencimento</th><th></th></tr></thead><tbody>
-{% for entry in entries %}<tr><td><strong>{{entry.bmp}}</strong></td><td>{{entry.material_description}}</td><td>{{entry.location or '—'}}</td><td>{{entry.next_check_due_at|brdate if entry.next_check_due_at else 'Nunca conferida'}}</td><td><a class="btn btn-sm btn-outline-primary" href="{{url_for('infra.load_entry_detail',entry_id=entry.id)}}">Abrir carga</a></td></tr>{% else %}<tr><td colspan="5" class="text-center py-4 text-success">Todas as cargas estão conferidas dentro do prazo.</td></tr>{% endfor %}
+<div class="alert alert-info"><strong>Como funciona:</strong> toque em <strong>Iniciar conferência</strong> e leia os códigos em sequência. Se houver uma divergência física, interrompa a leitura e use <strong>Abrir carga</strong> para revisar e validar manualmente.</div>
+<div class="card shadow-sm mb-4"><div class="card-body">
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3"><button id="start-load-scanner" type="button" class="btn btn-primary btn-lg">Iniciar conferência</button><button id="stop-load-scanner" type="button" class="btn btn-outline-secondary btn-lg" disabled>Parar câmera</button><span id="load-scanner-status" class="text-muted" aria-live="polite">Câmera parada.</span></div>
+  <div id="load-qr-reader" class="mx-auto" style="max-width:420px;min-height:20px"></div>
+  <div class="row g-2 mt-3 text-center"><div class="col-6"><div class="border rounded p-2"><strong id="checked-count">0</strong><div class="small text-muted">Conferidas agora</div></div></div><div class="col-6"><div class="border rounded p-2"><strong id="issue-count" class="text-danger">0</strong><div class="small text-muted">Inconsistências</div></div></div></div>
+  <div id="load-scan-results" class="mt-3" aria-live="polite"></div>
+</div></div>
+<div class="card shadow-sm"><div class="card-header fw-bold">Cargas pendentes ou vencidas</div><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>BMP</th><th>Material</th><th>Localização</th><th>Vencimento</th><th></th></tr></thead><tbody>
+{% for entry in entries %}<tr data-entry-id="{{entry.id}}"><td><strong>{{entry.bmp}}</strong></td><td>{{entry.material_description}}</td><td>{{entry.location or '—'}}</td><td>{{entry.next_check_due_at|brdate if entry.next_check_due_at else 'Nunca conferida'}}</td><td><a class="btn btn-sm btn-outline-primary" href="{{url_for('infra.load_entry_detail',entry_id=entry.id)}}">Abrir carga</a></td></tr>{% else %}<tr><td colspan="5" class="text-center py-4 text-success">Todas as cargas estão conferidas dentro do prazo.</td></tr>{% endfor %}
 </tbody></table></div></div>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+(() => {
+  const start = document.getElementById('start-load-scanner');
+  const stop = document.getElementById('stop-load-scanner');
+  const status = document.getElementById('load-scanner-status');
+  const results = document.getElementById('load-scan-results');
+  const checked = document.getElementById('checked-count');
+  const issues = document.getElementById('issue-count');
+  const csrf = {{ csrf_token()|tojson }};
+  const endpointTemplate = {{ url_for('infra.check_load_entry_auto', entry_id=0)|tojson }};
+  let scanner = null, running = false, processing = false;
+  const seen = new Set();
+  function addResult(text, kind) { const el = document.createElement('div'); el.className = `alert alert-${kind} py-2 mb-2`; el.textContent = text; results.prepend(el); }
+  function entryIdFrom(text) { const m = String(text || '').match(/\/load-relation\/(\d+)/); return m && m[1]; }
+  async function handleScan(decoded) {
+    if (processing) return;
+    const id = entryIdFrom(decoded);
+    if (!id) { addResult('QR Code não reconhecido como uma carga do sistema.', 'warning'); return; }
+    if (seen.has(id)) return;
+    processing = true;
+    try {
+      const url = endpointTemplate.replace('/0/check-auto', `/${id}/check-auto`);
+      const response = await fetch(url, {method:'POST', headers:{'Accept':'application/json','Content-Type':'application/x-www-form-urlencoded','X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'}, body:new URLSearchParams({csrf_token:csrf})});
+      const data = await response.json();
+      if (!response.ok) { issues.textContent = Number(issues.textContent) + 1; addResult(data.error || 'Não foi possível conferir esta carga.', 'danger'); }
+      else { seen.add(id); checked.textContent = Number(checked.textContent) + 1; const row = document.querySelector(`tr[data-entry-id="${id}"]`); if (row) row.remove(); addResult(`${data.bmp} conferida com sucesso.`, 'success'); }
+    } catch (error) { issues.textContent = Number(issues.textContent) + 1; addResult('Não foi possível conectar ao servidor. Tente novamente.', 'danger'); }
+    finally { setTimeout(() => { processing = false; }, 900); }
+  }
+  async function startScanner() {
+    if (running) return;
+    if (typeof Html5Qrcode === 'undefined') { status.textContent = 'Leitor de QR indisponível neste navegador. Abra a carga pela lista abaixo.'; return; }
+    scanner = new Html5Qrcode('load-qr-reader');
+    try { await scanner.start({facingMode:'environment'}, {fps:10, qrbox:{width:240,height:240}}, handleScan, () => {}); running = true; start.disabled = true; stop.disabled = false; status.textContent = 'Câmera ativa. Leia os QR Codes em sequência.'; }
+    catch (error) { status.textContent = 'Não foi possível abrir a câmera. Verifique a permissão e use HTTPS.'; scanner = null; }
+  }
+  async function stopScanner() { if (!scanner || !running) return; try { await scanner.stop(); scanner.clear(); } catch (_) {} running = false; start.disabled = false; stop.disabled = true; status.textContent = 'Câmera parada.'; }
+  start.addEventListener('click', startScanner); stop.addEventListener('click', stopScanner);
+})();
+</script>
 {% endblock %}

@@ -21,9 +21,10 @@ def panel():
 @roles_allowed("manager", "staff", "display")
 def feed():
     db = get_db()
-    select = """SELECT s.*,p.name player_name,p.war_name,p.thumbnail_data player_thumbnail_data,
-                       u.name delivered_by_name
-                FROM sales s JOIN players p ON p.id=s.player_id
+    select = """SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,p.war_name,p.thumbnail_data player_thumbnail_data,
+                       e.name event_name,u.name delivered_by_name
+                FROM sales s LEFT JOIN players p ON p.id=s.player_id
+                LEFT JOIN bar_events e ON e.id=s.event_id
                 LEFT JOIN users u ON u.id=s.delivered_by"""
     pending_rows = db.execute(
         f"""{select} WHERE s.ready_for_delivery=1 AND s.delivered_at IS NULL

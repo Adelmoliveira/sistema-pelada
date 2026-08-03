@@ -26,6 +26,7 @@ from src.routes.cash import bp as cash_bp
 from src.routes.display import bp as display_bp
 from src.routes.reports import bp as reports_bp
 from src.routes.football import bp as football_bp
+from src.routes.events import bp as events_bp
 
 app = Flask(__name__)
 
@@ -101,6 +102,7 @@ app.register_blueprint(cash_bp)
 app.register_blueprint(display_bp)
 app.register_blueprint(reports_bp)
 app.register_blueprint(football_bp)
+app.register_blueprint(events_bp)
 
 
 @app.get("/service-worker.js")
@@ -215,7 +217,7 @@ def load_user_and_protect_routes():
             return None
         return redirect(url_for("auth.setup"))
 
-    public_endpoints = {"auth.login", "auth.client_access", "auth.client_password_setup", "auth.forgot_password", "auth.reset_password"}
+    public_endpoints = {"auth.login", "auth.client_access", "auth.client_password_setup", "auth.forgot_password", "auth.reset_password", "sales.guest_event_sale"}
     if request.endpoint in public_endpoints or request.endpoint is None:
         return None
 

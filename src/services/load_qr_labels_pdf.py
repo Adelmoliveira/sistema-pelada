@@ -1,4 +1,5 @@
 from io import BytesIO
+from pathlib import Path
 
 import qrcode
 from reportlab.lib import colors
@@ -30,6 +31,18 @@ def _qr_image(payload):
     return ImageReader(output)
 
 
+def _gpcta_logo():
+    """Return the GPCTA logo used on printed asset labels, when available."""
+    logo_path = Path(__file__).resolve().parents[2] / "static" / "logo-gpcta.jpeg"
+    try:
+        if logo_path.is_file():
+            return ImageReader(str(logo_path))
+    except OSError:
+        # A missing logo must not prevent the QR labels from being generated.
+        pass
+    return None
+
+
 def _fitted_text(value, width, font_name, font_size):
     value = " ".join(str(value or "").split())
     if stringWidth(value, font_name, font_size) <= width:
@@ -53,6 +66,7 @@ def build_load_qr_labels_pdf(entries, base_url, size="standard"):
     pdf = canvas.Canvas(output, pagesize=A4)
     pdf.setTitle("Etiquetas QR - Relação de Carga")
     pdf.setAuthor("PELADEIROS GPCTA")
+    logo = _gpcta_logo()
 
     for index, entry in enumerate(entries):
         position = index % per_page
@@ -103,6 +117,20 @@ def build_load_qr_labels_pdf(entries, base_url, size="standard"):
                     text_x, y + 5 * mm,
                     _fitted_text(f"Local: {entry['location']}", text_width, "Helvetica", location_size),
                 )
+
+        # Keep the mark in the gap between the area code and the GPCTA footer.
+        # It is intentionally small so it never interferes with the QR code,
+        # BMP identifier or optional material/location text.
+        if logo:
+            logo_size = 5.5 * mm if size == "small" else (8 * mm if size == "standard" else 10 * mm)
+            logo_x = text_x + max(0, (text_width - logo_size) / 2)
+            # Leave room for the optional location line at the bottom and the
+            # material description above it.
+            logo_y = y + (9 * mm if size == "small" else (11 * mm if size == "standard" else 12 * mm))
+            pdf.drawImage(
+                logo, logo_x, logo_y, logo_size, logo_size,
+                preserveAspectRatio=True, anchor="c", mask="auto",
+            )
 
         pdf.setFillColor(colors.HexColor("#6C757D"))
         pdf.setFont("Helvetica", 5.5 if size == "small" else 6.5)

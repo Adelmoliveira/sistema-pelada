@@ -557,7 +557,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(page.count('>Relatórios</a>'), 0)
         finance_page = self.client.get("/finance").get_data(as_text=True)
         self.assertIn('<input type="month" name="start_month"', finance_page)
-        self.assertIn('value="2026-07"', finance_page)
+        self.assertIn(f'value="{local_today().strftime("%Y-%m")}"', finance_page)
         self.assertIn('action="/logout"', page)
         self.assertIn('id="pwa-install"', page)
         self.assertIn("Aniversariantes do mês", page)
@@ -944,6 +944,41 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entries").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entry_photos").fetchone()[0], 0)
 
+    def test_load_batch_movement_status_and_report_filters(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO materials(description,load_sheet) VALUES(?,?)", ("Banqueta", "FCG-9"))
+            material_id = db.execute("SELECT id FROM materials WHERE description=?", ("Banqueta",)).fetchone()["id"]
+            db.commit()
+        response = self.client.post("/infra/load-relation/batch", data={
+            "material_id": str(material_id), "quantity": "3", "area_code": "SAL",
+            "serial_prefix": "BAN-", "location": "Salão", "responsible": "Equipe A",
+            "status": "active", "notes": "Lote de teste",
+        })
+        self.assertEqual(response.status_code, 200)
+        with app.app_context():
+            db = get_db()
+            entries = db.execute("SELECT * FROM load_entries ORDER BY id").fetchall()
+            self.assertEqual(len(entries), 3)
+            self.assertEqual([entry["bmp"] for entry in entries], [f"BMP-{entry['id']:06d} | SAL" for entry in entries])
+            entry_id = entries[0]["id"]
+        moved = self.client.post(f"/infra/load-relation/{entry_id}/move", data={
+            "location": "Sala 2", "responsible": "Equipe B", "reason": "Remanejamento patrimonial"
+        })
+        self.assertEqual(moved.status_code, 302)
+        changed = self.client.post(f"/infra/load-relation/{entry_id}/status", data={"status": "maintenance"})
+        self.assertEqual(changed.status_code, 302)
+        detail = self.client.get(f"/infra/load-relation/{entry_id}")
+        self.assertEqual(detail.status_code, 200)
+        body = detail.get_data(as_text=True)
+        self.assertIn("Remanejamento patrimonial", body)
+        self.assertIn("Em manutenção", body)
+        report = self.client.get("/infra/load-relation/report?q=banqueta&status=maintenance")
+        self.assertEqual(report.status_code, 200)
+        self.assertIn("Equipe B", report.get_data(as_text=True))
+
     def test_maintenance_crud_dashboard_photos_and_report(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
@@ -1131,6 +1166,30 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             user = get_db().execute("SELECT * FROM users WHERE id=?", (self.user_id,)).fetchone()
             self.assertEqual((user["name"], user["username"], user["role"]), ("Ana", "ana.staff", "manager"))
+
+    def test_manager_can_assign_profile_after_user_creation(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        created = self.client.post(
+            "/users",
+            data={
+                "name": "Equipe",
+                "username": "equipe.teste",
+                "role": "staff",
+                "password": "senha-staff-123",
+            },
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            target = get_db().execute("SELECT * FROM users WHERE username=?", ("equipe.teste",)).fetchone()
+        changed = self.client.post(
+            f"/users/{target['id']}/edit",
+            data={"name": "Equipe", "username": "equipe.teste", "role": "infra"},
+        )
+        self.assertEqual(changed.status_code, 302)
+        with app.app_context():
+            target = get_db().execute("SELECT role,password_required FROM users WHERE id=?", (target["id"],)).fetchone()
+            self.assertEqual((target["role"], target["password_required"]), ("infra", 1))
 
     def test_infra_user_sees_and_accesses_only_infra(self):
         with self.client.session_transaction() as session:
