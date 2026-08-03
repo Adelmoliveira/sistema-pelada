@@ -88,10 +88,10 @@ def _sales_data(db, start, end, player_id="", payment_method=""):
         conditions.append("s.payment_method=?")
         params.append(payment_method)
     clause = " AND ".join(conditions)
-    rows = db.execute(f"SELECT s.*,p.name player_name,p.war_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales s JOIN players p ON p.id=s.player_id WHERE {clause} ORDER BY sale_date DESC,s.id DESC", tuple(params)).fetchall()
+    rows = db.execute(f"SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,p.war_name,e.name event_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id WHERE {clause} ORDER BY sale_date DESC,s.id DESC", tuple(params)).fetchall()
     by_payment = db.execute(f"SELECT s.payment_method,COUNT(*) count,COALESCE(SUM(s.total_cents),0) total FROM sales s WHERE {clause} GROUP BY s.payment_method ORDER BY total DESC", tuple(params)).fetchall()
     by_product = db.execute(f"SELECT p.name,SUM(i.quantity) quantity,COALESCE(SUM(i.quantity*i.unit_price_cents),0) total FROM sale_items i JOIN sales s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id WHERE {clause} GROUP BY p.id,p.name ORDER BY quantity DESC,total DESC", tuple(params)).fetchall()
-    by_player = db.execute(f"SELECT p.name,COUNT(s.id) purchases,COALESCE(SUM(s.total_cents),0) total FROM sales s JOIN players p ON p.id=s.player_id WHERE {clause} GROUP BY p.id,p.name ORDER BY total DESC", tuple(params)).fetchall()
+    by_player = db.execute(f"SELECT COALESCE(p.name,s.guest_name,'Convidado') name,COUNT(s.id) purchases,COALESCE(SUM(s.total_cents),0) total FROM sales s LEFT JOIN players p ON p.id=s.player_id WHERE {clause} GROUP BY COALESCE(p.name,s.guest_name,'Convidado') ORDER BY total DESC", tuple(params)).fetchall()
     return rows, by_payment, by_product, by_player
 
 
@@ -118,7 +118,7 @@ def sales_report():
 @roles_allowed("manager")
 def sale_detail(sale_id):
     db = get_db()
-    sale = db.execute("SELECT s.*,p.name player_name,p.cpf,COALESCE(s.paid_at,s.created_at) sale_date FROM sales s JOIN players p ON p.id=s.player_id WHERE s.id=?", (sale_id,)).fetchone()
+    sale = db.execute("SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,p.cpf,e.name event_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id WHERE s.id=?", (sale_id,)).fetchone()
     if not sale:
         return "Venda não encontrada", 404
     items = db.execute("SELECT i.*,p.name product_name FROM sale_items i JOIN products p ON p.id=i.product_id WHERE i.sale_id=? ORDER BY i.id", (sale_id,)).fetchall()
@@ -129,7 +129,7 @@ def sale_detail(sale_id):
 @roles_allowed("manager")
 def sale_detail_pdf(sale_id):
     db = get_db()
-    sale = db.execute("SELECT s.*,p.name player_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales s JOIN players p ON p.id=s.player_id WHERE s.id=?", (sale_id,)).fetchone()
+    sale = db.execute("SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,e.name event_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id WHERE s.id=?", (sale_id,)).fetchone()
     if not sale:
         return "Venda não encontrada", 404
     items = db.execute("SELECT i.*,p.name product_name FROM sale_items i JOIN products p ON p.id=i.product_id WHERE i.sale_id=? ORDER BY i.id", (sale_id,)).fetchall()

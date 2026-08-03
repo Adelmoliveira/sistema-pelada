@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block title %}Cadastro em lote · Relação de Carga{% endblock %}
+{% block content %}
+<div class="row justify-content-center"><div class="col-xl-9">
+  <div class="d-flex gap-3 align-items-center mb-3"><a class="btn btn-outline-secondary" href="{{url_for('infra.load_relation')}}">← Voltar</a><h1 class="h3 mb-0">Cadastro de cargas em lote</h1></div>
+  <div class="card shadow-sm"><div class="card-body p-4">
+    <p class="text-muted">Crie várias unidades iguais de uma vez. Cada unidade receberá um BMP exclusivo e ficará disponível para gerar seu QR Code.</p>
+    <form method="post"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><div class="row g-3">
+      <div class="col-md-8"><label class="form-label fw-semibold">Material *</label><select class="form-select" name="material_id" required><option value="">Selecione</option>{% for m in materials %}<option value="{{m.id}}">{{m.description}}{{' · FCG ' ~ m.load_sheet if m.load_sheet else ''}}</option>{% endfor %}</select></div>
+      <div class="col-md-4"><label class="form-label fw-semibold">Quantidade *</label><input class="form-control" type="number" name="quantity" min="1" max="500" value="1" required></div>
+      <div class="col-md-4"><label class="form-label fw-semibold">Área *</label><select class="form-select" name="area_code" required><option value="">Selecione</option>{% for code,name in load_areas.items() %}<option value="{{code}}">{{code}} - {{name}}</option>{% endfor %}</select></div>
+      <div class="col-md-4"><label class="form-label">Prefixo nº série</label><input class="form-control" name="serial_prefix" maxlength="100" placeholder="Ex.: BANQ-"></div>
+      <div class="col-md-4"><label class="form-label">Nº de série comum</label><input class="form-control" name="serial_number" maxlength="150"></div>
+      <div class="col-md-6"><label class="form-label">Localização</label><input class="form-control" name="location" maxlength="200"></div>
+      <div class="col-md-6"><label class="form-label">Responsável</label><input class="form-control" name="responsible" maxlength="200"></div>
+      <div class="col-md-6"><label class="form-label">Situação</label><select class="form-select" name="status">{% for code,label in load_statuses.items() %}<option value="{{code}}">{{label}}</option>{% endfor %}</select></div>
+      <div class="col-12"><label class="form-label">Observações</label><textarea class="form-control" name="notes" rows="3" maxlength="5000"></textarea></div>
+    </div><div class="text-end mt-4"><button class="btn btn-primary">Cadastrar unidades e gerar BMPs</button></div></form>
+  </div></div>
+</div></div>
+{% endblock %}

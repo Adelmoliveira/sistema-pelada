@@ -106,9 +106,23 @@ CREATE TABLE IF NOT EXISTS bar_restock_request_items (
     description TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_bar_restock_requests_status ON bar_restock_requests(status,created_at);
+CREATE TABLE IF NOT EXISTS bar_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    event_date TEXT DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    closed_at TEXT,
+    closed_by INTEGER REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_bar_events_status_date ON bar_events(status,event_date,id);
 CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    player_id INTEGER NOT NULL REFERENCES players(id),
+    player_id INTEGER REFERENCES players(id),
+    event_id INTEGER REFERENCES bar_events(id),
+    guest_name TEXT NOT NULL DEFAULT '',
     payment_method TEXT NOT NULL CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia','Créditos')),
     total_cents INTEGER NOT NULL,
     paid INTEGER NOT NULL DEFAULT 1,
@@ -326,8 +340,9 @@ CREATE TABLE IF NOT EXISTS load_entries (
     area_code TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN')),
     serial_number TEXT DEFAULT '',
     location TEXT DEFAULT '',
+    responsible TEXT DEFAULT '',
     notes TEXT DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','maintenance','discharged','lost','borrowed')),
     discharged_at TEXT,
     discharged_by INTEGER REFERENCES users(id),
     last_checked_at TEXT,
@@ -345,6 +360,18 @@ CREATE TABLE IF NOT EXISTS load_entry_photos (
 );
 CREATE INDEX IF NOT EXISTS idx_load_entries_material ON load_entries(material_id);
 CREATE INDEX IF NOT EXISTS idx_load_photos_entry ON load_entry_photos(load_entry_id);
+CREATE TABLE IF NOT EXISTS load_entry_movements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    load_entry_id INTEGER NOT NULL REFERENCES load_entries(id) ON DELETE CASCADE,
+    from_location TEXT DEFAULT '',
+    to_location TEXT DEFAULT '',
+    from_responsible TEXT DEFAULT '',
+    to_responsible TEXT DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    moved_by INTEGER REFERENCES users(id),
+    moved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_load_movements_entry ON load_entry_movements(load_entry_id,moved_at);
 CREATE TABLE IF NOT EXISTS maintenance_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT NOT NULL UNIQUE,
@@ -1277,6 +1304,47 @@ def init_sqlite(wrapper):
     conn.commit()
 
     sale_columns = {row[1] for row in conn.execute("PRAGMA table_info(sales)")}
+    # Eventos permitem vendas para convidados sem criar um cadastro de peladeiro.
+    # Bancos SQLite antigos tinham player_id NOT NULL; reconstruímos a tabela uma
+    # única vez para tornar a coluna opcional, preservando todos os registros.
+    sale_info = list(conn.execute("PRAGMA table_info(sales)"))
+    player_not_null = any(row[1] == "player_id" and int(row[3] or 0) == 1 for row in sale_info)
+    if player_not_null:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("ALTER TABLE sales RENAME TO sales_legacy_event_migration")
+        conn.execute("""CREATE TABLE sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER REFERENCES players(id),
+            event_id INTEGER REFERENCES bar_events(id),
+            guest_name TEXT NOT NULL DEFAULT '',
+            payment_method TEXT NOT NULL CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia','Créditos')),
+            total_cents INTEGER NOT NULL,
+            paid INTEGER NOT NULL DEFAULT 1,
+            payment_status TEXT NOT NULL DEFAULT 'approved',
+            mercadopago_order_id TEXT, mercadopago_payment_id TEXT,
+            external_reference TEXT, idempotency_key TEXT, paid_at TEXT,
+            ready_for_delivery INTEGER NOT NULL DEFAULT 0,
+            delivered_at TEXT, delivered_by INTEGER REFERENCES users(id),
+            notes TEXT DEFAULT '', receipt_sent_at TEXT, receipt_error TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
+        old_columns = {row[1] for row in conn.execute("PRAGMA table_info(sales_legacy_event_migration)")}
+        target_columns = ["id", "player_id", "payment_method", "total_cents", "paid", "payment_status",
+                          "mercadopago_order_id", "mercadopago_payment_id", "external_reference", "idempotency_key",
+                          "paid_at", "ready_for_delivery", "delivered_at", "delivered_by", "notes", "receipt_sent_at",
+                          "receipt_error", "created_at"]
+        available = [column for column in target_columns if column in old_columns]
+        conn.execute(f"INSERT INTO sales({','.join(available)}) SELECT {','.join(available)} FROM sales_legacy_event_migration")
+        conn.execute("DROP TABLE sales_legacy_event_migration")
+        conn.execute("PRAGMA foreign_keys = ON")
+        sale_columns = {row[1] for row in conn.execute("PRAGMA table_info(sales)")}
+    for column, definition in {
+        "event_id": "INTEGER REFERENCES bar_events(id)",
+        "guest_name": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        if column not in sale_columns:
+            conn.execute(f"ALTER TABLE sales ADD COLUMN {column} {definition}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_event ON sales(event_id,created_at)")
     sale_migrations = {
         "payment_status": "TEXT NOT NULL DEFAULT 'approved'",
         "mercadopago_order_id": "TEXT",
@@ -1312,19 +1380,80 @@ def init_sqlite(wrapper):
     conn.commit()
 
     load_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entries)")}
+    # Expand the original two-state status constraint without losing existing
+    # loads or their photos.  SQLite cannot alter a CHECK constraint in place.
+    load_schema = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='load_entries'").fetchone()
+    load_schema_sql = (load_schema[0] if load_schema else "") or ""
+    if "maintenance" not in load_schema_sql:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        # Renaming a referenced table causes SQLite to rewrite foreign keys in
+        # dependent tables to the temporary name. Rebuild the photo table too,
+        # otherwise a later upload could reference the dropped legacy table.
+        photos_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='load_entry_photos'"
+        ).fetchone() is not None
+        if photos_exists:
+            conn.execute("ALTER TABLE load_entry_photos RENAME TO load_entry_photos_legacy")
+        conn.execute("ALTER TABLE load_entries RENAME TO load_entries_legacy")
+        conn.execute("""CREATE TABLE load_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            material_id INTEGER NOT NULL REFERENCES materials(id),
+            bmp TEXT NOT NULL UNIQUE,
+            area_code TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN')),
+            serial_number TEXT DEFAULT '', location TEXT DEFAULT '', responsible TEXT DEFAULT '', notes TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','maintenance','discharged','lost','borrowed')),
+            discharged_at TEXT, discharged_by INTEGER REFERENCES users(id),
+            last_checked_at TEXT, last_checked_by INTEGER REFERENCES users(id), next_check_due_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
+        legacy_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entries_legacy)")}
+        responsible_expr = "responsible" if "responsible" in legacy_columns else "''"
+        conn.execute(f"""INSERT INTO load_entries
+            (id,material_id,bmp,area_code,serial_number,location,responsible,notes,status,discharged_at,discharged_by,
+             last_checked_at,last_checked_by,next_check_due_at,created_at,updated_at)
+            SELECT id,material_id,bmp,area_code,serial_number,location,{responsible_expr},notes,status,discharged_at,discharged_by,
+                   last_checked_at,last_checked_by,next_check_due_at,created_at,updated_at
+            FROM load_entries_legacy""")
+        conn.execute("DROP TABLE load_entries_legacy")
+        if photos_exists:
+            conn.execute("""CREATE TABLE load_entry_photos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                load_entry_id INTEGER NOT NULL REFERENCES load_entries(id) ON DELETE CASCADE,
+                photo_data TEXT NOT NULL,
+                thumbnail_data TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""")
+            conn.execute("""INSERT INTO load_entry_photos(id,load_entry_id,photo_data,thumbnail_data,created_at)
+                SELECT id,load_entry_id,photo_data,thumbnail_data,created_at
+                FROM load_entry_photos_legacy""")
+            conn.execute("DROP TABLE load_entry_photos_legacy")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_load_photos_entry ON load_entry_photos(load_entry_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_load_entries_material ON load_entries(material_id)")
+        conn.execute("PRAGMA foreign_keys=ON")
+        load_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entries)")}
     load_migrations = {
         "area_code": "TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN'))",
-        "status": "TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','discharged'))",
+        "status": "TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','maintenance','discharged','lost','borrowed'))",
         "discharged_at": "TEXT",
         "discharged_by": "INTEGER REFERENCES users(id)",
         "last_checked_at": "TEXT",
         "last_checked_by": "INTEGER REFERENCES users(id)",
         "next_check_due_at": "TEXT",
+        "responsible": "TEXT DEFAULT ''",
     }
     for column, definition in load_migrations.items():
         if column not in load_columns:
             conn.execute(f"ALTER TABLE load_entries ADD COLUMN {column} {definition}")
     conn.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
+    conn.execute("""CREATE TABLE IF NOT EXISTS load_entry_movements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        load_entry_id INTEGER NOT NULL REFERENCES load_entries(id) ON DELETE CASCADE,
+        from_location TEXT DEFAULT '', to_location TEXT DEFAULT '',
+        from_responsible TEXT DEFAULT '', to_responsible TEXT DEFAULT '',
+        reason TEXT NOT NULL DEFAULT '', moved_by INTEGER REFERENCES users(id),
+        moved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_load_movements_entry ON load_entry_movements(load_entry_id,moved_at)")
     conn.commit()
 
 def init_postgres(wrapper):
@@ -1408,6 +1537,10 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivered_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_sent_at TIMESTAMP")
     wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS receipt_error TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS event_id INTEGER REFERENCES bar_events(id)")
+    wrapper.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS guest_name TEXT NOT NULL DEFAULT ''")
+    wrapper.execute("ALTER TABLE sales ALTER COLUMN player_id DROP NOT NULL")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_sales_event ON sales(event_id,created_at)")
     wrapper.execute("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_payment_method_check")
     wrapper.execute("ALTER TABLE sales ADD CONSTRAINT sales_payment_method_check CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia','Créditos'))")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS bar_credit_accounts (
@@ -1455,6 +1588,19 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMP")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS last_checked_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS next_check_due_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS responsible TEXT NOT NULL DEFAULT ''")
+    wrapper.execute("ALTER TABLE load_entries DROP CONSTRAINT IF EXISTS load_entries_status_check")
+    wrapper.execute("""ALTER TABLE load_entries ADD CONSTRAINT load_entries_status_check
+        CHECK(status IN ('active','maintenance','discharged','lost','borrowed'))""")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS load_entry_movements (
+        id SERIAL PRIMARY KEY,
+        load_entry_id INTEGER NOT NULL REFERENCES load_entries(id) ON DELETE CASCADE,
+        from_location TEXT DEFAULT '', to_location TEXT DEFAULT '',
+        from_responsible TEXT DEFAULT '', to_responsible TEXT DEFAULT '',
+        reason TEXT NOT NULL DEFAULT '', moved_by INTEGER REFERENCES users(id),
+        moved_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_load_movements_entry ON load_entry_movements(load_entry_id,moved_at)")
     wrapper.execute("ALTER TABLE football_incidents ADD COLUMN IF NOT EXISTS card TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE football_responsibles ADD COLUMN IF NOT EXISTS match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL")
     wrapper.execute("ALTER TABLE football_lineups ADD COLUMN IF NOT EXISTS period INTEGER NOT NULL DEFAULT 1")

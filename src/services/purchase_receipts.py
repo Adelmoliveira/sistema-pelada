@@ -6,8 +6,8 @@ from src.utils import brdate, cpfmask, money
 
 def send_purchase_receipt(db, sale_id, sender, app_password, send_func=send_gmail_html):
     sale = db.execute(
-        """SELECT s.*,p.name player_name,p.cpf,p.email
-           FROM sales s JOIN players p ON p.id=s.player_id WHERE s.id=?""",
+        """SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,p.cpf,p.email
+           FROM sales s LEFT JOIN players p ON p.id=s.player_id WHERE s.id=?""",
         (sale_id,),
     ).fetchone()
     if not sale or sale["receipt_sent_at"]:
@@ -71,10 +71,10 @@ def send_delivery_update(db, sale_id, delivered_items, remaining_items, sender, 
     """Envia ao peladeiro o resumo de uma retirada parcial ou total."""
     sale = db.execute(
         """SELECT s.id,s.player_id,s.payment_method,s.total_cents,s.paid_at,s.created_at,
-                  s.delivered_at,p.email,p.name player_name,p.cpf,
+                  s.delivered_at,p.email,COALESCE(p.name,s.guest_name,'Convidado') player_name,p.cpf,
                   (SELECT MAX(sid.delivered_at) FROM sale_item_deliveries sid
                    JOIN sale_items si2 ON si2.id=sid.sale_item_id WHERE si2.sale_id=s.id) pickup_at
-           FROM sales s JOIN players p ON p.id=s.player_id WHERE s.id=?""",
+           FROM sales s LEFT JOIN players p ON p.id=s.player_id WHERE s.id=?""",
         (sale_id,),
     ).fetchone()
     if not sale or "@" not in (sale["email"] or "").strip():

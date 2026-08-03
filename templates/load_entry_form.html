@@ -19,6 +19,15 @@
             {% for material in materials %}<option value="{{material.id}}" {{'selected' if material.id|string == selected_material}}>{{material.description}}{{' · FCG ' ~ material.load_sheet if material.load_sheet else ''}}</option>{% endfor %}
           </select>
         </div>
+        <div class="col-md-6">
+          <label class="form-label" for="responsible">Responsável</label>
+          <input class="form-control" id="responsible" name="responsible" maxlength="200" placeholder="Pessoa responsável pela carga" value="{{request.form.get('responsible', entry.responsible if entry else '')}}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="status">Situação</label>
+          {% set selected_status = request.form.get('status', entry.status if entry else 'active') %}
+          <select class="form-select" id="status" name="status">{% for code,label in load_statuses.items() %}<option value="{{code}}" {{'selected' if code == selected_status}}>{{label}}</option>{% endfor %}</select>
+        </div>
         <div class="col-md-3">
           <label class="form-label fw-semibold" for="area-code">Área <span class="text-danger">*</span></label>
           {% set selected_area = request.form.get('area_code', entry.area_code if entry else '') %}

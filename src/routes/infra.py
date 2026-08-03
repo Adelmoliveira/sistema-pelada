@@ -1,8 +1,8 @@
 import calendar
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
-from flask import Blueprint, current_app, flash, g, redirect, render_template, request, send_file, url_for
+from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, send_file, url_for
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
@@ -22,6 +22,20 @@ LOAD_AREAS = {
     "HIS": "Sala Histórica",
     "VES": "Vestiário",
     "BAN": "Banheiros",
+}
+LOAD_STATUS_LABELS = {
+    "active": "Ativo",
+    "maintenance": "Em manutenção",
+    "discharged": "Baixado (Descarregado)",
+    "lost": "Extraviado",
+    "borrowed": "Emprestado",
+}
+LOAD_STATUS_CLASSES = {
+    "active": "text-bg-success",
+    "maintenance": "text-bg-warning",
+    "discharged": "text-bg-secondary",
+    "lost": "text-bg-danger",
+    "borrowed": "text-bg-info",
 }
 
 
@@ -70,14 +84,20 @@ def load_form_values(db):
         raise ValueError("Selecione uma área válida.")
     serial_number = request.form.get("serial_number", "").strip()
     location = request.form.get("location", "").strip()
+    responsible = request.form.get("responsible", "").strip()
+    status = request.form.get("status", "active").strip().lower()
+    if status not in LOAD_STATUS_LABELS:
+        raise ValueError("Selecione uma situação válida.")
     notes = request.form.get("notes", "").strip()
     if len(serial_number) > 150:
         raise ValueError("O número de série deve ter no máximo 150 caracteres.")
     if len(location) > 200:
         raise ValueError("A localização deve ter no máximo 200 caracteres.")
+    if len(responsible) > 200:
+        raise ValueError("O responsável deve ter no máximo 200 caracteres.")
     if len(notes) > 5000:
         raise ValueError("As observações devem ter no máximo 5.000 caracteres.")
-    return material_id, area_code, serial_number, location, notes
+    return material_id, area_code, serial_number, location, responsible, status, notes
 
 
 def process_load_photos(uploads):
@@ -87,7 +107,7 @@ def process_load_photos(uploads):
     return [process_material_photo(upload) for upload in uploads]
 
 
-def load_entry_rows(db, query="", area_code=""):
+def load_entry_rows(db, query="", area_code="", status="", location="", responsible="", due=""):
     sql = """SELECT le.*,m.description material_description,m.load_sheet material_fcg,
                     (SELECT COUNT(*) FROM load_entry_photos lp WHERE lp.load_entry_id=le.id) photo_count,
                     (SELECT thumbnail_data FROM load_entry_photos lp
@@ -102,6 +122,17 @@ def load_entry_rows(db, query="", area_code=""):
     if area_code in LOAD_AREAS:
         conditions.append("le.area_code=?")
         params.append(area_code)
+    if status in LOAD_STATUS_LABELS:
+        conditions.append("le.status=?")
+        params.append(status)
+    if location:
+        conditions.append("LOWER(le.location) LIKE ?")
+        params.append(f"%{location.lower()}%")
+    if responsible:
+        conditions.append("LOWER(le.responsible) LIKE ?")
+        params.append(f"%{responsible.lower()}%")
+    if due == "pending":
+        conditions.append("le.status NOT IN ('discharged','lost') AND (le.next_check_due_at IS NULL OR date(le.next_check_due_at)<=date('now'))")
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY le.id DESC"
@@ -238,7 +269,11 @@ def load_relation():
     db = get_db()
     query = request.args.get("q", "").strip()
     area_code = request.args.get("area", "").strip().upper()
-    rows = load_entry_rows(db, query, area_code)
+    status = request.args.get("status", "").strip().lower()
+    location = request.args.get("location", "").strip()
+    responsible = request.args.get("responsible", "").strip()
+    due = request.args.get("due", "").strip()
+    rows = load_entry_rows(db, query, area_code, status, location, responsible, due)
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
@@ -249,12 +284,24 @@ def load_relation():
     visible = rows[(page - 1) * per_page:page * per_page]
     due_count = db.execute(
         """SELECT COUNT(*) total FROM load_entries
-           WHERE status='active' AND (next_check_due_at IS NULL OR date(next_check_due_at)<=?)""",
+           WHERE status NOT IN ('discharged','lost')
+             AND (next_check_due_at IS NULL OR date(next_check_due_at)<=?)""",
         (local_today().isoformat(),),
+    ).fetchone()["total"]
+    due_soon_count = db.execute(
+        """SELECT COUNT(*) total FROM load_entries
+           WHERE status NOT IN ('discharged','lost')
+             AND next_check_due_at IS NOT NULL
+             AND date(next_check_due_at)>?
+             AND date(next_check_due_at)<=?""",
+        (local_today().isoformat(), (local_today() + timedelta(days=30)).isoformat()),
     ).fetchone()["total"]
     return render_template(
         "load_relation.html", entries=visible, total=len(rows), query=query,
         page=page, pages=pages, area_code=area_code, load_areas=LOAD_AREAS, due_count=due_count,
+        due_soon_count=due_soon_count,
+        status=status, location=location, responsible=responsible, due=due,
+        load_statuses=LOAD_STATUS_LABELS, load_status_classes=LOAD_STATUS_CLASSES,
     )
 
 
@@ -266,11 +313,11 @@ def load_check():
     entries = db.execute(
         """SELECT le.id,le.bmp,le.location,le.next_check_due_at,m.description material_description
            FROM load_entries le JOIN materials m ON m.id=le.material_id
-           WHERE le.status='active' AND (le.next_check_due_at IS NULL OR date(le.next_check_due_at)<=?)
+           WHERE le.status NOT IN ('discharged','lost') AND (le.next_check_due_at IS NULL OR date(le.next_check_due_at)<=?)
            ORDER BY CASE WHEN le.next_check_due_at IS NULL THEN 0 ELSE 1 END,le.next_check_due_at,le.id""",
         (today,),
     ).fetchall()
-    total = db.execute("SELECT COUNT(*) total FROM load_entries WHERE status='active'").fetchone()["total"]
+    total = db.execute("SELECT COUNT(*) total FROM load_entries WHERE status NOT IN ('discharged','lost')").fetchone()["total"]
     return render_template("load_check.html", entries=entries, total=total, today=today)
 
 
@@ -323,14 +370,14 @@ def new_load_entry():
     materials = material_options(db)
     if request.method == "POST":
         try:
-            material_id, area_code, serial_number, location, notes = load_form_values(db)
+            material_id, area_code, serial_number, location, responsible, status, notes = load_form_values(db)
             photos = process_load_photos(request.files.getlist("photos"))
             with db:
                 pending_bmp = f"pending-{uuid.uuid4().hex}"
                 cursor = db.execute(
-                    """INSERT INTO load_entries(material_id,bmp,serial_number,location,notes)
-                       VALUES(?,?,?,?,?)""",
-                    (material_id, pending_bmp, serial_number, location, notes),
+                    """INSERT INTO load_entries(material_id,bmp,serial_number,location,responsible,status,notes)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (material_id, pending_bmp, serial_number, location, responsible, status, notes),
                 )
                 entry_id = cursor.lastrowid
                 bmp = bmp_code(entry_id, area_code)
@@ -351,7 +398,47 @@ def new_load_entry():
     return render_template(
         "load_entry_form.html", entry=None, materials=materials,
         photos=[], form_title="Nova carga", max_photos=MAX_LOAD_PHOTOS, load_areas=LOAD_AREAS,
+        load_statuses=LOAD_STATUS_LABELS,
     )
+
+
+@bp.route("/load-relation/batch", methods=["GET", "POST"])
+@roles_allowed("manager", "infra")
+def batch_load_entries():
+    db = get_db()
+    materials = material_options(db)
+    if request.method == "POST":
+        try:
+            material_id, area_code, serial_number, location, responsible, status, notes = load_form_values(db)
+            quantity = int(request.form.get("quantity", "0"))
+            if quantity < 1 or quantity > 500:
+                raise ValueError("Informe uma quantidade entre 1 e 500 unidades.")
+            prefix = request.form.get("serial_prefix", "").strip()
+            if len(prefix) > 100:
+                raise ValueError("O prefixo do número de série deve ter no máximo 100 caracteres.")
+            generated = []
+            with db:
+                for index in range(1, quantity + 1):
+                    pending_bmp = f"pending-{uuid.uuid4().hex}"
+                    serial = f"{prefix}{index:03d}" if prefix else serial_number
+                    cursor = db.execute(
+                        """INSERT INTO load_entries(material_id,bmp,serial_number,location,responsible,status,notes)
+                           VALUES(?,?,?,?,?,?,?)""",
+                        (material_id, pending_bmp, serial, location, responsible, status, notes),
+                    )
+                    entry_id = cursor.lastrowid
+                    bmp = bmp_code(entry_id, area_code)
+                    db.execute("UPDATE load_entries SET bmp=?,area_code=? WHERE id=?", (bmp, area_code, entry_id))
+                    generated.append({"id": entry_id, "bmp": bmp, "serial": serial})
+            return render_template("load_batch_result.html", generated=generated, quantity=quantity)
+        except (ValueError, TypeError) as exc:
+            flash(str(exc), "danger")
+        except Exception:
+            db.rollback()
+            current_app.logger.exception("Erro ao cadastrar cargas em lote")
+            flash("Erro interno ao cadastrar as cargas.", "danger")
+    return render_template("load_batch_form.html", materials=materials, load_areas=LOAD_AREAS,
+                           load_statuses=LOAD_STATUS_LABELS)
 
 
 @bp.get("/load-relation/<int:entry_id>")
@@ -371,10 +458,78 @@ def load_entry_detail(entry_id):
     photos = db.execute(
         "SELECT * FROM load_entry_photos WHERE load_entry_id=? ORDER BY id", (entry_id,)
     ).fetchall()
-    check_due = entry["status"] == "active" and (
+    movements = db.execute(
+        """SELECT lm.*,u.name moved_by_name FROM load_entry_movements lm
+           LEFT JOIN users u ON u.id=lm.moved_by WHERE lm.load_entry_id=? ORDER BY lm.moved_at DESC,lm.id DESC""",
+        (entry_id,),
+    ).fetchall()
+    check_due = entry["status"] not in ("discharged", "lost") and (
         not entry["next_check_due_at"] or str(entry["next_check_due_at"])[:10] <= local_today().isoformat()
     )
-    return render_template("load_entry_detail.html", entry=entry, photos=photos, check_due=check_due)
+    return render_template("load_entry_detail.html", entry=entry, photos=photos, movements=movements,
+                           check_due=check_due, load_statuses=LOAD_STATUS_LABELS,
+                           load_status_classes=LOAD_STATUS_CLASSES)
+
+
+@bp.post("/load-relation/<int:entry_id>/move")
+@roles_allowed("manager", "infra")
+def move_load_entry(entry_id):
+    db = get_db()
+    entry = db.execute("SELECT id,location,responsible,status FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+    if not entry:
+        flash("Carga não encontrada.", "warning")
+        return redirect(url_for("infra.load_relation"))
+    to_location = request.form.get("location", "").strip()
+    to_responsible = request.form.get("responsible", "").strip()
+    reason = request.form.get("reason", "").strip()
+    if not reason:
+        flash("Informe o motivo da movimentação.", "danger")
+        return redirect(url_for("infra.load_entry_detail", entry_id=entry_id))
+    try:
+        with db:
+            db.execute("""INSERT INTO load_entry_movements
+                (load_entry_id,from_location,to_location,from_responsible,to_responsible,reason,moved_by)
+                VALUES(?,?,?,?,?,?,?)""", (entry_id, entry["location"] or "", to_location,
+                entry["responsible"] or "", to_responsible, reason, g.user["id"]))
+            db.execute("UPDATE load_entries SET location=?,responsible=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                       (to_location, to_responsible, entry_id))
+        flash("Movimentação patrimonial registrada.", "success")
+    except Exception:
+        db.rollback()
+        current_app.logger.exception("Erro ao movimentar carga %s", entry_id)
+        flash("Erro interno ao registrar a movimentação.", "danger")
+    return redirect(url_for("infra.load_entry_detail", entry_id=entry_id))
+
+
+@bp.post("/load-relation/<int:entry_id>/status")
+@roles_allowed("manager", "infra")
+def update_load_status(entry_id):
+    status = request.form.get("status", "").strip().lower()
+    if status not in LOAD_STATUS_LABELS:
+        flash("Situação inválida.", "danger")
+        return redirect(url_for("infra.load_entry_detail", entry_id=entry_id))
+    db = get_db()
+    try:
+        if status == "discharged":
+            updated = db.execute(
+                """UPDATE load_entries SET status=?,discharged_at=CURRENT_TIMESTAMP,
+                   discharged_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (status, g.user["id"], entry_id),
+            )
+        else:
+            updated = db.execute(
+                """UPDATE load_entries SET status=?,discharged_at=NULL,discharged_by=NULL,
+                   updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (status, entry_id),
+            )
+        db.commit()
+        flash("Situação atualizada." if updated.rowcount else "Carga não encontrada.",
+              "success" if updated.rowcount else "warning")
+    except Exception:
+        db.rollback()
+        current_app.logger.exception("Erro ao alterar situação da carga %s", entry_id)
+        flash("Erro interno ao atualizar a situação.", "danger")
+    return redirect(url_for("infra.load_entry_detail", entry_id=entry_id))
 
 
 @bp.post("/load-relation/<int:entry_id>/check")
@@ -384,8 +539,8 @@ def check_load_entry(entry_id):
     entry = db.execute("SELECT id,bmp,status FROM load_entries WHERE id=?", (entry_id,)).fetchone()
     if not entry:
         flash("Carga não encontrada.", "warning")
-    elif entry["status"] != "active":
-        flash(f"A carga {entry['bmp']} está descarregada e não pode ser conferida.", "warning")
+    elif entry["status"] in ("discharged", "lost"):
+        flash(f"A carga {entry['bmp']} está baixada/extraviada e não pode ser conferida.", "warning")
     else:
         db.execute(
             """UPDATE load_entries SET last_checked_at=CURRENT_TIMESTAMP,last_checked_by=?,
@@ -395,6 +550,38 @@ def check_load_entry(entry_id):
         db.commit()
         flash(f"Conferência da carga {entry['bmp']} registrada. Próxima conferência em 6 meses.", "success")
     return redirect(url_for("infra.load_entry_detail", entry_id=entry_id))
+
+
+@bp.post("/load-relation/<int:entry_id>/check-auto")
+@roles_allowed("manager", "infra")
+def check_load_entry_auto(entry_id):
+    """Register a QR-based conference without leaving the mobile scanner."""
+    db = get_db()
+    try:
+        entry = db.execute(
+            "SELECT id,bmp,status FROM load_entries WHERE id=?", (entry_id,)
+        ).fetchone()
+        if not entry:
+            return jsonify(ok=False, error="Carga não encontrada."), 404
+        if entry["status"] in ("discharged", "lost"):
+            return jsonify(
+                ok=False,
+                inconsistency=True,
+                bmp=entry["bmp"],
+                error=f"A carga {entry['bmp']} está baixada/extraviada e não pode ser conferida.",
+            ), 409
+        due_at = next_load_check_date()
+        db.execute(
+            """UPDATE load_entries SET last_checked_at=CURRENT_TIMESTAMP,
+               last_checked_by=?,next_check_due_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (g.user["id"], due_at, entry_id),
+        )
+        db.commit()
+        return jsonify(ok=True, bmp=entry["bmp"], next_check_due_at=due_at)
+    except Exception:
+        db.rollback()
+        current_app.logger.exception("Erro na conferência automática da carga %s", entry_id)
+        return jsonify(ok=False, error="Não foi possível registrar a conferência."), 500
 
 
 @bp.get("/load-relation/<int:entry_id>/qr-code")
@@ -422,8 +609,8 @@ def discharge_load_entry(entry_id):
     entry = db.execute("SELECT bmp,status FROM load_entries WHERE id=?", (entry_id,)).fetchone()
     if not entry:
         flash("Carga não encontrada.", "warning")
-    elif entry["status"] == "discharged":
-        flash(f"A carga {entry['bmp']} já foi descarregada.", "warning")
+    elif entry["status"] in ("discharged", "lost"):
+        flash(f"A carga {entry['bmp']} já não está ativa.", "warning")
     else:
         db.execute(
             """UPDATE load_entries SET status='discharged',discharged_at=CURRENT_TIMESTAMP,
@@ -448,7 +635,7 @@ def edit_load_entry(entry_id):
     ).fetchall()
     if request.method == "POST":
         try:
-            material_id, area_code, serial_number, location, notes = load_form_values(db)
+            material_id, area_code, serial_number, location, responsible, status, notes = load_form_values(db)
             remove_ids = set()
             for value in request.form.getlist("remove_photo_ids"):
                 try:
@@ -462,9 +649,9 @@ def edit_load_entry(entry_id):
                 raise ValueError(f"Cada carga pode possuir no máximo {MAX_LOAD_PHOTOS} fotos.")
             with db:
                 db.execute(
-                    """UPDATE load_entries SET material_id=?,area_code=?,bmp=?,serial_number=?,location=?,notes=?,
+                    """UPDATE load_entries SET material_id=?,area_code=?,bmp=?,serial_number=?,location=?,responsible=?,status=?,notes=?,
                        updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                    (material_id, area_code, bmp_code(entry_id, area_code), serial_number, location, notes, entry_id),
+                    (material_id, area_code, bmp_code(entry_id, area_code), serial_number, location, responsible, status, notes, entry_id),
                 )
                 for photo_id in remove_ids:
                     db.execute(
@@ -491,7 +678,7 @@ def edit_load_entry(entry_id):
     return render_template(
         "load_entry_form.html", entry=entry, materials=material_options(db),
         photos=photos, form_title="Editar carga", max_photos=MAX_LOAD_PHOTOS,
-        load_areas=LOAD_AREAS,
+        load_areas=LOAD_AREAS, load_statuses=LOAD_STATUS_LABELS,
     )
 
 
@@ -518,9 +705,13 @@ def delete_load_entry(entry_id):
 def load_relation_report():
     query = request.args.get("q", "").strip()
     area_code = request.args.get("area", "").strip().upper()
-    report_filter = " · ".join(value for value in (query, area_code) if value)
+    status = request.args.get("status", "").strip().lower()
+    location = request.args.get("location", "").strip()
+    responsible = request.args.get("responsible", "").strip()
+    due = request.args.get("due", "").strip()
+    report_filter = " · ".join(value for value in (query, area_code, LOAD_STATUS_LABELS.get(status, ""), location, responsible, due) if value)
     report = build_load_relation_pdf(
-        load_entry_rows(get_db(), query, area_code), local_today(), report_filter,
+        load_entry_rows(get_db(), query, area_code, status, location, responsible, due), local_today(), report_filter,
     )
     return send_file(
         report,
@@ -528,3 +719,19 @@ def load_relation_report():
         as_attachment=True,
         download_name=f"relacao-de-carga-{local_today().isoformat()}.pdf",
     )
+
+
+@bp.get("/load-relation/report")
+@roles_allowed("manager", "infra")
+def load_relation_report_page():
+    query = request.args.get("q", "").strip()
+    area_code = request.args.get("area", "").strip().upper()
+    status = request.args.get("status", "").strip().lower()
+    location = request.args.get("location", "").strip()
+    responsible = request.args.get("responsible", "").strip()
+    due = request.args.get("due", "").strip()
+    entries = load_entry_rows(get_db(), query, area_code, status, location, responsible, due)
+    return render_template("load_report.html", entries=entries, total=len(entries), query=query,
+                           area_code=area_code, status=status, location=location, responsible=responsible,
+                           due=due, load_areas=LOAD_AREAS, load_statuses=LOAD_STATUS_LABELS,
+                           load_status_classes=LOAD_STATUS_CLASSES)

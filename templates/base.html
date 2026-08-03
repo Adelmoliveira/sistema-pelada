@@ -15,10 +15,11 @@
   <link rel="stylesheet" href="{{url_for('static',filename='style.css')}}">
 </head>
 <body>
-{% if current_user %}
+{% if current_user and not (guest_mode|default(false)) %}
 {% set endpoint=request.endpoint or '' %}
 {% set cash_active=endpoint.startswith('cash.') %}
 {% set bar_active=endpoint.startswith('sales.') or endpoint.startswith('products.') or cash_active %}
+{% set events_active=endpoint.startswith('events.') %}
 {% set deliveries_active=endpoint in ['sales.delivered_history','sales.canceled_history'] %}
 {% set finance_active=endpoint.startswith('finance.') %}
 {% set reports_active=endpoint.startswith('reports.') %}
@@ -43,6 +44,10 @@
             <a class="{{'sale-link ' if current_user.role not in ['staff','manager'] else ''}}{{'active' if endpoint == 'sales.sale'}}" href="{{url_for('sales.sale')}}">Venda rápida</a>
           </div></div>
         </div>{% elif current_user.role == 'client' %}<a class="sidebar-module sidebar-direct sale-link {{'active' if endpoint == 'sales.sale'}}" href="{{url_for('sales.sale')}}"><span class="sidebar-module-icon">B</span><span>Venda rápida</span></a>{% endif %}
+        {% if current_user.role in ['manager','staff'] %}<div class="sidebar-group">
+          <button class="sidebar-module {{'active' if events_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-events" aria-expanded="{{'true' if events_active else 'false'}}" aria-controls="sidebar-events"><span class="sidebar-module-icon">🎉</span><span>Eventos/Festas</span><span class="sidebar-chevron">⌄</span></button>
+          <div class="collapse {{'show' if events_active}}" id="sidebar-events" data-bs-parent="#sidebar-nav"><div class="sidebar-submenu"><a class="{{'active' if endpoint.startswith('events.')}}" href="{{url_for('events.index')}}">Eventos/Festas</a></div></div>
+        </div>{% endif %}
         {% if current_user.role == 'client' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'football.client_panel'}}" href="{{url_for('football.client_panel')}}"><span class="sidebar-module-icon">⚽</span><span>Minha pelada</span></a><a class="sidebar-module sidebar-direct {{'active' if endpoint == 'auth.my_purchases'}}" href="{{url_for('auth.my_purchases')}}"><span class="sidebar-module-icon">🛒</span><span>Minhas compras</span></a><a class="sidebar-module sidebar-direct {{'active' if endpoint.startswith('credits.')}}" href="{{url_for('credits.index')}}"><span class="sidebar-module-icon">💳</span><span>Créditos do bar</span><span id="credit-pending-badge" class="sidebar-pending-badge" data-pending-url="{{url_for('credits.pending_topups')}}" hidden aria-label="Recargas Pix aguardando confirmação"></span></a><a class="sidebar-module sidebar-direct {{'active' if endpoint == 'football.transfer_window'}}" href="{{url_for('football.transfer_window')}}"><span class="sidebar-module-icon">↔</span><span>Transferência</span></a><a class="sidebar-module sidebar-direct {{'active' if endpoint == 'auth.highlights'}}" href="{{url_for('auth.highlights')}}"><span class="sidebar-module-icon">🏅</span><span>Destaques</span></a><a class="sidebar-module sidebar-direct {{'active' if endpoint == 'auth.notifications_inbox'}}" href="{{url_for('auth.notifications_inbox')}}"><span class="sidebar-module-icon">🔔</span><span>Avisos</span></a>{% endif %}
         {% if current_user.role == 'manager' %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if finance_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-finance" aria-expanded="{{'true' if finance_active else 'false'}}" aria-controls="sidebar-finance"><span class="sidebar-module-icon">$</span><span>Financeiro</span><span class="sidebar-chevron">⌄</span></button>
@@ -59,7 +64,7 @@
         {% if current_user.role in ['manager','staff','infra'] %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if infra_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-infra" aria-expanded="{{'true' if infra_active else 'false'}}" aria-controls="sidebar-infra"><span class="sidebar-module-icon">I</span><span>Infra-Estrutura</span><span class="sidebar-chevron">⌄</span></button>
           <div class="collapse {{'show' if infra_active}}" id="sidebar-infra" data-bs-parent="#sidebar-nav"><div class="sidebar-submenu">
-            {% if current_user.role == 'staff' %}<a class="{{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}">Novo chamado</a>{% else %}<a class="{{'active' if endpoint.startswith('maintenance.')}}" href="{{url_for('maintenance.requests_list')}}">Manutenção</a><a class="{{'active' if endpoint.startswith('infra.material')}}" href="{{url_for('infra.materials')}}">Materiais</a><a class="{{'active' if endpoint.startswith('infra.load_')}}" href="{{url_for('infra.load_relation')}}">Relação de Carga</a>{% endif %}
+            {% if current_user.role == 'staff' %}<a class="{{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}">Novo chamado</a>{% else %}<a class="{{'active' if endpoint.startswith('maintenance.')}}" href="{{url_for('maintenance.requests_list')}}">Manutenção</a><a class="{{'active' if endpoint.startswith('infra.material')}}" href="{{url_for('infra.materials')}}">Materiais</a><a class="{{'active' if endpoint.startswith('infra.load_')}}" href="{{url_for('infra.load_relation')}}">Relação de Carga</a><a class="{{'active' if endpoint == 'infra.load_check'}}" href="{{url_for('infra.load_check')}}">Validar conferência</a>{% endif %}
           </div></div>
         </div>{% endif %}
         {% if current_user.role == 'manager' %}<div class="sidebar-group">
@@ -93,7 +98,7 @@
   {% if current_user and current_user.role == 'client' %}<div id="push-onboarding" class="alert alert-primary d-none d-flex flex-wrap align-items-center justify-content-between gap-3" role="status"><div><strong>Receba avisos da pelada no celular</strong><br><span class="small">Ative as notificações para saber de pagamentos, transferências e comunicados.</span></div><button id="push-onboarding-action" class="btn btn-primary btn-lg" type="button">Ativar avisos no celular</button></div>{% endif %}
   {% block content %}{% endblock %}
 </main>
-{% if current_user %}
+{% if current_user and not (guest_mode|default(false)) %}
   </div>
 </div>
 {% endif %}
@@ -107,7 +112,7 @@
 <script src="{{url_for('static',filename='pwa.js')}}" defer></script>
 <script src="{{url_for('static',filename='football-goals.js')}}" defer></script>
 {% if current_user and current_user.role == 'client' %}<script src="{{url_for('static',filename='credit-pending.js')}}" defer></script>{% endif %}
-{% if current_user %}<script>
+{% if current_user and not (guest_mode|default(false)) %}<script>
 const shell=document.querySelector('#app-shell'),sidebar=document.querySelector('#app-sidebar'),toggle=document.querySelector('#sidebar-toggle'),desktop=window.matchMedia('(min-width: 992px)');
 if(desktop.matches&&localStorage.getItem('sidebar-collapsed')==='1')shell.classList.add('sidebar-collapsed');
 toggle.addEventListener('click',event=>{if(desktop.matches){event.preventDefault();event.stopPropagation();shell.classList.toggle('sidebar-collapsed');localStorage.setItem('sidebar-collapsed',shell.classList.contains('sidebar-collapsed')?'1':'0')}});

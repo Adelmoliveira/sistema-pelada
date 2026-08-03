@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <div><h1 class="h3 mb-1">Eventos e festas</h1><p class="text-muted mb-0">Crie uma janela de vendas para convidados sem criar cadastro de peladeiro.</p></div>
+</div>
+{% if active_events %}
+<div class="card border-success shadow-sm mb-3">
+  <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+    <strong>Evento/Festa vigente</strong><span>{{ active_events|length }} aberto(s)</span>
+  </div>
+  <div class="card-body">
+    <div class="row g-3">
+      {% for event in active_events %}
+      <div class="col-md-6 col-xl-4">
+        <div class="border rounded p-3 h-100">
+          <div class="d-flex justify-content-between align-items-start gap-3">
+            <div><h2 class="h5 mb-1">{{ event.name }}</h2><div class="text-muted">{{ event.event_date or 'Data não informada' }}</div><div class="small mt-2">{{ event.sale_count }} venda(s) · {{ event.total_cents|money }}</div></div>
+            <div class="text-center"><img src="{{ event_qr[event.id].image }}" alt="QR Code para venda na {{ event.name }}" width="128" height="128" class="border rounded p-1 bg-white"><div class="small text-muted mt-1">Escaneie para comprar</div></div>
+          </div>
+          <div class="d-flex gap-2 flex-wrap mt-2"><a class="btn btn-sm btn-outline-success" href="{{ url_for('events.detail', event_id=event.id) }}">Acompanhar evento</a><a class="btn btn-sm btn-outline-secondary" href="{{ event_qr[event.id].url }}" target="_blank" rel="noopener">Abrir venda</a><a class="btn btn-sm btn-outline-primary" href="{{ url_for('events.qr_pdf', event_id=event.id) }}">Baixar QR em PDF</a></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="alert alert-warning mt-3 mb-0">Após o término da festa, encerre o evento para impedir novas vendas vinculadas a ele.</div>
+  </div>
+</div>
+{% else %}
+<div class="alert alert-secondary">Nenhum Evento/Festa está aberto no momento.</div>
+{% endif %}
+{% if current_user.role == 'manager' %}
+<div class="card shadow-sm mb-3"><div class="card-body"><h2 class="h5">Novo evento</h2>
+  <form method="post" class="row g-2 align-items-end"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="col-md-4"><label class="form-label">Nome</label><input class="form-control" name="name" required placeholder="Ex.: Festa de 50 anos"></div>
+    <div class="col-md-3"><label class="form-label">Data</label><input class="form-control" type="date" name="event_date"></div>
+    <div class="col-md-5"><label class="form-label">Observações</label><input class="form-control" name="description" placeholder="Informações opcionais"></div>
+    <div class="col-12"><button class="btn btn-primary">Abrir evento</button></div>
+  </form>
+</div></div>
+{% endif %}
+<div class="card shadow-sm"><div class="card-body"><h2 class="h5">Eventos cadastrados</h2>
+  {% if events %}<div class="table-responsive"><table class="table align-middle"><thead><tr><th>Evento</th><th>Data</th><th>Status</th><th>Vendas</th><th>Total</th><th></th></tr></thead><tbody>
+  {% for event in events %}<tr><td><strong>{{ event.name }}</strong>{% if event.description %}<div class="small text-muted">{{ event.description }}</div>{% endif %}</td><td>{{ event.event_date or '—' }}</td><td><span class="badge text-bg-{{ 'success' if event.status == 'open' else 'secondary' }}">{{ 'Aberto' if event.status == 'open' else 'Encerrado' }}</span></td><td>{{ event.sale_count }}</td><td>{{ event.total_cents|money }}</td><td class="text-nowrap"><a class="btn btn-sm btn-outline-primary" href="{{ url_for('events.detail', event_id=event.id) }}">Detalhes</a>{% if current_user.role == 'manager' and event.status == 'open' %}<form class="d-inline" method="post" action="{{ url_for('events.close', event_id=event.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Encerrar este evento? Novas vendas não poderão ser vinculadas a ele.')">Encerrar</button></form>{% endif %}</td></tr>{% endfor %}
+  </tbody></table></div>{% else %}<p class="text-muted mb-0">Nenhum evento cadastrado.</p>{% endif %}
+</div></div>
+{% endblock %}

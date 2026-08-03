@@ -702,17 +702,29 @@ def edit_user(user_id):
     target = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
     name = request.form.get("name", "").strip()
     username = request.form.get("username", "").strip()
+    # Keep compatibility with an already-open edit form from before the role
+    # selector was added.
+    role = request.form.get("role", target["role"] if target else "").strip()
+    valid_roles = ("manager", "staff", "client", "infra", "maintenance", "display", "football_manager")
     if not target:
         flash("Usuário não encontrado.", "warning")
     elif not name:
         flash("Informe o nome do usuário.", "danger")
     elif len(username) < 3:
         flash("O usuário deve ter ao menos 3 caracteres.", "danger")
+    elif role not in valid_roles:
+        flash("Perfil inválido.", "danger")
+    elif user_id == g.user["id"] and role != target["role"]:
+        flash("Não é possível alterar o próprio perfil durante a sessão.", "danger")
     else:
         try:
-            db.execute("UPDATE users SET name=?,username=? WHERE id=?", (name, username, user_id))
+            # Maintenance and display accounts are intentionally passwordless.
+            # Changing another account's profile must also keep that invariant.
+            password_required = 0 if role in ("maintenance", "display") else int(target["password_required"] or 0)
+            db.execute("UPDATE users SET name=?,username=?,role=?,password_required=? WHERE id=?",
+                       (name, username, role, password_required, user_id))
             db.commit()
-            flash("Usuário atualizado.", "success")
+            flash("Usuário e perfil atualizados.", "success")
         except Exception as exc:
             db.rollback()
             current_app.logger.error(f"Erro ao editar usuário {user_id}: {exc}")

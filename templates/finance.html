@@ -43,7 +43,7 @@
                 <h2 class="h5">Registrar pagamento</h2>
                 <form method="post" id="payment-form" data-monthly-fee="{{ monthly_fee }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><label
                         class="form-label">Peladeiro</label><select name="player_id" class="form-select mb-3" required>
-                        <option value="">Selecione</option>{% for p in players %}<option value="{{p.id}}">{{p.name}}
+                        <option value="">Selecione</option>{% for p in players %}<option value="{{p.id}}">{{p.war_name or p.name}}
                         </option>{% endfor %}
                     </select><label class="form-label">Primeiro mês pago</label><input type="month" name="start_month"
                         value="{{current_month}}" class="form-control mb-3" required><label
