@@ -17,7 +17,10 @@ jobs:
       - name: Configurar cliente PostgreSQL
         run: |
           sudo apt-get update
-          sudo apt-get install --yes postgresql-client
+          sudo apt-get install --yes curl ca-certificates postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-17
 
       - name: Executar pg_dump
         env:
