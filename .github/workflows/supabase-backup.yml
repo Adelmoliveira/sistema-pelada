@@ -18,7 +18,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes curl ca-certificates postgresql-common
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+          printf '\n' | sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-17
 
