@@ -30,7 +30,13 @@ jobs:
             echo "O secret SUPABASE_DB_URL não está configurado."
             exit 1
           }
-          pg_dump "$SUPABASE_DB_URL" \
+          PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump
+          test -x "$PG_DUMP" || {
+            echo "Cliente PostgreSQL 17 não encontrado em $PG_DUMP."
+            exit 1
+          }
+          "$PG_DUMP" --version
+          "$PG_DUMP" "$SUPABASE_DB_URL" \
             --format=custom \
             --blobs \
             --no-owner \
