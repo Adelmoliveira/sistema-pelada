@@ -1,0 +1,43 @@
+name: Supabase Daily Backup
+
+on:
+  schedule:
+    # 03:00 UTC (00:00 no horário de Brasília durante o horário padrão)
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configurar cliente PostgreSQL
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Executar pg_dump
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          test -n "$SUPABASE_DB_URL" || {
+            echo "O secret SUPABASE_DB_URL não está configurado."
+            exit 1
+          }
+          pg_dump "$SUPABASE_DB_URL" \
+            --format=custom \
+            --blobs \
+            --no-owner \
+            --no-privileges \
+            --file="supabase_backup_$(date -u +%Y%m%d_%H%M%S).dump"
+
+      - name: Salvar backup como Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: supabase-backup-${{ github.run_id }}
+          path: '*.dump'
+          if-no-files-found: error
+          retention-days: 7
