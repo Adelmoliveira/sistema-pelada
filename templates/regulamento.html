@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}Regulamento do GPCTA{% endblock %}
+
+{% block content %}
+<style>
+  .regulation-page { max-width: 980px; margin: 0 auto; padding: 1rem 0 3rem; color: #173247; }
+  .regulation-header, .regulation-section { background: #fff; border-radius: 16px; box-shadow: 0 3px 14px rgba(20, 55, 80, .08); padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
+  .regulation-header { border-top: 5px solid #0b5d91; }
+  .regulation-logo { display: block; width: min(150px, 42vw); height: auto; max-height: 115px; object-fit: contain; margin: 0 auto .8rem; }
+  .regulation-header h1 { margin: 0 0 .35rem; font-size: clamp(1.65rem, 4vw, 2.35rem); }
+  .regulation-header p { margin: 0; color: #637888; font-size: 1.05rem; }
+  .regulation-toc { display: flex; gap: .55rem; overflow-x: auto; padding: .2rem 0 .7rem; margin-bottom: .35rem; scrollbar-width: thin; }
+  .regulation-toc a { flex: 0 0 auto; border: 1px solid #b6ccdb; border-radius: 999px; color: #075b91; padding: .5rem .75rem; text-decoration: none; background: #fff; font-size: .92rem; }
+  .regulation-toc a:hover, .regulation-toc a:focus { background: #eaf4fb; }
+  .regulation-section h2 { color: #075b91; margin: 0 0 .7rem; font-size: 1.35rem; }
+  .regulation-section h3 { margin: 1rem 0 .35rem; font-size: 1.08rem; }
+  .regulation-section p { line-height: 1.65; margin: .45rem 0; }
+  .regulation-section ol, .regulation-section ul { line-height: 1.65; padding-left: 1.35rem; margin: .45rem 0; }
+  .regulation-note { border-left: 4px solid #f0b429; background: #fff8df; color: #604b08; padding: .8rem 1rem; border-radius: 8px; margin: 1rem 0; }
+  .regulation-back { margin-top: .25rem; }
+  @media (max-width: 576px) {
+    .regulation-page { padding: .65rem .15rem 2rem; }
+    .regulation-header, .regulation-section { border-radius: 12px; padding: 1rem; }
+    .regulation-header p, .regulation-section p, .regulation-section li { font-size: .98rem; }
+    .regulation-toc { position: sticky; top: 0; z-index: 2; background: #f1f6f9; padding: .55rem 0; }
+  }
+</style>
+
+<div class="regulation-page">
+  <header class="regulation-header">
+    <img class="regulation-logo" src="{{ url_for('static', filename='logo-gpcta.jpeg') }}" alt="Logo original do GPCTA">
+    <h1>Regulamento do GPCTA</h1>
+    <p>Regulamento Interno · Grupo de Pelada do Departamento de Ciência e Tecnologia Aeroespacial</p>
+    <div class="regulation-note">Fundado em 17 de maio de 1977. Esta versão apresenta, em formato de leitura, o regulamento disponibilizado pela Diretoria.</div>
+    <a class="btn btn-outline-primary regulation-back" href="{{ url_for('football.client_panel') }}">Voltar para Minha pelada</a>
+  </header>
+
+  <nav class="regulation-toc" aria-label="Índice do regulamento">
+    <a href="#constituicao">Constituição</a><a href="#associados">Associados</a><a href="#peladas">Peladas</a>
+    <a href="#goleiros">Goleiros</a><a href="#comportamento">Comportamento</a><a href="#arbitros">Árbitros</a>
+    <a href="#normas">Normas gerais</a>
+  </nav>
+
+  <section id="constituicao" class="regulation-section">
+    <h2>Da constituição e do objetivo</h2>
+    <h3>Art. 1º</h3><p>O GPCTA é uma associação recreativa, sem fins lucrativos, fundada em 17 de maio de 1977.</p>
+    <h3>Art. 2º</h3><p>O grupo congrega Oficiais e Servidores Civis de Nível Superior do DCTA e seus convidados para a prática de futebol nas noites de quartas-feiras e nas tardes dos sábados.</p>
+    <h3>Art. 3º — Diretoria</h3><p>A Diretoria é constituída por Presidente, Diretor Executivo, Diretor de Infraestrutura, Tesoureiro e Diretor de Eventos Sociais. A Presidência e a Diretoria Executiva seguem os critérios de hierarquia previstos no regulamento; o Tesoureiro é escolhido entre os integrantes que se dispuserem à função. Os demais auxiliares e o Conselho Diretor são indicados pela Presidência.</p>
+    <p>Na ausência do Presidente e do Diretor Executivo, decisões funcionais ou disciplinares urgentes serão tomadas por consenso ou maioria dos membros da Diretoria presentes.</p>
+  </section>
+
+  <section id="associados" class="regulation-section">
+    <h2>Dos associados</h2>
+    <h3>Art. 4º</h3><p>Podem integrar o GPCTA Oficiais da Ativa ou da Reserva Remunerada do DCTA, Servidores Civis de Nível Superior do DCTA e convidados apresentados por um associado, que será seu padrinho e responsável pelas obrigações regulamentares. A admissão de convidados depende de ficha própria e análise da Diretoria.</p>
+    <p><strong>§ 1º</strong> Todos os associados devem pagar mensalidades e despesas determinadas pela Diretoria. A inadimplência implica inclusão na lista de devedores a partir do dia 15 do mês subsequente e impede a participação nas peladas até a quitação.</p>
+    <p><strong>§ 2º</strong> Ex-associados em visita podem, a critério da Diretoria, participar como convidados; o retorno definitivo poderá ter readmissão automática se aprovado pela Diretoria.</p>
+  </section>
+
+  <section id="peladas" class="regulation-section">
+    <h2>Das peladas</h2>
+    <h3>Art. 5º</h3><p>As peladas são realizadas, em princípio, às quartas-feiras e sábados, nos horários fixados pela Diretoria, com sorteio após a inscrição individual.</p>
+    <ul>
+      <li>Após o sorteio, a Diretoria (ou associado por ela designado) forma dois times pelo critério de equilíbrio.</li>
+      <li>Após a primeira bolinha, retardatários ficam como suplentes, sem prejuízo de quem participou do sorteio; é exigida presença física no sorteio.</li>
+      <li>Oficiais Generais e membros da Diretoria têm a prerrogativa prevista para a primeira pelada, respeitada a proporção por posição e o revezamento.</li>
+      <li>Capitães, prioritariamente membros da Diretoria, promovem mudanças na escalação quando necessário.</li>
+      <li>É obrigatório o uniforme definido pela Diretoria.</li>
+      <li>Substituições seguem a ordem de sorteio por posição. Não há reequilíbrio, salvo quando a troca fora da posição causar desequilíbrio evidente.</li>
+      <li>A duração é, em princípio, de 60 minutos (dois tempos de 30). Se não houver quórum para a partida seguinte, pode ser reduzida para dois tempos de 20 minutos.</li>
+      <li>O associado sorteado para partida posterior pode ocupar vaga na partida anterior em outra posição; nesse caso perde o direito à posição na partida para a qual foi sorteado.</li>
+      <li>Aplicam-se as regras da FIFA com as adaptações sobre impedimento e cobrança de lateral previstas no regulamento.</li>
+      <li>Cada partida tem dois árbitros, um para cada metade do campo. O “carrinho” não é tolerado e deve receber falta e cartão amarelo.</li>
+      <li>Os primeiros sorteados de cada setor podem ser reservas nas quartas-feiras, conforme as condições do regulamento.</li>
+    </ul>
+  </section>
+
+  <section id="goleiros" class="regulation-section">
+    <h2>Dos goleiros e substituições</h2>
+    <h3>Art. 6º</h3><p>O GPCTA admite associados para a posição de goleiro, isentos de mensalidade. Goleiros oficiais não atuam em outra posição, salvo completamento excepcional autorizado pela Diretoria.</p>
+    <ul>
+      <li>Na ausência de goleiro oficial, qualquer participante pode se candidatar, desde que manifeste a intenção na lista de sorteio.</li>
+      <li>Goleiros oficiais que chegarem uniformizados até o apito inicial têm direito de assumir a posição; os goleiros escalados permanecem no travessão até o fim da partida.</li>
+      <li>Em expulsão, cartão azul ou contusão, a posição pode ser ocupada por outro goleiro, reserva ou participante disponível, observada a ordem de preferência.</li>
+      <li>Para partidas posteriores, na falta de candidato, a responsabilidade segue o sorteado indicado no regulamento, excetuados árbitros e goleiros já responsáveis.</li>
+    </ul>
+    <h3>Art. 7º — Quantidade de peladas</h3><p>Havendo quórum, pode haver terceira ou quarta partida. A complementação prioriza participantes das partidas anteriores por posição e ordem de sorteio, e associados sorteados que ainda não tenham jogado. Substituições no primeiro tempo fazem perder a posição na partida sorteada; no segundo tempo, não.</p>
+  </section>
+
+  <section id="comportamento" class="regulation-section">
+    <h2>Do comportamento e das punições</h2>
+    <h3>Art. 8º</h3><p>As decisões dos árbitros são soberanas. Podem ser aplicadas faltas, advertências, falta técnica e cartões amarelo, azul ou vermelho, conforme a gravidade e as situações descritas no regulamento.</p>
+    <p>Faltas violentas, desrespeito, ofensas, recusa em retornar após punição e demais condutas estão sujeitas às sanções das Normas Disciplinares anexas.</p>
+    <h3>Art. 9º — Árbitros</h3><p>Na primeira partida, os árbitros são voluntários aprovados pela Diretoria. Nas partidas seguintes, a arbitragem segue a ordem dos últimos sorteados por posição, com as responsabilidades e penalidades previstas no regulamento.</p>
+  </section>
+
+  <section id="normas" class="regulation-section">
+    <h2>Disposições finais e normas gerais</h2>
+    <h3>Arts. 10 a 13</h3>
+    <ul>
+      <li><strong>Art. 10:</strong> a agressão física contra integrante do grupo, no âmbito ou fora do DCTA, acarreta exclusão do GPCTA.</li>
+      <li><strong>Art. 11:</strong> casos não previstos são decididos pela Diretoria em reunião ou, excepcionalmente, no momento do fato.</li>
+      <li><strong>Art. 12:</strong> qualquer membro pode propor por escrito a revisão do regulamento, com justificativa; a Diretoria decide por maioria simples dos presentes.</li>
+      <li><strong>Art. 13:</strong> as Normas Gerais e Normas Disciplinares anexas integram este regulamento.</li>
+    </ul>
+    <h3>Normas Disciplinares</h3>
+    <p>Durante as partidas, advertências são punidas com cartão amarelo; expulsão temporária com cartão azul (cinco minutos); cartão vermelho implica suspensão de um dia de pelada. Ofensas morais podem gerar de um a 60 dias de suspensão, conforme a gravidade, e agressão física pode resultar em suspensão de 90 dias até a expulsão do grupo.</p>
+    <p>No vestiário, faltar sem aviso à partida para a qual foi sorteado, faltar como reserva após aceitar, lavar chuteiras, ofender participante ou jogar lixo fora dos recipientes próprios sujeita o infrator às punições específicas previstas nas normas. Agressão física pode resultar em 90 dias de suspensão ou expulsão.</p>
+    <p>As punições podem ser agravadas, reduzidas ou anistiadas pela Presidência ou Diretoria conforme antecedentes, reincidência, agravantes e atenuantes. Casos não previstos serão analisados pela Presidência e comissão designada.</p>
+    <h3>Normas Gerais</h3>
+    <ul>
+      <li>A idade mínima para convidado integrar o GPCTA é de 40 anos completos.</li>
+      <li>Em fevereiro, o peladeiro pode requerer mudança de posição, informando posição atual, posição desejada e justificativa, desde que tenha ao menos quatro meses de participação; cabe à Diretoria deferir ou indeferir.</li>
+      <li>O time azul inicia no campo oposto aos vestiários e dá o pontapé inicial. O primeiro goleiro ocupa o gol mais próximo aos vestiários e troca de lado se participar da segunda partida.</li>
+      <li>No pênalti, o jogador beneficiado pode cobrar ou indicar quem o faça.</li>
+      <li>A primeira partida começa dez minutos após o fim da escalação no quadro; as seguintes, dez minutos após a anterior, sob fiscalização dos árbitros.</li>
+      <li>Se não houver terceiro jogo, pode haver “choradinha” de 30 minutos, obrigatória quando alguém presente ao sorteio ainda não jogou, observadas as regras de aprovação, trocas e revezamento de goleiros.</li>
+    </ul>
+    <div class="regulation-note">Em caso de dúvida ou conflito de interpretação, procure a Diretoria do GPCTA. A versão oficial assinada permanece sob responsabilidade da Diretoria.</div>
+  </section>
+</div>
+{% endblock %}
