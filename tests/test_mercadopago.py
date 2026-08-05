@@ -762,6 +762,83 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(denied.status_code, 302)
             self.assertEqual(denied.headers["Location"], "/")
 
+    def test_client_can_create_maintenance_request_without_internal_access_error(self):
+        """A abertura pelo peladeiro não deve redirecionar para detalhes internos."""
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE players SET war_name='Peladeiro' WHERE id=?", (self.player_id,))
+            db.execute(
+                "UPDATE users SET role='client', player_id=? WHERE id=?",
+                (self.player_id, self.user_id),
+            )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        response = self.client.post(
+            "/infra/maintenance/new",
+            data={
+                "title": "Lâmpada queimada",
+                "area_code": "BAR",
+                "location": "Balcão",
+                "category": "electrical",
+                "priority": "medium",
+                "description": "A lâmpada não acende.",
+                "occurred_on": "2026-08-05",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("Chamado MAN-", page)
+        self.assertNotIn("Seu usuário não possui acesso a essa funcionalidade.", page)
+        with app.app_context():
+            request_row = get_db().execute(
+                "SELECT created_by,status FROM maintenance_requests WHERE created_by=? ORDER BY id DESC LIMIT 1",
+                (self.user_id,),
+            ).fetchone()
+            self.assertIsNotNone(request_row)
+            self.assertEqual(request_row["status"], "open")
+            history_row = get_db().execute(
+                "SELECT status,observation FROM maintenance_request_history WHERE request_id=(SELECT id FROM maintenance_requests WHERE created_by=? ORDER BY id DESC LIMIT 1)",
+                (self.user_id,),
+            ).fetchone()
+            self.assertEqual((history_row["status"], history_row["observation"]), ("open", ""))
+
+        mine = self.client.get("/infra/maintenance/mine")
+        self.assertEqual(mine.status_code, 200)
+        mine_page = mine.get_data(as_text=True)
+        self.assertIn("Meus chamados", mine_page)
+        self.assertIn("Lâmpada queimada", mine_page)
+        self.assertIn("Aberto", mine_page)
+        self.assertIn("Responsável", mine_page)
+        self.assertNotIn("/edit", mine_page)
+
+        duplicate = self.client.post(
+            "/infra/maintenance/new",
+            data={
+                "title": "  lâmpada QUEIMADA ",
+                "area_code": "BAR",
+                "location": "Outro local",
+                "category": "electrical",
+                "priority": "high",
+                "description": "Outro relato para o mesmo problema.",
+                "occurred_on": "2026-08-05",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(duplicate.status_code, 200)
+        duplicate_page = duplicate.get_data(as_text=True)
+        self.assertIn("Já existe o chamado MAN-", duplicate_page)
+        self.assertIn("aberto por Peladeiro", duplicate_page)
+        with app.app_context():
+            self.assertEqual(
+                get_db().execute(
+                    "SELECT COUNT(*) total FROM maintenance_requests WHERE created_by=?", (self.user_id,)
+                ).fetchone()["total"],
+                1,
+            )
+
     def test_material_crud_with_optimized_photo(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id

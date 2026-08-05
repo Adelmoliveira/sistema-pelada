@@ -376,13 +376,13 @@ CREATE TABLE IF NOT EXISTS maintenance_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT NOT NULL UNIQUE,
     title TEXT NOT NULL,
-    area_code TEXT NOT NULL CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN')),
+    area_code TEXT NOT NULL CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','EXT')),
     location TEXT DEFAULT '',
     category TEXT NOT NULL CHECK(category IN ('electrical','plumbing','civil','painting','equipment','cleaning','other')),
     priority TEXT NOT NULL CHECK(priority IN ('low','medium','high','urgent')),
     description TEXT NOT NULL,
     responsible TEXT DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','analysis','in_progress','waiting_material','completed')),
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','analysis','in_progress','waiting_material','completed','cancelled')),
     occurred_on TEXT NOT NULL,
     due_on TEXT,
     resolution TEXT DEFAULT '',
@@ -404,6 +404,16 @@ CREATE TABLE IF NOT EXISTS maintenance_photos (
 CREATE INDEX IF NOT EXISTS idx_maintenance_status ON maintenance_requests(status);
 CREATE INDEX IF NOT EXISTS idx_maintenance_area ON maintenance_requests(area_code);
 CREATE INDEX IF NOT EXISTS idx_maintenance_photos_request ON maintenance_photos(request_id);
+CREATE TABLE IF NOT EXISTS maintenance_request_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES maintenance_requests(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    responsible TEXT DEFAULT '',
+    observation TEXT DEFAULT '',
+    changed_by INTEGER REFERENCES users(id),
+    changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_history_request ON maintenance_request_history(request_id, changed_at);
 CREATE TABLE IF NOT EXISTS membership_payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL REFERENCES players(id),
@@ -1081,7 +1091,8 @@ def migrate_maintenance_areas(connection):
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='maintenance_requests'"
     ).fetchone()
-    if not row or "'EXT'" in (row[0] or ""):
+    sql = (row[0] or "") if row else ""
+    if row and "'EXT'" in sql and "'cancelled'" in sql:
         return
     connection.commit()
     connection.execute("PRAGMA foreign_keys = OFF")
@@ -1099,7 +1110,7 @@ def migrate_maintenance_areas(connection):
             priority TEXT NOT NULL CHECK(priority IN ('low','medium','high','urgent')),
             description TEXT NOT NULL,
             responsible TEXT DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','analysis','in_progress','waiting_material','completed')),
+            status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','analysis','in_progress','waiting_material','completed','cancelled')),
             occurred_on TEXT NOT NULL,
             due_on TEXT,
             resolution TEXT DEFAULT '',
@@ -1127,6 +1138,16 @@ def migrate_maintenance_areas(connection):
         CREATE INDEX IF NOT EXISTS idx_maintenance_status ON maintenance_requests(status);
         CREATE INDEX IF NOT EXISTS idx_maintenance_area ON maintenance_requests(area_code);
         CREATE INDEX IF NOT EXISTS idx_maintenance_photos_request ON maintenance_photos(request_id);
+        CREATE TABLE IF NOT EXISTS maintenance_request_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL REFERENCES maintenance_requests(id) ON DELETE CASCADE,
+            status TEXT NOT NULL,
+            responsible TEXT DEFAULT '',
+            observation TEXT DEFAULT '',
+            changed_by INTEGER REFERENCES users(id),
+            changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_maintenance_history_request ON maintenance_request_history(request_id, changed_at);
         COMMIT;
     """)
     connection.execute("PRAGMA foreign_keys = ON")
@@ -1144,6 +1165,14 @@ def init_sqlite(wrapper):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bar_credit_audit_player ON bar_credit_audit(player_id,created_at)")
     conn.commit()
     migrate_maintenance_areas(conn)
+    conn.execute("""CREATE TABLE IF NOT EXISTS maintenance_request_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id INTEGER NOT NULL REFERENCES maintenance_requests(id) ON DELETE CASCADE,
+        status TEXT NOT NULL, responsible TEXT DEFAULT '', observation TEXT DEFAULT '',
+        changed_by INTEGER REFERENCES users(id), changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_maintenance_history_request ON maintenance_request_history(request_id, changed_at)")
+    conn.commit()
     columns = {row[1] for row in conn.execute("PRAGMA table_info(players)")}
     if "email" not in columns:
         conn.execute("ALTER TABLE players ADD COLUMN email TEXT DEFAULT ''")
@@ -1664,6 +1693,18 @@ def init_postgres(wrapper):
     )""")
     wrapper.execute("ALTER TABLE maintenance_requests DROP CONSTRAINT IF EXISTS maintenance_requests_area_code_check")
     wrapper.execute("ALTER TABLE maintenance_requests ADD CONSTRAINT maintenance_requests_area_code_check CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','EXT'))")
+    wrapper.execute("ALTER TABLE maintenance_requests DROP CONSTRAINT IF EXISTS maintenance_requests_status_check")
+    wrapper.execute("ALTER TABLE maintenance_requests ADD CONSTRAINT maintenance_requests_status_check CHECK(status IN ('open','analysis','in_progress','waiting_material','completed','cancelled'))")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS maintenance_request_history (
+        id SERIAL PRIMARY KEY,
+        request_id INTEGER NOT NULL REFERENCES maintenance_requests(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        responsible TEXT DEFAULT '',
+        observation TEXT DEFAULT '',
+        changed_by INTEGER REFERENCES users(id),
+        changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_maintenance_history_request ON maintenance_request_history(request_id, changed_at)")
     wrapper.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_mp_order ON sales(mercadopago_order_id) WHERE mercadopago_order_id IS NOT NULL")
     wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_external_reference ON sales(external_reference) WHERE external_reference IS NOT NULL")
