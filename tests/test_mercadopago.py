@@ -432,7 +432,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Parabéns, Peladeiro Aniversariante!", sidebar)
         self.assertIn("muitas resenhas e gols na nossa pelada", sidebar)
         self.assertIn("Aniversariantes do mês", sidebar)
-        self.assertIn('<span>Venda rápida</span>', sidebar)
+        self.assertIn('<span>Compra rápida</span>', sidebar)
         self.assertNotIn('<span>Bar</span>', sidebar)
 
     def test_female_birthday_message_uses_name_without_peladeiro(self):
@@ -1252,7 +1252,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('id="pwa-install"', html)
         for hidden_module in ("Bar", "Financeiro", "Administração"):
             self.assertNotIn(f"<span>{hidden_module}</span>", html)
-        for hidden_link in ("Caixa", "Conferir Pix", "Estoque", "Produtos", "Pedidos", "Peladeiros", "Relatórios", "Usuários", "Venda rápida"):
+        for hidden_link in ("Caixa", "Conferir Pix", "Estoque", "Produtos", "Pedidos", "Peladeiros", "Relatórios", "Usuários", "Venda rápida", "Compra rápida"):
             self.assertNotIn(f">{hidden_link}</a>", html)
         self.assertEqual(self.client.get("/infra/materials").status_code, 200)
         self.assertEqual(self.client.get("/infra/maintenance").status_code, 200)

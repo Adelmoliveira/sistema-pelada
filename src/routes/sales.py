@@ -218,7 +218,7 @@ def sale():
                 notify_low_balance(db, player_id, low_credit_balance)
             
             flash(f"Pedido registrado com sucesso! Pedido #{cur.lastrowid}.", "success")
-            return redirect(url_for("sales.sale"), code=303)
+            return redirect(url_for("sales.sale", cart_cleared=1), code=303)
         except ValueError as exc:
             flash(str(exc), "danger")
         except Exception as exc:
@@ -338,7 +338,7 @@ def guest_event_sale(token):
                         raise ValueError("O estoque mudou durante a venda. Tente novamente.")
             notify_low_stock(db, requested.keys())
             flash(f"Pedido registrado com sucesso! Pedido #{cur.lastrowid}.", "success")
-            return redirect(url_for("sales.guest_event_sale", token=token), code=303)
+            return redirect(url_for("sales.guest_event_sale", token=token, cart_cleared=1), code=303)
         except ValueError as exc:
             flash(str(exc), "danger")
         except Exception as exc:

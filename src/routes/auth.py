@@ -623,6 +623,13 @@ def my_purchases():
     )
 
 
+@bp.get("/regulamento")
+@roles_allowed("client")
+def regulation():
+    """Display the GPCTA internal regulation in a mobile-friendly HTML page."""
+    return render_template("regulamento.html")
+
+
 @bp.post("/minha-conta/senha")
 @roles_allowed("client")
 def change_my_password():
