@@ -512,6 +512,11 @@ CREATE TABLE IF NOT EXISTS push_announcements (
     created_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_items_sale ON sale_items(sale_id);
 
@@ -546,15 +551,6 @@ CREATE TABLE IF NOT EXISTS football_participants (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(sumula_id, player_id)
 );
-CREATE TABLE IF NOT EXISTS football_responsibles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
-    match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL,
-    player_id INTEGER REFERENCES players(id),
-    responsibility_type TEXT NOT NULL CHECK(responsibility_type IN ('SORTEIO','SUMULA','QUADRO','GOLEIRO_VOLUNTARIO','ARBITRO_VOLUNTARIO','OUTRO')),
-    observation TEXT DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
 CREATE TABLE IF NOT EXISTS football_matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
@@ -566,6 +562,15 @@ CREATE TABLE IF NOT EXISTS football_matches (
     status TEXT NOT NULL DEFAULT 'PLANEJADA' CHECK(status IN ('PLANEJADA','EM_ANDAMENTO','ENCERRADA','CANCELADA')),
     observation TEXT DEFAULT '',
     UNIQUE(sumula_id, number)
+);
+CREATE TABLE IF NOT EXISTS football_responsibles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sumula_id INTEGER NOT NULL REFERENCES football_sumulas(id) ON DELETE CASCADE,
+    match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL,
+    player_id INTEGER REFERENCES players(id),
+    responsibility_type TEXT NOT NULL CHECK(responsibility_type IN ('SORTEIO','SUMULA','QUADRO','GOLEIRO_VOLUNTARIO','ARBITRO_VOLUNTARIO','OUTRO')),
+    observation TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS football_participant_matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1487,6 +1492,11 @@ def init_postgres(wrapper):
     
     # Run migration to add password_required if not exists in postgres
     wrapper.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_required INTEGER NOT NULL DEFAULT 1")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS password_reset_tokens (
         id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         token_hash TEXT NOT NULL UNIQUE, expires_at TIMESTAMP NOT NULL, used_at TIMESTAMP,

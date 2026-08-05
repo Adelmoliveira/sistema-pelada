@@ -3,6 +3,12 @@ import sqlite3
 import psycopg2
 from psycopg2 import sql
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv('.env.local')
+except ImportError:
+    pass
+
 SQLITE_DB = 'bar.db'
 POSTGRES_URL = os.environ.get('DATABASE_URL')
 
@@ -54,9 +60,22 @@ CREATE TABLE IF NOT EXISTS products (
     active INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS bar_events (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    event_date TEXT DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    closed_at TIMESTAMP,
+    closed_by INTEGER REFERENCES users(id)
+);
 CREATE TABLE IF NOT EXISTS sales (
     id SERIAL PRIMARY KEY,
-    player_id INTEGER NOT NULL REFERENCES players(id),
+    player_id INTEGER REFERENCES players(id),
+    event_id INTEGER REFERENCES bar_events(id),
+    guest_name TEXT NOT NULL DEFAULT '',
     payment_method TEXT NOT NULL CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia')),
     total_cents INTEGER NOT NULL,
     paid INTEGER NOT NULL DEFAULT 1,
@@ -99,7 +118,9 @@ CREATE TABLE IF NOT EXISTS membership_months (
 """
 cur.execute(schema_sql)
 
-for table in ['users','players','products','sales','sale_items','restocks','membership_payments','membership_months']:
+# Import parent tables before dependent tables.  In particular, users.player_id
+# and all sales/membership rows reference players.
+for table in ['players','users','products','bar_events','sales','sale_items','restocks','membership_payments','membership_months']:
     rows = sqlite_conn.execute(f'SELECT * FROM {table}').fetchall()
     if not rows:
         continue
@@ -114,6 +135,16 @@ for table in ['users','players','products','sales','sale_items','restocks','memb
     for row in rows:
         values = [row[col] for col in columns]
         cur.execute(insert_sql, values)
+
+    # Keep SERIAL sequences ahead of imported primary keys so subsequent
+    # inserts do not collide with IDs copied from SQLite.
+    if 'id' in columns:
+        cur.execute(
+            "SELECT setval(pg_get_serial_sequence(%s, 'id'), "
+            "GREATEST(COALESCE(MAX(id), 1), 1), true) FROM "
+            + sql.Identifier(table).as_string(cur),
+            (table,),
+        )
 
 pg_conn.commit()
 print('Migração concluída com sucesso.')

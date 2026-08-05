@@ -1,6 +1,17 @@
 {% extends 'base.html' %}
 {% block title %}Minha conta · PELADEIROS GPCTA{% endblock %}
 {% block content %}
+{% if current_user.role == 'manager' %}
+<div class="row justify-content-center"><div class="col-md-9 col-lg-8">
+  <div class="d-flex align-items-center gap-3 mb-3"><a href="{{url_for('finance.dashboard')}}" class="btn btn-outline-secondary">← Voltar</a><h1 class="h3 mb-0">Minha conta</h1></div>
+  <div class="card shadow-sm"><div class="card-body p-4">
+    <h2 class="h5">Logo do sistema</h2><p class="text-muted">Envie a arte comemorativa dos 50 anos para usar no login, menu e telas públicas.</p>
+    <div class="text-center mb-3"><img src="{{url_for('auth.branding_logo')}}" alt="Logo ativa" style="max-width:260px;max-height:150px;object-fit:contain" class="border rounded p-2"></div>
+    <form method="post" action="{{url_for('auth.update_branding_logo')}}" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><label class="form-label">Nova logo comemorativa</label><input type="file" name="logo" class="form-control" accept="image/jpeg,image/png,image/webp" required><div class="form-text">JPG, PNG ou WebP, até 4 MB.</div><button class="btn btn-primary mt-3">Salvar logo</button></form>
+    {% if branding_logo_active %}<form method="post" action="{{url_for('auth.update_branding_logo')}}" class="mt-3"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="action" value="reset"><button class="btn btn-outline-secondary">Restaurar logo padrão</button></form>{% endif %}
+  </div></div>
+</div></div>
+{% else %}
 <div class="row justify-content-center"><div class="col-md-9 col-lg-8">
   <div class="d-flex align-items-center gap-3 mb-3"><a href="{{url_for('sales.sale')}}" class="btn btn-outline-secondary">← Voltar</a><h1 class="h3 mb-0">Minha conta</h1></div>
   <div class="card shadow-sm"><div class="card-body p-4">
@@ -42,6 +53,7 @@
   </div></div>
   <div class="card shadow-sm mt-4"><div class="card-body p-4"><h2 class="h5">Notificações no celular</h2><p class="text-muted small">Receba avisos de mensalidade, pagamentos e comunicados da pelada neste dispositivo.</p><button type="button" class="btn {{'btn-outline-danger' if push_enabled else 'btn-outline-primary'}}" id="enable-push" data-enabled="{{'1' if push_enabled else '0'}}">{{'Desativar notificações' if push_enabled else 'Ativar notificações'}}</button><span class="small ms-2" id="push-status" aria-live="polite"></span></div></div>
 </div></div>
+{% endif %}
 <script>
 (() => {
   const cep = document.getElementById('postal-code');
