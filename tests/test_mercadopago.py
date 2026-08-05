@@ -286,6 +286,28 @@ class MercadoPagoFlowTest(unittest.TestCase):
             player = get_db().execute("SELECT thumbnail_data FROM players WHERE id=?", (self.player_id,)).fetchone()
             self.assertTrue(player["thumbnail_data"].startswith("data:image/jpeg;base64,"))
 
+    def test_manager_can_update_branding_logo(self):
+        """The branding settings table is keyed by text, not a numeric id."""
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        image = BytesIO()
+        Image.new("RGB", (48, 48), (12, 86, 140)).save(image, format="PNG")
+        image.seek(0)
+        response = self.client.post(
+            "/minha-conta/logo",
+            data={"logo": (image, "logo.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 302)
+        with app.app_context():
+            setting = get_db().execute(
+                "SELECT value FROM app_settings WHERE key=?", ("branding_logo_data",)
+            ).fetchone()
+            self.assertTrue(setting["value"].startswith("data:image/jpeg;base64,"))
+        logo = self.client.get("/branding/logo")
+        self.assertEqual(logo.status_code, 200)
+        self.assertTrue(logo.data.startswith(b"\xff\xd8"))
+
     def test_product_photo_and_food_category_are_available_in_quick_sale(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
@@ -552,7 +574,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertNotIn('class="navbar ', page)
         self.assertNotIn('class="sidebar-user"', page)
         self.assertIn('class="topbar-account"', page)
-        self.assertIn('<strong>Teste</strong><small>Gerente</small>', page)
+        # The account block now wraps the manager name in a link so it is
+        # reachable from the top bar as well as the sidebar.
+        self.assertIn('<strong>Teste</strong>', page)
+        self.assertIn('<small>Gerente</small>', page)
         self.assertEqual(page.count('<strong>Teste</strong>'), 1)
         self.assertEqual(page.count('>Relatórios</a>'), 0)
         finance_page = self.client.get("/finance").get_data(as_text=True)

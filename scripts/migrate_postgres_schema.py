@@ -11,6 +11,14 @@ intentionally not called by ``app.py`` or by Vercel request handlers.
 import os
 import sys
 
+try:
+    from dotenv import load_dotenv
+    # Load local variables without requiring users to `source` the file.
+    # This safely handles tokens/passwords containing shell metacharacters.
+    load_dotenv(".env.local")
+except ImportError:
+    pass
+
 from src.db import run_postgres_migrations
 
 

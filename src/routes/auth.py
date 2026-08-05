@@ -1,10 +1,11 @@
 import os
 import hashlib
 import secrets
+import base64
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from urllib.parse import urlsplit
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app, jsonify
+from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app, jsonify, Response, send_from_directory
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 from src.db import get_db
@@ -99,6 +100,29 @@ def roles_allowed(*roles):
             return view(*args, **kwargs)
         return wrapped
     return decorator
+
+
+@bp.get("/branding/logo")
+def branding_logo():
+    """Serve a manager-selected logo, falling back to the standard GPCTA logo."""
+    try:
+        row = get_db().execute("SELECT value FROM app_settings WHERE key=?", ("branding_logo_data",)).fetchone()
+        data = row["value"] if row and row["value"] else ""
+        if data.startswith("data:") and "," in data:
+            header, payload = data.split(",", 1)
+            mime = header[5:].split(";", 1)[0] or "image/jpeg"
+            response = Response(base64.b64decode(payload), mimetype=mime)
+            # A logo pode ser trocada pelo gerente; não mantenha uma versão
+            # antiga no navegador após o upload.
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            return response
+    except Exception as exc:
+        current_app.logger.warning("Logo personalizada indisponível; usando padrão: %s", exc)
+    # Keep compatibility with the Flask versions used locally and on Vercel;
+    # older ``send_from_directory`` releases do not accept ``max_age``.
+    response = send_from_directory(current_app.static_folder, "logo-gpcta.jpeg")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
 
 @bp.route("/setup", methods=["GET", "POST"])
 def setup():
@@ -362,9 +386,19 @@ def clear_notifications_inbox():
 
 
 @bp.route("/minha-conta", methods=["GET", "POST"])
-@roles_allowed("client")
+@roles_allowed("client", "manager")
 def my_account():
     db = get_db()
+    if g.user["role"] == "manager":
+        try:
+            row = db.execute("SELECT value FROM app_settings WHERE key=?", ("branding_logo_data",)).fetchone()
+        except Exception as exc:
+            # Older databases may not have received the explicit app_settings
+            # migration yet; keep the account page usable with the default logo.
+            db.rollback()
+            current_app.logger.warning("Configuração de logo ainda não migrada: %s", exc)
+            row = None
+        return render_template("my_account.html", player=None, branding_logo_active=bool(row and row["value"]))
     player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchone()
     if not player:
         flash("Seu usuário ainda não está vinculado a um peladeiro.", "danger")
@@ -450,6 +484,43 @@ def my_account():
         service_medals=service_medals(player["football_join_date"]),
         push_enabled=push_enabled,
     )
+
+
+@bp.post("/minha-conta/logo")
+@roles_allowed("manager")
+def update_branding_logo():
+    db = get_db()
+    try:
+        if request.form.get("action") == "reset":
+            db.execute("DELETE FROM app_settings WHERE key=?", ("branding_logo_data",))
+            db.commit()
+            flash("Logo padrão restaurada.", "success")
+            return redirect(url_for("auth.my_account"))
+        upload = request.files.get("logo")
+        if not upload or not upload.filename:
+            raise ValueError("Selecione uma imagem para enviar.")
+        processed = process_material_photo(upload)
+        if not processed:
+            raise ValueError("A imagem escolhida não é válida. Use JPG, PNG ou WebP de até 4 MB.")
+        logo_data, _thumbnail = processed
+        # ``DbWrapper`` adds ``RETURNING id`` to INSERTs for legacy tables.
+        # app_settings is keyed by ``key`` and intentionally has no numeric id,
+        # so provide the correct RETURNING clause explicitly for both SQLite
+        # and PostgreSQL.
+        db.execute("""INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
+            RETURNING key""",
+            ("branding_logo_data", logo_data))
+        db.commit()
+        flash("Logo comemorativa atualizada com sucesso.", "success")
+    except ValueError as exc:
+        db.rollback()
+        flash(str(exc), "danger")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.exception("Erro ao atualizar logo institucional: %s", exc)
+        flash("Não foi possível atualizar a logo.", "danger")
+    return redirect(url_for("auth.my_account"))
 
 
 @bp.get("/minhas-compras")
