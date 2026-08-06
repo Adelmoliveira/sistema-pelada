@@ -344,8 +344,13 @@ def request_detail(request_id):
 def my_requests():
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM maintenance_requests WHERE created_by=? ORDER BY id DESC",
-        (g.user["id"],),
+        """SELECT mr.*
+           FROM maintenance_requests mr
+           LEFT JOIN users creator ON creator.id=mr.created_by
+           WHERE mr.created_by=?
+              OR (? IS NOT NULL AND creator.player_id=?)
+           ORDER BY mr.id DESC""",
+        (g.user["id"], g.user["player_id"], g.user["player_id"]),
     ).fetchall()
     histories = {}
     for item in rows:

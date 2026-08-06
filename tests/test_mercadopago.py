@@ -814,6 +814,39 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Responsável", mine_page)
         self.assertNotIn("/edit", mine_page)
 
+        # Chamados antigos podem ter sido gravados por outro registro de
+        # usuário, mas ainda pertencem ao mesmo peladeiro. Eles devem aparecer
+        # em "Meus chamados" pelo vínculo users.player_id.
+        with app.app_context():
+            db = get_db()
+            legacy_user = db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("peladeiro-legado", "Peladeiro legado", "hash", self.player_id),
+            )
+            legacy_user_id = legacy_user.lastrowid
+            db.execute(
+                """INSERT INTO maintenance_requests
+                   (code,title,area_code,location,category,priority,description,
+                    occurred_on,created_by)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    "MAN-LEGACY-0001",
+                    "Chamado antigo",
+                    "BAR",
+                    "Balcão",
+                    "electrical",
+                    "medium",
+                    "Registro criado antes da conta atual.",
+                    "2026-08-01",
+                    legacy_user_id,
+                ),
+            )
+            db.commit()
+
+        mine_after_legacy = self.client.get("/infra/maintenance/mine")
+        self.assertEqual(mine_after_legacy.status_code, 200)
+        self.assertIn("Chamado antigo", mine_after_legacy.get_data(as_text=True))
+
         duplicate = self.client.post(
             "/infra/maintenance/new",
             data={
