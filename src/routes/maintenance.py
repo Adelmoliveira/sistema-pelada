@@ -200,6 +200,19 @@ def _requester_name():
 @roles_allowed("manager", "infra")
 def requests_list():
     rows, selected, query = _request_rows(get_db())
+    today_date = local_today()
+    display_rows = []
+    for row in rows:
+        item = dict(row)
+        if item["status"] not in ("completed", "cancelled"):
+            try:
+                opened_on = date.fromisoformat(str(item["created_at"])[:10])
+                item["open_days"] = max(0, (today_date - opened_on).days)
+            except (TypeError, ValueError):
+                item["open_days"] = 0
+        else:
+            item["open_days"] = None
+        display_rows.append(item)
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
@@ -209,7 +222,7 @@ def requests_list():
     page = min(page, pages)
     context = _template_context()
     context.update(
-        requests=rows[(page - 1) * per_page:page * per_page], total=len(rows),
+        requests=display_rows[(page - 1) * per_page:page * per_page], total=len(display_rows),
         selected=selected, query=query, page=page, pages=pages, today=local_today().isoformat(),
     )
     return render_template("maintenance_list.html", **context)
