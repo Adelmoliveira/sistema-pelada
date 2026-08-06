@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS products (
     supplier_email TEXT DEFAULT '',
     photo_data TEXT DEFAULT '',
     thumbnail_data TEXT DEFAULT '',
+    expiry_date TEXT DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -153,6 +154,9 @@ CREATE TABLE IF NOT EXISTS bar_credit_accounts (
     low_balance_notified INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ,last_push_at TEXT
+    ,last_push_status TEXT NOT NULL DEFAULT 'never'
+    ,last_push_error TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS bar_credit_topups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -475,6 +479,7 @@ CREATE TABLE IF NOT EXISTS reminder_settings (
     schedule_day INTEGER NOT NULL DEFAULT 5 CHECK(schedule_day BETWEEN 1 AND 28),
     subject TEXT NOT NULL,
     body TEXT NOT NULL,
+    body_html TEXT DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS reminder_dispatches (
@@ -530,6 +535,25 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS tribute_settings (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    title TEXT NOT NULL DEFAULT 'PELADEIROS GPCTA',
+    body TEXT NOT NULL DEFAULT '🗣️ VEEENHAAAMMM...',
+    body_html TEXT NOT NULL DEFAULT '🗣️ VEEENHAAAMMM...',
+    image_data TEXT NOT NULL DEFAULT '',
+    updated_by INTEGER REFERENCES users(id),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO tribute_settings(id) VALUES(1);
+CREATE TABLE IF NOT EXISTS tribute_schedules (
+    weekday INTEGER PRIMARY KEY CHECK(weekday BETWEEN 0 AND 6),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    hour INTEGER NOT NULL DEFAULT 12 CHECK(hour BETWEEN 0 AND 23),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO tribute_schedules(weekday,enabled,hour) VALUES(2,1,17);
+INSERT OR IGNORE INTO tribute_schedules(weekday,enabled,hour) VALUES(5,1,15);
 CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_items_sale ON sale_items(sale_id);
 
@@ -1227,6 +1251,32 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE push_announcements ADD COLUMN status TEXT NOT NULL DEFAULT 'ENVIADO'")
         conn.commit()
 
+    subscription_columns = {row[1] for row in conn.execute("PRAGMA table_info(push_subscriptions)")}
+    for column, definition in (
+        ("last_push_at", "TEXT"),
+        ("last_push_status", "TEXT NOT NULL DEFAULT 'never'"),
+        ("last_push_error", "TEXT DEFAULT ''"),
+    ):
+        if column not in subscription_columns:
+            conn.execute(f"ALTER TABLE push_subscriptions ADD COLUMN {column} {definition}")
+    if "body_html" not in push_inbox_columns:
+        conn.execute("ALTER TABLE push_inbox ADD COLUMN body_html TEXT DEFAULT ''")
+    product_columns = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
+    if "expiry_date" not in product_columns:
+        conn.execute("ALTER TABLE products ADD COLUMN expiry_date TEXT DEFAULT ''")
+    conn.execute("""CREATE TABLE IF NOT EXISTS tribute_settings (
+        id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 1,
+        title TEXT NOT NULL DEFAULT 'PELADEIROS GPCTA', body TEXT NOT NULL DEFAULT '🗣️ VEEENHAAAMMM...',
+        body_html TEXT NOT NULL DEFAULT '🗣️ VEEENHAAAMMM...', image_data TEXT NOT NULL DEFAULT '',
+        updated_by INTEGER REFERENCES users(id), updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("INSERT OR IGNORE INTO tribute_settings(id) VALUES(1)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS tribute_schedules (
+        weekday INTEGER PRIMARY KEY CHECK(weekday BETWEEN 0 AND 6), enabled INTEGER NOT NULL DEFAULT 0,
+        hour INTEGER NOT NULL DEFAULT 12 CHECK(hour BETWEEN 0 AND 23), updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("INSERT OR IGNORE INTO tribute_schedules(weekday,enabled,hour) VALUES(2,1,17)")
+    conn.execute("INSERT OR IGNORE INTO tribute_schedules(weekday,enabled,hour) VALUES(5,1,15)")
+    conn.commit()
+
     player_columns = {row[1] for row in conn.execute("PRAGMA table_info(players)")}
     if "historical_only" not in player_columns:
         conn.execute("ALTER TABLE players ADD COLUMN historical_only INTEGER NOT NULL DEFAULT 0")
@@ -1531,6 +1581,10 @@ def init_postgres(wrapper):
     
     for stmt in pg_schema.split(';'):
         stmt_clean = stmt.strip()
+        # SQLite seed statements are reapplied below with PostgreSQL's
+        # idempotent ON CONFLICT syntax after their tables exist.
+        if stmt_clean.upper().startswith("INSERT OR IGNORE"):
+            continue
         if stmt_clean:
             wrapper.execute(stmt_clean)
     
@@ -1555,11 +1609,27 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE reminder_settings ADD COLUMN IF NOT EXISTS push_enabled INTEGER NOT NULL DEFAULT 1")
     wrapper.execute("ALTER TABLE push_inbox ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE push_announcements ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ENVIADO'")
+    wrapper.execute("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS last_push_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS last_push_status TEXT NOT NULL DEFAULT 'never'")
+    wrapper.execute("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS last_push_error TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE push_inbox ADD COLUMN IF NOT EXISTS body_html TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS historical_only INTEGER NOT NULL DEFAULT 0")
     wrapper.execute("ALTER TABLE football_goals ADD COLUMN IF NOT EXISTS own_goal INTEGER NOT NULL DEFAULT 0")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS expiry_date TEXT DEFAULT ''")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS tribute_settings (
+        id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 1,
+        title TEXT NOT NULL DEFAULT 'PELADEIROS GPCTA', body TEXT NOT NULL DEFAULT '🗣️ VEEENHAAAMMM...',
+        body_html TEXT NOT NULL DEFAULT '🗣️ VEEENHAAAMMM...', image_data TEXT NOT NULL DEFAULT '',
+        updated_by INTEGER REFERENCES users(id), updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    wrapper.execute("INSERT INTO tribute_settings(id) VALUES(1) ON CONFLICT(id) DO NOTHING")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS tribute_schedules (
+        weekday INTEGER PRIMARY KEY CHECK(weekday BETWEEN 0 AND 6), enabled INTEGER NOT NULL DEFAULT 0,
+        hour INTEGER NOT NULL DEFAULT 12 CHECK(hour BETWEEN 0 AND 23), updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    wrapper.execute("INSERT INTO tribute_schedules(weekday,enabled,hour) VALUES(2,1,17) ON CONFLICT(weekday) DO NOTHING RETURNING weekday")
+    wrapper.execute("INSERT INTO tribute_schedules(weekday,enabled,hour) VALUES(5,1,15) ON CONFLICT(weekday) DO NOTHING RETURNING weekday")
     wrapper.execute("ALTER TABLE bar_restock_request_items ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''")
     wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS workflow_status TEXT NOT NULL DEFAULT 'PENDENTE'")
     wrapper.execute("UPDATE bar_restock_requests SET workflow_status=status WHERE workflow_status='PENDENTE' AND status<>'PENDENTE'")

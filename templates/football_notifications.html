@@ -22,8 +22,8 @@
           </div>
           <div class="mb-3">
             <label class="form-label" for="notification-body">Mensagem</label>
-            <textarea class="form-control" id="notification-body" name="body" rows="5" maxlength="500" required placeholder="Digite a mensagem que será exibida no celular.">{{draft.body if draft else ''}}</textarea>
-            <div class="form-text">Até 500 caracteres.</div>
+            <textarea class="form-control" id="notification-body" name="body" rows="5" maxlength="800" required placeholder="Digite a mensagem que será exibida no celular.">{{draft.body if draft else ''}}</textarea>
+            <div class="form-text">Até 800 caracteres.</div>
           </div>
           <div class="mb-3">
             <label class="form-label" for="notification-audience">Público</label>
@@ -101,4 +101,20 @@
     </section>
   </div>
 </div>
+<div class="row g-4 mt-1">
+  <div class="col-12 col-xl-5"><section class="card shadow-sm border-info"><div class="card-body">
+    <h2 class="h4">Agendamento da homenagem</h2>
+    <form method="post" enctype="multipart/form-data" action="{{url_for('football.update_tribute_settings')}}" id="tribute-settings-form"><input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+      <div class="form-check form-switch mb-3"><input class="form-check-input" type="checkbox" name="tribute_enabled" value="1" id="tribute-enabled" {{'checked' if tribute_settings.enabled}}><label class="form-check-label fw-bold" for="tribute-enabled">Homenagem automática ativa</label></div>
+      <label class="form-label">Título</label><input class="form-control mb-3" name="tribute_title" maxlength="80" value="{{tribute_settings.title}}" required>
+      <label class="form-label">Mensagem formatada</label><div class="btn-group btn-group-sm mb-2"><button class="btn btn-outline-secondary" type="button" data-format="bold"><strong>B</strong></button><button class="btn btn-outline-secondary" type="button" data-format="italic"><em>I</em></button><button class="btn btn-outline-secondary" type="button" data-format="formatBlock" data-value="small">Pequena</button><button class="btn btn-outline-secondary" type="button" data-format="formatBlock" data-value="big">Grande</button></div>
+      <div id="tribute-editor" class="form-control mb-1" contenteditable="true" style="min-height:130px">{{tribute_settings.body_html|safe}}</div><input type="hidden" name="tribute_body_html" id="tribute-body-html"><div class="form-text mb-3">A formatação aparece na central; o alerta do celular usa texto simples.</div>
+      <label class="form-label">Foto</label><input class="form-control" type="file" name="tribute_image" accept="image/jpeg,image/png,image/webp"><div class="form-check my-2"><input class="form-check-input" type="checkbox" name="remove_tribute_image" value="1" id="remove-tribute-image"><label class="form-check-label" for="remove-tribute-image">Usar a foto padrão</label></div>
+      <h3 class="h6 mt-3">Dias e horários</h3><div class="row g-2">{% for weekday in range(7) %}{% set schedule=tribute_schedules.get(weekday) %}<div class="col-12 d-flex align-items-center gap-2"><div class="form-check flex-grow-1"><input class="form-check-input" type="checkbox" name="day_{{weekday}}" value="1" id="day-{{weekday}}" {{'checked' if schedule and schedule.enabled}}><label class="form-check-label" for="day-{{weekday}}">{{weekday_labels[weekday]}}</label></div><select class="form-select form-select-sm w-auto" name="hour_{{weekday}}">{% for hour in range(24) %}<option value="{{hour}}" {{'selected' if schedule and schedule.hour == hour}}>{{'%02d:00'|format(hour)}}</option>{% endfor %}</select></div>{% endfor %}</div>
+      <button class="btn btn-info w-100 mt-3">Salvar agendamento</button>
+    </form>
+  </div></section></div>
+  <div class="col-12 col-xl-7"><section class="card shadow-sm"><div class="card-body"><h2 class="h4">Saúde das notificações</h2><p class="text-muted small">“Aceito” confirma o serviço push; a apresentação final depende do aparelho.</p><div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Peladeiro</th><th>Dispositivos</th><th>Renovação</th><th>Último envio</th><th>Push</th><th>Não lidas</th></tr></thead><tbody>{% for row in health_rows %}<tr><td>{{row.war_name or row.name}}</td><td><span class="badge text-bg-{{'success' if row.device_count else 'secondary'}}">{{row.device_count}}</span></td><td>{{row.last_renewal|brdate if row.last_renewal else '—'}}</td><td>{{row.last_push_at|brdate if row.last_push_at else '—'}}</td><td><span class="badge text-bg-{{'success' if row.last_push_status == 'accepted' else 'danger' if row.last_push_status == 'failed' else 'secondary'}}">{{'Aceito' if row.last_push_status == 'accepted' else 'Falhou' if row.last_push_status == 'failed' else 'Nunca'}}</span></td><td>{{row.unread_count}}</td></tr>{% endfor %}</tbody></table></div></div></section></div>
+</div>
 {% endblock %}
+{% block scripts %}<script>(()=>{const form=document.querySelector('#tribute-settings-form'),editor=document.querySelector('#tribute-editor'),hidden=document.querySelector('#tribute-body-html');document.querySelectorAll('[data-format]').forEach(button=>button.addEventListener('click',()=>{document.execCommand(button.dataset.format,false,button.dataset.value||null);editor.focus()}));form?.addEventListener('submit',()=>{hidden.value=editor.innerHTML})})();</script>{% endblock %}

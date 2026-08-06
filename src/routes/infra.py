@@ -466,10 +466,21 @@ def load_entry_detail(entry_id):
            LEFT JOIN users u ON u.id=lm.moved_by WHERE lm.load_entry_id=? ORDER BY lm.moved_at DESC,lm.id DESC""",
         (entry_id,),
     ).fetchall()
+    photo_list = [dict(photo) for photo in photos]
+    conference_timeline = []
+    for index, photo in enumerate(photo_list):
+        if photo.get("photo_kind") in ("reference", "conference"):
+            conference_timeline.append({
+                "current": photo,
+                "previous": photo_list[index - 1] if index else None,
+                "is_reference": photo.get("photo_kind") == "reference",
+            })
+    conference_timeline.reverse()
     check_due = entry["status"] not in ("discharged", "lost") and (
         not entry["next_check_due_at"] or str(entry["next_check_due_at"])[:10] <= local_today().isoformat()
     )
     return render_template("load_entry_detail.html", entry=entry, photos=photos, movements=movements,
+                           conference_timeline=conference_timeline,
                            check_due=check_due, load_statuses=LOAD_STATUS_LABELS,
                            load_status_classes=LOAD_STATUS_CLASSES)
 
@@ -579,11 +590,15 @@ def check_load_entry_auto(entry_id):
         photo, thumbnail = process_material_photo(upload)
         due_at = next_load_check_date()
         with db:
+            has_existing_photo = db.execute(
+                "SELECT 1 FROM load_entry_photos WHERE load_entry_id=? LIMIT 1", (entry_id,)
+            ).fetchone()
+            photo_kind = "conference" if has_existing_photo else "reference"
             db.execute(
                 """INSERT INTO load_entry_photos
                    (load_entry_id,photo_data,thumbnail_data,photo_kind,captured_at,captured_by)
-                   VALUES(?,?,?,'conference',CURRENT_TIMESTAMP,?)""",
-                (entry_id, photo, thumbnail, g.user["id"]),
+                   VALUES(?,?,?,?,CURRENT_TIMESTAMP,?)""",
+                (entry_id, photo, thumbnail, photo_kind, g.user["id"]),
             )
             db.execute(
                 """UPDATE load_entries SET last_checked_at=CURRENT_TIMESTAMP,
