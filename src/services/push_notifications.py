@@ -6,7 +6,16 @@ def public_key():
     return (os.environ.get("VAPID_PUBLIC_KEY") or "").strip()
 
 
-def send_player_push(db, player_id, title, body, url="/", image_url="", include_push_image=True):
+def send_player_push(
+    db,
+    player_id,
+    title,
+    body,
+    url="/",
+    image_url="",
+    include_push_image=True,
+    declarative=False,
+):
     """Envia uma notificação Web Push, quando VAPID está configurado."""
     private_key = (os.environ.get("VAPID_PRIVATE_KEY") or "").strip()
     subject = (os.environ.get("VAPID_SUBJECT") or "mailto:diretoriagpcta@gmail.com").strip()
@@ -25,9 +34,21 @@ def send_player_push(db, player_id, title, body, url="/", image_url="", include_
     for subscription in subscriptions:
         info = {"endpoint": subscription["endpoint"], "keys": {"p256dh": subscription["p256dh"], "auth": subscription["auth"]}}
         try:
-            payload = {"title": title, "body": body, "url": url, "badge": badge_count}
-            if image_url and include_push_image:
-                payload["image"] = image_url
+            if declarative:
+                payload = {
+                    "web_push": 8030,
+                    "notification": {
+                        "title": title,
+                        "body": body,
+                        "navigate": url,
+                        "silent": False,
+                        "app_badge": str(badge_count),
+                    },
+                }
+            else:
+                payload = {"title": title, "body": body, "url": url, "badge": badge_count}
+                if image_url and include_push_image:
+                    payload["image"] = image_url
             webpush(subscription_info=info, data=json.dumps(payload), vapid_private_key=private_key, vapid_claims={"sub": subject})
             sent += 1
         except Exception as exc:
@@ -41,7 +62,16 @@ def send_player_push(db, player_id, title, body, url="/", image_url="", include_
 
 
 def send_player_push_once(
-    db, player_id, kind, period, title, body, url="/", image_url="", include_push_image=True
+    db,
+    player_id,
+    kind,
+    period,
+    title,
+    body,
+    url="/",
+    image_url="",
+    include_push_image=True,
+    declarative=False,
 ):
     existing = db.execute("SELECT 1 FROM push_dispatches WHERE player_id=? AND kind=? AND period=?", (player_id, kind, period)).fetchone()
     if existing:
@@ -56,7 +86,9 @@ def send_player_push_once(
             return {"sent": 0, "skipped": 1, "reason": "já enviado"}
         db.execute("DELETE FROM push_dispatches WHERE player_id=? AND kind=? AND period=?", (player_id, kind, period))
         db.commit()
-    result = send_player_push(db, player_id, title, body, url, image_url, include_push_image)
+    result = send_player_push(
+        db, player_id, title, body, url, image_url, include_push_image, declarative
+    )
     # Só registra o dispatch após uma entrega efetiva. Assim, se a súmula for
     # finalizada antes de o peladeiro ativar o PWA, o aviso poderá ser tentado
     # novamente sem ficar bloqueado por uma marca falsa de envio.
@@ -125,6 +157,7 @@ def send_weekly_tribute_notifications(db, today):
             "/notificacoes",
             "/static/images/veeenhaaammm.png",
             False,
+            True,
         )
         sent += int(result.get("sent", 0))
     return sent
