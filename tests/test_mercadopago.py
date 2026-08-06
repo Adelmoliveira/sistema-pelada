@@ -1701,7 +1701,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             "🗣️ VEEENHAAAMMM...",
             "/notificacoes",
             "/static/images/veeenhaaammm.png",
-            False,
+            True,
             True,
         )
         with app.app_context():
@@ -1722,7 +1722,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         send_mock.assert_not_called()
 
-    def test_tribute_image_stays_in_inbox_but_is_omitted_from_push_payload(self):
+    def test_tribute_image_is_in_push_payload_and_inbox(self):
         with app.app_context():
             db = get_db()
             db.execute(
@@ -1743,16 +1743,19 @@ class MercadoPagoFlowTest(unittest.TestCase):
                     "🗣️ VEEENHAAAMMM...",
                     "/notificacoes",
                     "/static/images/veeenhaaammm.png",
-                    False,
+                    True,
                     True,
                 )
             self.assertEqual(result["sent"], 1)
             payload = json.loads(webpush_mock.call_args.kwargs["data"])
-            self.assertNotIn("image", payload)
             self.assertEqual(payload["web_push"], 8030)
             self.assertEqual(payload["notification"]["title"], "Teste da homenagem")
             self.assertEqual(payload["notification"]["navigate"], "/notificacoes")
             self.assertIs(payload["notification"]["silent"], False)
+            self.assertEqual(
+                payload["notification"]["image"],
+                "/static/images/veeenhaaammm.png",
+            )
             inbox = db.execute(
                 "SELECT image_url FROM push_inbox WHERE player_id=? ORDER BY id DESC LIMIT 1",
                 (self.player_id,),

@@ -45,6 +45,8 @@ def send_player_push(
                         "app_badge": str(badge_count),
                     },
                 }
+                if image_url and include_push_image:
+                    payload["notification"]["image"] = image_url
             else:
                 payload = {"title": title, "body": body, "url": url, "badge": badge_count}
                 if image_url and include_push_image:
@@ -156,7 +158,7 @@ def send_weekly_tribute_notifications(db, today):
             "🗣️ VEEENHAAAMMM...",
             "/notificacoes",
             "/static/images/veeenhaaammm.png",
-            False,
+            True,
             True,
         )
         sent += int(result.get("sent", 0))
