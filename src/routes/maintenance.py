@@ -352,16 +352,44 @@ def my_requests():
            ORDER BY mr.id DESC""",
         (g.user["id"], g.user["player_id"], g.user["player_id"]),
     ).fetchall()
-    histories = {}
-    for item in rows:
-        histories[item["id"]] = db.execute(
-            """SELECT h.*,u.name changed_by_name FROM maintenance_request_history h
-               LEFT JOIN users u ON u.id=h.changed_by WHERE h.request_id=? ORDER BY h.changed_at DESC,h.id DESC""",
-            (item["id"],),
-        ).fetchall()
     return render_template(
-        "maintenance_my_requests.html", requests=rows, histories=histories,
+        "maintenance_my_requests.html", requests=rows,
         **_template_context(),
+    )
+
+
+@bp.get("/mine/<int:request_id>")
+@roles_allowed("client")
+def my_request_detail(request_id):
+    """Exibe um chamado do peladeiro em modo somente leitura.
+
+    A consulta repete a mesma regra de vínculo da lista para impedir que um
+    peladeiro consiga descobrir ou visualizar chamados de outra pessoa.
+    """
+    db = get_db()
+    maintenance = db.execute(
+        """SELECT mr.*,u.name created_by_name
+           FROM maintenance_requests mr
+           LEFT JOIN users u ON u.id=mr.created_by
+           WHERE mr.id=? AND (mr.created_by=?
+             OR (? IS NOT NULL AND u.player_id=?))""",
+        (request_id, g.user["id"], g.user["player_id"], g.user["player_id"]),
+    ).fetchone()
+    if not maintenance:
+        flash("Chamado não encontrado.", "warning")
+        return redirect(url_for("maintenance.my_requests"))
+    photos = db.execute(
+        "SELECT * FROM maintenance_photos WHERE request_id=? ORDER BY phase,id", (request_id,)
+    ).fetchall()
+    history = db.execute(
+        """SELECT h.*,u.name changed_by_name FROM maintenance_request_history h
+           LEFT JOIN users u ON u.id=h.changed_by
+           WHERE h.request_id=? ORDER BY h.changed_at DESC,h.id DESC""",
+        (request_id,),
+    ).fetchall()
+    return render_template(
+        "maintenance_my_request_detail.html", maintenance=maintenance,
+        photos=photos, history=history, **_template_context(),
     )
 
 

@@ -811,8 +811,23 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Meus chamados", mine_page)
         self.assertIn("Lâmpada queimada", mine_page)
         self.assertIn("Aberto", mine_page)
-        self.assertIn("Responsável", mine_page)
+        self.assertIn("Detalhes", mine_page)
+        # A listagem é resumida; os dados completos ficam na tela de detalhes.
+        self.assertNotIn("A lâmpada não acende.", mine_page)
         self.assertNotIn("/edit", mine_page)
+
+        request_id = request_row["id"]
+        detail = self.client.get(f"/infra/maintenance/mine/{request_id}")
+        self.assertEqual(detail.status_code, 200)
+        detail_page = detail.get_data(as_text=True)
+        self.assertIn("Lâmpada queimada", detail_page)
+        self.assertIn("A lâmpada não acende.", detail_page)
+        self.assertIn("← Meus chamados", detail_page)
+        self.assertNotIn("Editar", detail_page)
+
+        # A tela detalhada também deve respeitar o vínculo com o peladeiro.
+        denied_detail = self.client.get("/infra/maintenance/999999")
+        self.assertEqual(denied_detail.status_code, 302)
 
         # Chamados antigos podem ter sido gravados por outro registro de
         # usuário, mas ainda pertencem ao mesmo peladeiro. Eles devem aparecer
