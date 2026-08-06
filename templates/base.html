@@ -28,6 +28,7 @@
 {% set football_active=endpoint.startswith('football.') and not football_management_active %}
 {% set urgent_active=endpoint == 'players.urgent' %}
 {% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) %}
+{% set calls_active=endpoint.startswith('maintenance.') %}
 {% set role_label={'manager':'Gerente','staff':'Staff','client':'Peladeiro','infra':'Infra','maintenance':'Manutenção','football_manager':'Gestor da Súmula'}.get(current_user.role,current_user.role) %}
 <div class="app-shell role-{{current_user.role}}" id="app-shell">
   <aside class="offcanvas-lg offcanvas-start app-sidebar" tabindex="-1" id="app-sidebar" aria-labelledby="sidebar-title">
@@ -71,7 +72,10 @@
           <button class="sidebar-module {{'active' if reports_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-reports" aria-expanded="{{'true' if reports_active else 'false'}}" aria-controls="sidebar-reports"><span class="sidebar-module-icon">R</span><span>Relatórios</span><span class="sidebar-chevron">⌄</span></button>
           <div class="collapse {{'show' if reports_active}}" id="sidebar-reports" data-bs-parent="#sidebar-nav"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'reports.memberships'}}" href="{{url_for('reports.memberships')}}">Mensalidades</a><a class="{{'active' if endpoint == 'reports.sales_report'}}" href="{{url_for('reports.sales_report')}}">Bar e vendas</a><a class="{{'active' if endpoint == 'reports.stock_report'}}" href="{{url_for('reports.stock_report')}}">Compras e estoque</a><a class="{{'active' if endpoint == 'reports.maintenance_report'}}" href="{{url_for('reports.maintenance_report')}}">Manutenção</a><a class="{{'active' if endpoint == 'reports.consolidated'}}" href="{{url_for('reports.consolidated')}}">Consolidado</a></div></div>
         </div>{% endif %}
-        {% if current_user.role == 'client' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}"><span class="sidebar-module-icon">M</span><span>Novo chamado</span></a>{% endif %}
+        {% if current_user.role == 'client' %}<div class="sidebar-group">
+          <button class="sidebar-module {{'active' if calls_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-calls" aria-expanded="{{'true' if calls_active else 'false'}}" aria-controls="sidebar-calls"><span class="sidebar-module-icon">M</span><span>Chamados</span><span class="sidebar-chevron">⌄</span></button>
+          <div class="collapse {{'show' if calls_active}}" id="sidebar-calls" data-bs-parent="#sidebar-nav"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}">Novo chamado</a><a class="{{'active' if endpoint == 'maintenance.my_requests'}}" href="{{url_for('maintenance.my_requests')}}">Meus chamados</a></div></div>
+        </div>{% endif %}
         {% if current_user.role == 'maintenance' %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'maintenance.new_request'}}" href="{{url_for('maintenance.new_request')}}"><span class="sidebar-module-icon">M</span><span>Novo chamado</span></a>{% endif %}
         {% if current_user.role != 'football_manager' %}<a class="sidebar-module sidebar-direct urgent {{'active' if urgent_active}}" href="{{url_for('players.urgent')}}"><span class="sidebar-module-icon">!</span><span>Urgente</span></a>{% endif %}
         {% if current_user.role in ['client','manager'] %}<a class="sidebar-module sidebar-direct {{'active' if endpoint == 'auth.birthdays'}}" href="{{url_for('auth.birthdays')}}"><span class="sidebar-module-icon">🎂</span><span>Aniversariantes do mês</span></a>{% endif %}

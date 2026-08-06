@@ -8,6 +8,7 @@ from src.routes.auth import roles_allowed
 from src.routes.infra import LOAD_AREAS
 from src.services.maintenance_pdf import build_maintenance_pdf
 from src.services.material_photos import process_material_photo
+from src.services.push_notifications import send_player_push
 from src.utils import cents, local_today
 
 
@@ -24,8 +25,45 @@ CATEGORIES = {
 PRIORITIES = {"low": "Baixa", "medium": "Média", "high": "Alta", "urgent": "Urgente"}
 STATUSES = {
     "open": "Aberto", "analysis": "Em análise", "in_progress": "Em andamento",
-    "waiting_material": "Aguardando material", "completed": "Concluído",
+    "waiting_material": "Aguardando material", "completed": "Concluído", "cancelled": "Cancelado",
 }
+STATUS_PUSH = {
+    "open": ("Chamado recebido", "Seu chamado {code} foi recebido."),
+    "analysis": ("Chamado em análise", "O chamado {code} está em análise."),
+    "in_progress": ("Chamado em andamento", "O chamado {code} está em andamento."),
+    "waiting_material": ("Chamado aguardando informação", "O chamado {code} aguarda informação ou material."),
+    # Use the wording "finalizado" in the player-facing notification so it is
+    # unambiguous that no further action is pending from the requester.
+    "completed": ("Chamado finalizado", "Seu chamado {code} foi finalizado com sucesso."),
+    "cancelled": ("Chamado cancelado", "O chamado {code} foi cancelado."),
+}
+
+
+class DuplicateMaintenanceRequest(ValueError):
+    """Indica que já existe um chamado aberto para o mesmo assunto/área."""
+
+
+def _record_history(db, request_id, status, responsible="", observation="", changed_by=None):
+    db.execute(
+        """INSERT INTO maintenance_request_history
+           (request_id,status,responsible,observation,changed_by) VALUES(?,?,?,?,?)""",
+        (request_id, status, responsible or "", observation or "", changed_by),
+    )
+
+
+def _push(db, player_id, title, body):
+    if not player_id:
+        return
+    try:
+        send_player_push(db, player_id, title, body, "/infra/maintenance/mine")
+    except Exception as exc:
+        current_app.logger.warning("Falha no push de manutenção para player=%s: %s", player_id, exc)
+
+
+def _infra_player_ids(db):
+    return [row["player_id"] for row in db.execute(
+        "SELECT player_id FROM users WHERE role='infra' AND player_id IS NOT NULL"
+    ).fetchall()]
 
 
 def _valid_date(value, label, required=False):
@@ -89,6 +127,23 @@ def _process_photos(files):
     if len(files) > MAX_PHASE_PHOTOS:
         raise ValueError(f"Envie no máximo {MAX_PHASE_PHOTOS} fotos em cada etapa.")
     return [process_material_photo(photo) for photo in files]
+
+
+def _find_open_duplicate(db, title, area_code):
+    """Localiza o chamado aberto mais recente para o mesmo assunto e área."""
+    return db.execute(
+        """SELECT mr.code,
+                  COALESCE(NULLIF(p.war_name, ''), NULLIF(p.name, ''),
+                           NULLIF(u.name, ''), 'outro usuário') AS requester
+           FROM maintenance_requests mr
+           LEFT JOIN users u ON u.id=mr.created_by
+           LEFT JOIN players p ON p.id=u.player_id
+          WHERE LOWER(TRIM(mr.title))=LOWER(TRIM(?))
+            AND mr.area_code=?
+            AND mr.status NOT IN ('completed','cancelled')
+          ORDER BY mr.id DESC LIMIT 1""",
+        (title, area_code),
+    ).fetchone()
 
 
 def _request_rows(db):
@@ -167,9 +222,9 @@ def dashboard():
     today = local_today().isoformat()
     month = local_today().strftime("%Y-%m")
     metrics = db.execute(
-        """SELECT COUNT(CASE WHEN status!='completed' THEN 1 END) open_count,
-                  COUNT(CASE WHEN priority='urgent' AND status!='completed' THEN 1 END) urgent_count,
-                  COUNT(CASE WHEN due_on!='' AND due_on<? AND status!='completed' THEN 1 END) overdue_count,
+        """SELECT COUNT(CASE WHEN status NOT IN ('completed','cancelled') THEN 1 END) open_count,
+                  COUNT(CASE WHEN priority='urgent' AND status NOT IN ('completed','cancelled') THEN 1 END) urgent_count,
+                  COUNT(CASE WHEN due_on!='' AND due_on<? AND status NOT IN ('completed','cancelled') THEN 1 END) overdue_count,
                   COUNT(CASE WHEN status='completed' AND completed_on LIKE ? THEN 1 END) completed_month,
                   COALESCE(SUM(CASE WHEN completed_on LIKE ? THEN cost_cents ELSE 0 END),0) month_cost
            FROM maintenance_requests""",
@@ -179,7 +234,7 @@ def dashboard():
         "SELECT status,COUNT(*) total FROM maintenance_requests GROUP BY status"
     ).fetchall()
     recent = db.execute(
-        """SELECT * FROM maintenance_requests WHERE status!='completed'
+        """SELECT * FROM maintenance_requests WHERE status NOT IN ('completed','cancelled')
            ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,id DESC LIMIT 10"""
     ).fetchall()
     return render_template(
@@ -196,9 +251,20 @@ def new_request():
         try:
             values = _form_values()
             problem_photos = _process_photos(request.files.getlist("problem_photos"))
-            limited_access = g.user["role"] in ("maintenance", "staff")
+            # Peladeiros, assim como os perfis de abertura simplificada, não
+            # podem acessar o acompanhamento interno do chamado. Após criar,
+            # devem permanecer no formulário (sem passar pela rota de detalhes
+            # restrita a gerente/infra).
+            limited_access = g.user["role"] in ("maintenance", "staff", "client")
             resolution_photos = [] if limited_access else _process_photos(request.files.getlist("resolution_photos"))
             db = get_db()
+            infra_ids = _infra_player_ids(db)
+            duplicate = _find_open_duplicate(db, values[0], values[1])
+            if duplicate:
+                raise DuplicateMaintenanceRequest(
+                    f"Já existe o chamado {duplicate['code']} sobre este assunto, "
+                    f"aberto por {duplicate['requester']}. Verifique o andamento antes de abrir outro."
+                )
             with db:
                 cursor = db.execute(
                     """INSERT INTO maintenance_requests
@@ -220,10 +286,22 @@ def new_request():
                         "INSERT INTO maintenance_photos(request_id,phase,photo_data,thumbnail_data) VALUES(?,'resolution',?,?)",
                         (request_id, photo, thumbnail),
                     )
+                _record_history(db, request_id, "open", values[6], values[-1], g.user["id"])
+            requester_player_id = g.user["player_id"] if g.user and g.user["player_id"] else None
+            _push(
+                db,
+                requester_player_id,
+                STATUS_PUSH["open"][0],
+                STATUS_PUSH["open"][1].format(code=code),
+            )
+            for infra_id in infra_ids:
+                _push(db, infra_id, "Novo chamado aberto", f"Chamado {code}: {values[0]}.")
             flash(f"Chamado {code} criado.", "success")
             if limited_access:
                 return redirect(url_for("maintenance.new_request"))
             return redirect(url_for("maintenance.request_detail", request_id=request_id))
+        except DuplicateMaintenanceRequest as exc:
+            flash(str(exc), "warning")
         except ValueError as exc:
             flash(str(exc), "danger")
         except Exception as exc:
@@ -249,8 +327,35 @@ def request_detail(request_id):
     photos = db.execute(
         "SELECT * FROM maintenance_photos WHERE request_id=? ORDER BY phase,id", (request_id,)
     ).fetchall()
+    history = db.execute(
+        """SELECT h.*,u.name changed_by_name FROM maintenance_request_history h
+           LEFT JOIN users u ON u.id=h.changed_by WHERE h.request_id=? ORDER BY h.changed_at DESC,h.id DESC""",
+        (request_id,),
+    ).fetchall()
     return render_template(
         "maintenance_detail.html", maintenance=maintenance, photos=photos,
+        history=history,
+        **_template_context(),
+    )
+
+
+@bp.get("/mine")
+@roles_allowed("client")
+def my_requests():
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM maintenance_requests WHERE created_by=? ORDER BY id DESC",
+        (g.user["id"],),
+    ).fetchall()
+    histories = {}
+    for item in rows:
+        histories[item["id"]] = db.execute(
+            """SELECT h.*,u.name changed_by_name FROM maintenance_request_history h
+               LEFT JOIN users u ON u.id=h.changed_by WHERE h.request_id=? ORDER BY h.changed_at DESC,h.id DESC""",
+            (item["id"],),
+        ).fetchall()
+    return render_template(
+        "maintenance_my_requests.html", requests=rows, histories=histories,
         **_template_context(),
     )
 
@@ -275,6 +380,15 @@ def edit_request(request_id):
             remaining = {phase: sum(1 for photo in photos if photo["phase"] == phase and photo["id"] not in remove_ids) for phase in ("problem", "resolution")}
             if remaining["problem"] + len(problem_photos) > MAX_PHASE_PHOTOS or remaining["resolution"] + len(resolution_photos) > MAX_PHASE_PHOTOS:
                 raise ValueError(f"Cada etapa pode possuir no máximo {MAX_PHASE_PHOTOS} fotos.")
+            changed = any(
+                maintenance[field] != values[index]
+                for field, index in {
+                    "title": 0, "area_code": 1, "location": 2, "category": 3,
+                    "priority": 4, "description": 5, "responsible": 6, "status": 7,
+                    "occurred_on": 8, "due_on": 9, "resolution": 10,
+                    "completed_on": 11, "cost_cents": 12, "notes": 13,
+                }.items()
+            ) or bool(remove_ids or problem_photos or resolution_photos)
             with db:
                 db.execute(
                     """UPDATE maintenance_requests SET title=?,area_code=?,location=?,category=?,priority=?,
@@ -290,6 +404,17 @@ def edit_request(request_id):
                             "INSERT INTO maintenance_photos(request_id,phase,photo_data,thumbnail_data) VALUES(?,?,?,?)",
                             (request_id, phase, photo, thumbnail),
                         )
+                if changed:
+                    _record_history(db, request_id, values[7], values[6], values[-1] or values[10], g.user["id"])
+            if changed:
+                creator = db.execute("SELECT player_id FROM users WHERE id=?", (maintenance["created_by"],)).fetchone()
+                player_id = creator["player_id"] if creator and creator["player_id"] else None
+                if maintenance["status"] != values[7]:
+                    title, body = STATUS_PUSH[values[7]]
+                    body = body.format(code=maintenance["code"])
+                else:
+                    title, body = "Chamado atualizado", f"O chamado {maintenance['code']} recebeu uma atualização."
+                _push(db, player_id, title, body)
             flash("Chamado atualizado.", "success")
             return redirect(url_for("maintenance.request_detail", request_id=request_id))
         except ValueError as exc:
