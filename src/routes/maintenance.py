@@ -161,6 +161,8 @@ def _request_rows(db):
     selected = {}
     for name, (condition, options) in filters.items():
         value = request.args.get(name, "").strip()
+        if name == "status" and "status" not in request.args:
+            value = "open"
         selected[name] = value if value in options else ""
         if selected[name]:
             conditions.append(condition)
@@ -174,6 +176,24 @@ def _request_rows(db):
         sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY CASE mr.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,mr.id DESC"
     return db.execute(sql, tuple(params)).fetchall(), selected, query
+
+
+def _display_request_rows(rows):
+    """Add presentation-only open-age data without changing database rows."""
+    today = local_today()
+    display_rows = []
+    for row in rows:
+        item = dict(row)
+        if item["status"] not in ("completed", "cancelled"):
+            try:
+                opened_on = date.fromisoformat(str(item["created_at"])[:10])
+                item["open_days"] = max(0, (today - opened_on).days)
+            except (TypeError, ValueError):
+                item["open_days"] = 0
+        else:
+            item["open_days"] = None
+        display_rows.append(item)
+    return display_rows
 
 
 def _template_context():
@@ -200,19 +220,7 @@ def _requester_name():
 @roles_allowed("manager", "infra")
 def requests_list():
     rows, selected, query = _request_rows(get_db())
-    today_date = local_today()
-    display_rows = []
-    for row in rows:
-        item = dict(row)
-        if item["status"] not in ("completed", "cancelled"):
-            try:
-                opened_on = date.fromisoformat(str(item["created_at"])[:10])
-                item["open_days"] = max(0, (today_date - opened_on).days)
-            except (TypeError, ValueError):
-                item["open_days"] = 0
-        else:
-            item["open_days"] = None
-        display_rows.append(item)
+    display_rows = _display_request_rows(rows)
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
@@ -365,8 +373,12 @@ def my_requests():
            ORDER BY mr.id DESC""",
         (g.user["id"], g.user["player_id"], g.user["player_id"]),
     ).fetchall()
+    status_counts = {status: 0 for status in STATUSES}
+    for row in rows:
+        status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
     return render_template(
-        "maintenance_my_requests.html", requests=rows,
+        "maintenance_my_requests.html", requests=_display_request_rows(rows),
+        status_counts=status_counts,
         **_template_context(),
     )
 

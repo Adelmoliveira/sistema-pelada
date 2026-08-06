@@ -887,6 +887,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Lâmpada queimada", mine_page)
         self.assertIn("Aberto", mine_page)
         self.assertIn("Detalhes", mine_page)
+        self.assertIn("Chamados por status", mine_page)
+        self.assertIn('data-status-count="open">1</strong>', mine_page)
+        self.assertIn('data-status-count="completed">0</strong>', mine_page)
+        self.assertIn("maintenance-card-priority-medium", mine_page)
+        self.assertIn("Tempo aberto:", mine_page)
+        self.assertIn("maintenance-age-green", mine_page)
         # A listagem é resumida; os dados completos ficam na tela de detalhes.
         self.assertNotIn("A lâmpada não acende.", mine_page)
         self.assertNotIn("/edit", mine_page)
@@ -1286,6 +1292,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('class="maintenance-age-red">30</strong>', page)
         self.assertIn("Tempo aberto", page)
         self.assertIn("16 a 25 dias", page)
+        self.assertIn('<option value="open" selected>Aberto</option>', page)
 
     def test_maintenance_crud_dashboard_photos_and_report(self):
         with self.client.session_transaction() as session:

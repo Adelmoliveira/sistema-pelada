@@ -4,15 +4,19 @@
 <div class="d-flex flex-wrap align-items-center gap-3 mb-4">
   <div><h1 class="h3 mb-1">Meus chamados</h1><p class="text-muted mb-0">Acompanhe o andamento das solicitações que você abriu.</p></div>
 </div>
+<div class="card shadow-sm mb-4"><div class="card-body"><h2 class="h5 mb-3">Chamados por status</h2><div class="row g-2">
+  {% for code,name in statuses.items() %}<div class="col-6 col-md-4 col-xl-2"><div class="border rounded p-3 h-100"><div class="small text-muted">{{name}}</div><strong class="fs-4" data-status-count="{{code}}">{{status_counts.get(code,0)}}</strong></div></div>{% endfor %}
+</div></div></div>
 {% if not requests %}
   <div class="alert alert-info">Você ainda não abriu nenhum chamado.</div>
 {% endif %}
 {% for item in requests %}
-<article class="card shadow-sm mb-3">
+<article class="card shadow-sm mb-3 {{'maintenance-card-priority-' ~ item.priority if item.status not in ('completed','cancelled') else ''}}">
   <div class="card-body p-3 p-md-4 d-flex flex-wrap align-items-center justify-content-between gap-3">
     <div>
       <h2 class="h5 mb-1">{{item.code}} · {{item.title}}</h2>
       <div class="small text-muted">{{item.created_at|brdate}} · {{areas.get(item.area_code,item.area_code)}}</div>
+      <div class="small mt-1"><span class="text-muted">Tempo aberto:</span> {% if item.open_days is not none %}<strong class="maintenance-age-{{'green' if item.open_days <= 15 else 'orange' if item.open_days <= 25 else 'red'}}">{{item.open_days}}</strong> <span class="text-muted">{{'dia' if item.open_days == 1 else 'dias'}}</span>{% else %}<span class="text-muted">Encerrado</span>{% endif %}</div>
     </div>
     <div class="d-flex align-items-center gap-2 ms-auto">
       <span class="badge maintenance-status-{{item.status}}">{{statuses.get(item.status,item.status)}}</span>
