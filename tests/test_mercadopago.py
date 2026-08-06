@@ -1678,6 +1678,41 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.get_json()["sent"], 0)
         send_mock.assert_not_called()
 
+    def test_manager_sends_tribute_test_to_only_one_active_player(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with patch("src.routes.football.send_player_push", return_value={"sent": 1, "skipped": 0}) as send_mock:
+            response = self.client.post(
+                "/futebol/notificacoes/testar-homenagem",
+                data={"player_id": str(self.player_id)},
+            )
+        self.assertEqual(response.status_code, 302)
+        send_mock.assert_called_once_with(
+            unittest.mock.ANY,
+            self.player_id,
+            "Teste da homenagem",
+            "🗣️ VEEENHAAAMMM...",
+            "/notificacoes",
+            "/static/images/veeenhaaammm.png",
+        )
+        with app.app_context():
+            saved = get_db().execute(
+                "SELECT audience,sent_count FROM push_announcements ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertEqual(saved["audience"], f"player:{self.player_id}")
+            self.assertEqual(saved["sent_count"], 1)
+
+    def test_tribute_test_rejects_invalid_player(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with patch("src.routes.football.send_player_push") as send_mock:
+            response = self.client.post(
+                "/futebol/notificacoes/testar-homenagem",
+                data={"player_id": "999999"},
+            )
+        self.assertEqual(response.status_code, 302)
+        send_mock.assert_not_called()
+
     def test_manager_downloads_monthly_sales_accountability_pdf(self):
         month = local_today().strftime("%Y-%m")
         with app.app_context():

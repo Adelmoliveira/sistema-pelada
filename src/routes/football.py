@@ -758,7 +758,59 @@ def notifications():
     draft = db.execute("SELECT * FROM push_announcements WHERE id=? AND status='RASCUNHO'", (edit_id,)).fetchone() if edit_id else None
     history = db.execute("""SELECT pa.*,u.name user_name FROM push_announcements pa
         LEFT JOIN users u ON u.id=pa.created_by ORDER BY pa.id DESC LIMIT 50""").fetchall()
-    return render_template("football_notifications.html", history=history, draft=draft)
+    active_players = db.execute(
+        "SELECT id,name,war_name FROM players WHERE active=1 ORDER BY name"
+    ).fetchall()
+    player_names = {str(player["id"]): player["war_name"] or player["name"] for player in active_players}
+    return render_template(
+        "football_notifications.html",
+        history=history,
+        draft=draft,
+        active_players=active_players,
+        player_names=player_names,
+    )
+
+
+@bp.post("/notificacoes/testar-homenagem")
+@roles_allowed("manager")
+def test_tribute_notification():
+    db = get_db()
+    player_id = request.form.get("player_id", type=int)
+    player = db.execute(
+        "SELECT id,name,war_name FROM players WHERE id=? AND active=1",
+        (player_id,),
+    ).fetchone()
+    if not player:
+        flash("Selecione um peladeiro ativo para o teste.", "danger")
+        return redirect(url_for("football.notifications"))
+
+    title = "Teste da homenagem"
+    body = "🗣️ VEEENHAAAMMM..."
+    try:
+        result = send_player_push(
+            db,
+            player["id"],
+            title,
+            body,
+            "/notificacoes",
+            "/static/images/veeenhaaammm.png",
+        )
+        sent = int(result.get("sent", 0))
+        db.execute(
+            "INSERT INTO push_announcements(title,body,audience,status,sent_count,created_by) VALUES(?,?,?,?,?,?)",
+            (title, body, f"player:{player['id']}", "ENVIADO", sent, g.user["id"]),
+        )
+        db.commit()
+        display_name = player["war_name"] or player["name"]
+        if sent:
+            flash(f"Teste da homenagem enviado para {display_name}.", "success")
+        else:
+            flash(f"{display_name} não possui dispositivo inscrito para notificações.", "warning")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.error("Erro ao enviar teste da homenagem: %s", exc)
+        flash("Não foi possível enviar o teste da homenagem.", "danger")
+    return redirect(url_for("football.notifications"))
 
 
 @bp.post("/notificacoes/historico/limpar")
