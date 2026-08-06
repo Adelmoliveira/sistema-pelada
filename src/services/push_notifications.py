@@ -15,6 +15,7 @@ def send_player_push(
     image_url="",
     include_push_image=True,
     declarative=False,
+    body_html="",
 ):
     """Envia uma notificação Web Push, quando VAPID está configurado."""
     private_key = (os.environ.get("VAPID_PRIVATE_KEY") or "").strip()
@@ -52,13 +53,24 @@ def send_player_push(
                 if image_url and include_push_image:
                     payload["image"] = image_url
             webpush(subscription_info=info, data=json.dumps(payload), vapid_private_key=private_key, vapid_claims={"sub": subject})
+            db.execute(
+                "UPDATE push_subscriptions SET last_push_at=CURRENT_TIMESTAMP,last_push_status='accepted',last_push_error='' WHERE id=?",
+                (subscription["id"],),
+            )
             sent += 1
         except Exception as exc:
+            db.execute(
+                "UPDATE push_subscriptions SET last_push_at=CURRENT_TIMESTAMP,last_push_status='failed',last_push_error=? WHERE id=?",
+                (str(exc)[:200], subscription["id"]),
+            )
             # Assinaturas expiradas devem ser removidas para não gerar falhas futuras.
             if getattr(exc, "response", None) is not None and getattr(exc.response, "status_code", 0) in (404, 410):
                 db.execute("DELETE FROM push_subscriptions WHERE id=?", (subscription["id"],))
     if sent:
-        db.execute("INSERT INTO push_inbox(player_id,title,body,image_url) VALUES(?,?,?,?)", (player_id, title, body, image_url or ""))
+        db.execute(
+            "INSERT INTO push_inbox(player_id,title,body,body_html,image_url) VALUES(?,?,?,?,?)",
+            (player_id, title, body, body_html or "", image_url or ""),
+        )
     db.commit()
     return {"sent": sent, "skipped": 0}
 
@@ -74,6 +86,7 @@ def send_player_push_once(
     image_url="",
     include_push_image=True,
     declarative=False,
+    body_html="",
 ):
     existing = db.execute("SELECT 1 FROM push_dispatches WHERE player_id=? AND kind=? AND period=?", (player_id, kind, period)).fetchone()
     if existing:
@@ -89,7 +102,7 @@ def send_player_push_once(
         db.execute("DELETE FROM push_dispatches WHERE player_id=? AND kind=? AND period=?", (player_id, kind, period))
         db.commit()
     result = send_player_push(
-        db, player_id, title, body, url, image_url, include_push_image, declarative
+        db, player_id, title, body, url, image_url, include_push_image, declarative, body_html
     )
     # Só registra o dispatch após uma entrega efetiva. Assim, se a súmula for
     # finalizada antes de o peladeiro ativar o PWA, o aviso poderá ser tentado
@@ -143,7 +156,8 @@ def send_birthday_notifications(db, today):
 
 def send_weekly_tribute_notifications(db, today):
     """Envia a homenagem semanal, uma vez por peladeiro e por data."""
-    if today.weekday() not in (2, 5):  # quarta-feira e sábado
+    settings = db.execute("SELECT * FROM tribute_settings WHERE id=1").fetchone()
+    if not settings or not int(settings["enabled"] or 0):
         return 0
 
     recipients = db.execute("SELECT id FROM players WHERE active=1").fetchall()
@@ -154,12 +168,13 @@ def send_weekly_tribute_notifications(db, today):
             recipient["id"],
             "weekly_tribute",
             today.isoformat(),
-            "PELADEIROS GPCTA",
-            "🗣️ VEEENHAAAMMM...",
+            settings["title"],
+            settings["body"],
             "/notificacoes",
-            "/static/images/veeenhaaammm.png",
+            "/futebol/notificacoes/homenagem/imagem",
             True,
             True,
+            settings["body_html"],
         )
         sent += int(result.get("sent", 0))
     return sent

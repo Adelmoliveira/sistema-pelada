@@ -19,11 +19,7 @@
     },
     {
       "path": "/cron/weekly-tribute",
-      "schedule": "0 20 * * 3"
-    },
-    {
-      "path": "/cron/weekly-tribute",
-      "schedule": "0 18 * * 6"
+      "schedule": "0 * * * *"
     }
   ]
 }

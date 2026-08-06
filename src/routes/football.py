@@ -1,7 +1,9 @@
 from datetime import date
-from html import escape
+from html import escape, unescape
+import base64
+import re
 
-from flask import Blueprint, current_app, flash, g, redirect, render_template, request, send_file, url_for
+from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, send_file, url_for
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
@@ -10,6 +12,7 @@ from src.services.football_stats_pdf import build_football_stats_pdf
 from src.services.football_tenure_pdf import build_football_tenure_pdf
 from src.services.email_reminders import send_gmail_html
 from src.services.push_notifications import send_player_push, send_player_push_once
+from src.services.material_photos import process_material_photo
 
 bp = Blueprint("football", __name__, url_prefix="/futebol")
 
@@ -27,6 +30,19 @@ TRANSFER_STATUSES = {"PENDENTE": "Pendente", "APROVADA": "Deferido", "RECUSADA":
 # 2026. Súmulas históricas cadastradas de janeiro a junho não devem disparar
 # notificações ao serem finalizadas.
 MATEMATICO_PUSH_START_DATE = date(2026, 7, 1)
+WEEKDAY_LABELS = ("Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo")
+
+
+def _safe_notification_html(raw):
+    raw = (raw or "")[:4000]
+    raw = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw, flags=re.I | re.S)
+    raw = re.sub(r"<(?!/?(?:strong|b|em|i|small|big|br)\b)[^>]*>", "", raw, flags=re.I)
+    raw = re.sub(r"<(strong|b|em|i|small|big|br)\b[^>]*>", r"<\1>", raw, flags=re.I)
+    return raw
+
+
+def _plain_notification_text(raw):
+    return unescape(re.sub(r"<[^>]+>", "", raw or "")).strip()[:800]
 
 
 def _audit(db, sumula_id, action, details=""):
@@ -714,7 +730,7 @@ def notifications():
         action = request.form.get("action", "send")
         announcement_id = request.form.get("announcement_id", type=int)
         title = request.form.get("title", "").strip()[:80]
-        body = request.form.get("body", "").strip()[:500]
+        body = request.form.get("body", "").strip()[:800]
         audience = request.form.get("audience", "all")
         if audience not in ("all", "football"):
             audience = "all"
@@ -762,13 +778,72 @@ def notifications():
         "SELECT id,name,war_name FROM players WHERE active=1 ORDER BY name"
     ).fetchall()
     player_names = {str(player["id"]): player["war_name"] or player["name"] for player in active_players}
+    health_rows = db.execute(
+        """SELECT p.id,p.name,p.war_name,
+                  (SELECT COUNT(*) FROM push_subscriptions s WHERE s.player_id=p.id) device_count,
+                  (SELECT MAX(s.updated_at) FROM push_subscriptions s WHERE s.player_id=p.id) last_renewal,
+                  (SELECT MAX(s.last_push_at) FROM push_subscriptions s WHERE s.player_id=p.id) last_push_at,
+                  (SELECT s.last_push_status FROM push_subscriptions s WHERE s.player_id=p.id ORDER BY s.last_push_at DESC,s.id DESC LIMIT 1) last_push_status,
+                  (SELECT COUNT(*) FROM push_inbox i WHERE i.player_id=p.id AND i.read_at IS NULL) unread_count
+           FROM players p WHERE p.active=1 ORDER BY p.name"""
+    ).fetchall()
+    tribute_settings = db.execute("SELECT * FROM tribute_settings WHERE id=1").fetchone()
+    schedule_rows = db.execute("SELECT * FROM tribute_schedules ORDER BY weekday").fetchall()
+    schedules = {int(row["weekday"]): row for row in schedule_rows}
     return render_template(
         "football_notifications.html",
         history=history,
         draft=draft,
         active_players=active_players,
         player_names=player_names,
+        health_rows=health_rows,
+        tribute_settings=tribute_settings,
+        tribute_schedules=schedules,
+        weekday_labels=WEEKDAY_LABELS,
     )
+
+
+@bp.post("/notificacoes/homenagem/configuracao")
+@roles_allowed("manager")
+def update_tribute_settings():
+    db = get_db()
+    title = request.form.get("tribute_title", "").strip()[:80]
+    body_html = _safe_notification_html(request.form.get("tribute_body_html", ""))
+    body = _plain_notification_text(body_html)
+    if not title or not body:
+        flash("Informe o título e a mensagem da homenagem.", "danger")
+        return redirect(url_for("football.notifications"))
+    image_data = db.execute("SELECT image_data FROM tribute_settings WHERE id=1").fetchone()["image_data"] or ""
+    if request.form.get("remove_tribute_image") == "1":
+        image_data = ""
+    processed = process_material_photo(request.files.get("tribute_image"))
+    if processed:
+        image_data = processed[0]
+    with db:
+        db.execute(
+            """UPDATE tribute_settings SET enabled=?,title=?,body=?,body_html=?,image_data=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=1""",
+            (1 if request.form.get("tribute_enabled") == "1" else 0, title, body, body_html, image_data, g.user["id"]),
+        )
+        for weekday in range(7):
+            hour = max(0, min(23, int(request.form.get(f"hour_{weekday}", 12))))
+            enabled = 1 if request.form.get(f"day_{weekday}") == "1" else 0
+            db.execute(
+                """INSERT INTO tribute_schedules(weekday,enabled,hour,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP)
+                   ON CONFLICT(weekday) DO UPDATE SET enabled=?,hour=?,updated_at=CURRENT_TIMESTAMP""",
+                (weekday, enabled, hour, enabled, hour),
+            )
+    flash("Agendamento da homenagem atualizado.", "success")
+    return redirect(url_for("football.notifications"))
+
+
+@bp.get("/notificacoes/homenagem/imagem")
+def tribute_image():
+    row = get_db().execute("SELECT image_data FROM tribute_settings WHERE id=1").fetchone()
+    data_url = (row["image_data"] if row else "") or ""
+    match = re.match(r"^data:(image/(?:jpeg|png|webp));base64,(.+)$", data_url, re.S)
+    if not match:
+        return redirect("/static/images/veeenhaaammm.png")
+    return Response(base64.b64decode(match.group(2)), mimetype=match.group(1), headers={"Cache-Control": "no-store"})
 
 
 @bp.post("/notificacoes/testar-homenagem")
@@ -784,8 +859,11 @@ def test_tribute_notification():
         flash("Selecione um peladeiro ativo para o teste.", "danger")
         return redirect(url_for("football.notifications"))
 
-    title = "Teste da homenagem"
-    body = "🗣️ VEEENHAAAMMM..."
+    settings = db.execute("SELECT * FROM tribute_settings WHERE id=1").fetchone()
+    title = settings["title"]
+    body = settings["body"]
+    body_html = settings["body_html"]
+    image_url = "/futebol/notificacoes/homenagem/imagem"
     try:
         result = send_player_push(
             db,
@@ -793,9 +871,10 @@ def test_tribute_notification():
             title,
             body,
             "/notificacoes",
-            "/static/images/veeenhaaammm.png",
+            image_url,
             True,
             True,
+            body_html,
         )
         sent = int(result.get("sent", 0))
         db.execute(

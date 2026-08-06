@@ -1,5 +1,5 @@
 import hmac
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from email.utils import parseaddr
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify, send_file, g
@@ -24,7 +24,7 @@ from src.services.push_notifications import (
     send_transfer_window_notifications,
     send_weekly_tribute_notifications,
 )
-from src.utils import alphabetical_key, money, brdate, cents, month_bounds, add_months, local_today
+from src.utils import SAO_PAULO, alphabetical_key, money, brdate, cents, month_bounds, add_months, local_today
 
 bp = Blueprint("finance", __name__)
 
@@ -965,9 +965,13 @@ def weekly_tribute_cron():
     if not secret or not hmac.compare_digest(authorization, f"Bearer {secret}"):
         return jsonify(error="Não autorizado."), 401
 
-    today = local_today()
-    if today.weekday() not in (2, 5):
-        return jsonify(ok=True, sent=0, reason="Fora dos dias programados.")
+    now = datetime.now(SAO_PAULO)
+    today = now.date()
+    schedule = get_db().execute(
+        "SELECT enabled,hour FROM tribute_schedules WHERE weekday=?", (today.weekday(),)
+    ).fetchone()
+    if not schedule or not int(schedule["enabled"] or 0) or int(schedule["hour"]) != now.hour:
+        return jsonify(ok=True, sent=0, reason="Fora do horário programado.")
 
     sent = send_weekly_tribute_notifications(get_db(), today)
     return jsonify(ok=True, sent=sent)
