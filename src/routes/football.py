@@ -795,6 +795,7 @@ def test_tribute_notification():
             "/notificacoes",
             "/static/images/veeenhaaammm.png",
             False,
+            True,
         )
         sent = int(result.get("sent", 0))
         db.execute(

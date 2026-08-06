@@ -1417,6 +1417,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(worker_response.status_code, 200)
         self.assertEqual(worker_response.headers["Service-Worker-Allowed"], "/")
         self.assertIn('const OFFLINE_URL = "/offline"', worker)
+        self.assertIn('data.web_push === 8030', worker)
+        self.assertIn('notification.navigate || notification.url', worker)
         self.assertNotIn('request.mode === "navigate"', worker)
         self.assertNotIn('"/sale"', worker)
         self.assertNotIn('"/finance"', worker)
@@ -1700,6 +1702,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             "/notificacoes",
             "/static/images/veeenhaaammm.png",
             False,
+            True,
         )
         with app.app_context():
             saved = get_db().execute(
@@ -1741,10 +1744,15 @@ class MercadoPagoFlowTest(unittest.TestCase):
                     "/notificacoes",
                     "/static/images/veeenhaaammm.png",
                     False,
+                    True,
                 )
             self.assertEqual(result["sent"], 1)
             payload = json.loads(webpush_mock.call_args.kwargs["data"])
             self.assertNotIn("image", payload)
+            self.assertEqual(payload["web_push"], 8030)
+            self.assertEqual(payload["notification"]["title"], "Teste da homenagem")
+            self.assertEqual(payload["notification"]["navigate"], "/notificacoes")
+            self.assertIs(payload["notification"]["silent"], False)
             inbox = db.execute(
                 "SELECT image_url FROM push_inbox WHERE player_id=? ORDER BY id DESC LIMIT 1",
                 (self.player_id,),
