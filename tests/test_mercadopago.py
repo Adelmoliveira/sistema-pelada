@@ -1,11 +1,15 @@
 import hashlib
 import hmac
+import json
+import os
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 
 from PIL import Image
@@ -21,6 +25,7 @@ from src.services.email_reminders import dispatch_reminders, get_reminder_settin
 from src.services.cash_register import get_session, session_summary
 from src.services.monthly_sales_report import monthly_sales_data
 from src.services.stock_alerts import notify_low_stock
+from src.services.push_notifications import send_player_push
 from src.utils import alphabetical_key, brdate, local_today, month_bounds
 from werkzeug.security import check_password_hash
 
@@ -1694,6 +1699,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             "🗣️ VEEENHAAAMMM...",
             "/notificacoes",
             "/static/images/veeenhaaammm.png",
+            False,
         )
         with app.app_context():
             saved = get_db().execute(
@@ -1712,6 +1718,38 @@ class MercadoPagoFlowTest(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 302)
         send_mock.assert_not_called()
+
+    def test_tribute_image_stays_in_inbox_but_is_omitted_from_push_payload(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO push_subscriptions(player_id,endpoint,p256dh,auth) VALUES(?,?,?,?)",
+                (self.player_id, "https://push.example/test", "key", "auth"),
+            )
+            db.commit()
+            webpush_mock = unittest.mock.Mock()
+            pywebpush_module = ModuleType("pywebpush")
+            pywebpush_module.webpush = webpush_mock
+            with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "test-key"}), patch.dict(
+                sys.modules, {"pywebpush": pywebpush_module}
+            ):
+                result = send_player_push(
+                    db,
+                    self.player_id,
+                    "Teste da homenagem",
+                    "🗣️ VEEENHAAAMMM...",
+                    "/notificacoes",
+                    "/static/images/veeenhaaammm.png",
+                    False,
+                )
+            self.assertEqual(result["sent"], 1)
+            payload = json.loads(webpush_mock.call_args.kwargs["data"])
+            self.assertNotIn("image", payload)
+            inbox = db.execute(
+                "SELECT image_url FROM push_inbox WHERE player_id=? ORDER BY id DESC LIMIT 1",
+                (self.player_id,),
+            ).fetchone()
+            self.assertEqual(inbox["image_url"], "/static/images/veeenhaaammm.png")
 
     def test_manager_downloads_monthly_sales_accountability_pdf(self):
         month = local_today().strftime("%Y-%m")
