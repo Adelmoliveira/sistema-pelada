@@ -19,7 +19,11 @@ from src.services.finance_accounts import (
 )
 from src.services.finance_ledger_pdf import build_finance_ledger_pdf
 from src.services.monthly_sales_report import build_monthly_sales_pdf, monthly_sales_data
-from src.services.push_notifications import send_birthday_notifications, send_transfer_window_notifications
+from src.services.push_notifications import (
+    send_birthday_notifications,
+    send_transfer_window_notifications,
+    send_weekly_tribute_notifications,
+)
 from src.utils import alphabetical_key, money, brdate, cents, month_bounds, add_months, local_today
 
 bp = Blueprint("finance", __name__)
@@ -952,3 +956,18 @@ def payment_reminders_cron():
         return jsonify(error="Configuração de e-mail incompleta.", transfer_push_sent=transfer_push_sent, birthday_push_sent=birthday_push_sent), 503
     result = dispatch_reminders(db, settings, sender, password, today)
     return jsonify(ok=result["failed"] == 0, transfer_push_sent=transfer_push_sent, birthday_push_sent=birthday_push_sent, **result), 200 if result["failed"] == 0 else 502
+
+
+@bp.get("/cron/weekly-tribute")
+def weekly_tribute_cron():
+    secret = current_app.config.get("CRON_SECRET") or ""
+    authorization = request.headers.get("Authorization", "")
+    if not secret or not hmac.compare_digest(authorization, f"Bearer {secret}"):
+        return jsonify(error="Não autorizado."), 401
+
+    today = local_today()
+    if today.weekday() not in (2, 5):
+        return jsonify(ok=True, sent=0, reason="Fora dos dias programados.")
+
+    sent = send_weekly_tribute_notifications(get_db(), today)
+    return jsonify(ok=True, sent=sent)

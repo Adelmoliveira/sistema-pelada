@@ -1650,6 +1650,34 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertTrue(response.data.startswith(b"%PDF-"))
         self.assertIn("attachment", response.headers["Content-Disposition"])
 
+    def test_weekly_tribute_cron_requires_secret_and_runs_on_scheduled_days(self):
+        unauthorized = self.client.get("/cron/weekly-tribute")
+        self.assertEqual(unauthorized.status_code, 401)
+
+        wednesday = date(2026, 8, 5)
+        with patch("src.routes.finance.local_today", return_value=wednesday), patch(
+            "src.routes.finance.send_weekly_tribute_notifications", return_value=3
+        ) as send_mock:
+            response = self.client.get(
+                "/cron/weekly-tribute",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["sent"], 3)
+        send_mock.assert_called_once()
+
+        monday = date(2026, 8, 3)
+        with patch("src.routes.finance.local_today", return_value=monday), patch(
+            "src.routes.finance.send_weekly_tribute_notifications"
+        ) as send_mock:
+            response = self.client.get(
+                "/cron/weekly-tribute",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["sent"], 0)
+        send_mock.assert_not_called()
+
     def test_manager_downloads_monthly_sales_accountability_pdf(self):
         month = local_today().strftime("%Y-%m")
         with app.app_context():

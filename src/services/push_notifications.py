@@ -103,3 +103,25 @@ def send_birthday_notifications(db, today):
             )
             sent += int(result.get("sent", 0))
     return sent
+
+
+def send_weekly_tribute_notifications(db, today):
+    """Envia a homenagem semanal, uma vez por peladeiro e por data."""
+    if today.weekday() not in (2, 5):  # quarta-feira e sábado
+        return 0
+
+    recipients = db.execute("SELECT id FROM players WHERE active=1").fetchall()
+    sent = 0
+    for recipient in recipients:
+        result = send_player_push_once(
+            db,
+            recipient["id"],
+            "weekly_tribute",
+            today.isoformat(),
+            "PELADEIROS GPCTA",
+            "🗣️ VEEENHAAAMMM...",
+            "/notificacoes",
+            "/static/images/veeenhaaammm.png",
+        )
+        sent += int(result.get("sent", 0))
+    return sent
