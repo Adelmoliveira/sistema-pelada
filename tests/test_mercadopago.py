@@ -496,6 +496,81 @@ class MercadoPagoFlowTest(unittest.TestCase):
         invalid = self.client.get("/pix?day=data-invalida").get_data(as_text=True)
         self.assertIn("data informada era inválida", invalid)
 
+    def test_finance_dashboard_shows_monthly_and_annual_average_ticket(self):
+        today = local_today()
+        current_month = today.replace(day=1).isoformat()
+        previous_month = (today.replace(day=1) - timedelta(days=1)).replace(day=1).isoformat()
+        with app.app_context():
+            db = get_db()
+            for total, paid_at, method in (
+                (1000, f"{current_month} 10:00:00", "Pix"),
+                (3000, f"{current_month} 11:00:00", "Dinheiro"),
+                (6000, f"{previous_month} 12:00:00", "Débito"),
+                (9000, f"{current_month} 13:00:00", "Cortesia"),
+            ):
+                db.execute(
+                    """INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,paid_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (self.player_id, method, total, 1, "approved", paid_at),
+                )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Ticket médio do bar", page)
+        self.assertIn("R$ 20,00", page)
+        self.assertIn("R$ 33,33", page)
+        self.assertIn("2 venda(s) paga(s)", page)
+        self.assertIn("3 venda(s) paga(s)", page)
+        self.assertIn('id="ticket-average-chart"', page)
+
+    def test_football_dashboard_shows_monthly_annual_attendance_and_extremes(self):
+        today = local_today()
+        other_months = [month for month in range(1, 13) if month != today.month][:2]
+        dates_and_counts = (
+            (date(today.year, today.month, 1).isoformat(), 1),
+            (date(today.year, other_months[0], 1).isoformat(), 3),
+            (date(today.year, other_months[1], 1).isoformat(), 2),
+        )
+        with app.app_context():
+            db = get_db()
+            player_ids = [self.player_id]
+            for index in range(2):
+                player_ids.append(db.execute(
+                    "INSERT INTO players(name,war_name) VALUES(?,?)",
+                    (f"Participante {index}", f"P{index}"),
+                ).lastrowid)
+            for match_date, confirmed_count in dates_and_counts:
+                sumula_id = db.execute(
+                    """INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by)
+                       VALUES(?,'SABADO','FINALIZADA',?)""",
+                    (match_date, self.user_id),
+                ).lastrowid
+                for player_id in player_ids[:confirmed_count]:
+                    db.execute(
+                        "INSERT INTO football_participants(sumula_id,player_id,status) VALUES(?,?,'CONFIRMADO')",
+                        (sumula_id, player_id),
+                    )
+                if confirmed_count < len(player_ids):
+                    db.execute(
+                        "INSERT INTO football_participants(sumula_id,player_id,status) VALUES(?,?,'AUSENTE')",
+                        (sumula_id, player_ids[-1]),
+                    )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        page = self.client.get("/futebol").get_data(as_text=True)
+        highest_label = ("Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez")[other_months[0] - 1]
+        current_label = ("Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez")[today.month - 1]
+        self.assertIn("Participação nas peladas", page)
+        self.assertIn("Média do mês atual", page)
+        self.assertIn("Média anual", page)
+        self.assertIn(f"Maior participação: {highest_label}", page)
+        self.assertIn(f"Menor participação: {current_label}", page)
+        self.assertIn('id="football-attendance-chart"', page)
+
     def test_player_names_sort_ignoring_case_and_accents(self):
         names = ["Zeca", "áureo", "Ana", "Álvaro", "bruno"]
         self.assertEqual(
@@ -794,7 +869,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertNotIn("Seu usuário não possui acesso a essa funcionalidade.", page)
         with app.app_context():
             request_row = get_db().execute(
-                "SELECT created_by,status FROM maintenance_requests WHERE created_by=? ORDER BY id DESC LIMIT 1",
+                "SELECT id,created_by,status FROM maintenance_requests WHERE created_by=? ORDER BY id DESC LIMIT 1",
                 (self.user_id,),
             ).fetchone()
             self.assertIsNotNone(request_row)
@@ -1094,6 +1169,61 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entries").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entry_photos").fetchone()[0], 0)
 
+    def test_qr_load_check_requires_and_atomically_stores_photo_evidence(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            material_id = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES(?,?)",
+                ("Carga para conferência", "FCG-QR"),
+            ).lastrowid
+            entry_id = db.execute(
+                """INSERT INTO load_entries(material_id,bmp,area_code,status)
+                   VALUES(?,?,'BAR','active')""",
+                (material_id, "BMP-QR | BAR"),
+            ).lastrowid
+            db.commit()
+
+        missing = self.client.post(f"/infra/load-relation/{entry_id}/check-auto")
+        self.assertEqual(missing.status_code, 400)
+        self.assertIn("foto", missing.get_json()["error"].lower())
+        with app.app_context():
+            db = get_db()
+            entry = db.execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+            self.assertIsNone(entry["last_checked_at"])
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM load_entry_photos WHERE load_entry_id=?", (entry_id,)).fetchone()[0],
+                0,
+            )
+
+        photo = BytesIO()
+        Image.new("RGB", (900, 700), color=(55, 125, 75)).save(photo, format="JPEG")
+        photo.seek(0)
+        checked = self.client.post(
+            f"/infra/load-relation/{entry_id}/check-auto",
+            data={"photo": (photo, "conferencia.jpg")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(checked.status_code, 200, checked.get_json())
+        self.assertTrue(checked.get_json()["ok"])
+        with app.app_context():
+            db = get_db()
+            entry = db.execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+            evidence = db.execute(
+                "SELECT * FROM load_entry_photos WHERE load_entry_id=?", (entry_id,)
+            ).fetchone()
+            self.assertIsNotNone(entry["last_checked_at"])
+            self.assertEqual(entry["last_checked_by"], self.user_id)
+            self.assertEqual(evidence["photo_kind"], "conference")
+            self.assertEqual(evidence["captured_by"], self.user_id)
+            self.assertIsNotNone(evidence["captured_at"])
+            self.assertTrue(evidence["photo_data"].startswith("data:image/jpeg;base64,"))
+
+        detail = self.client.get(f"/infra/load-relation/{entry_id}").get_data(as_text=True)
+        self.assertIn("Conferência", detail)
+        self.assertIn("Por Teste", detail)
+
     def test_load_batch_movement_status_and_report_filters(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
@@ -1128,6 +1258,34 @@ class MercadoPagoFlowTest(unittest.TestCase):
         report = self.client.get("/infra/load-relation/report?q=banqueta&status=maintenance")
         self.assertEqual(report.status_code, 200)
         self.assertIn("Equipe B", report.get_data(as_text=True))
+
+    def test_maintenance_list_colors_priority_and_open_age(self):
+        today = local_today()
+        with app.app_context():
+            db = get_db()
+            for index, (priority, age) in enumerate((("low", 12), ("medium", 20), ("high", 30), ("urgent", 5)), start=1):
+                db.execute(
+                    """INSERT INTO maintenance_requests
+                       (code,title,area_code,category,priority,description,status,occurred_on,created_at,created_by)
+                       VALUES(?,?,?,'electrical',?,?,'open',?,?,?)""",
+                    (
+                        f"MAN-AGE-{index}", f"Chamado idade {age}", "BAR", priority,
+                        "Teste de indicador de tempo.", today.isoformat(),
+                        (today - timedelta(days=age)).isoformat(), self.user_id,
+                    ),
+                )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        page = self.client.get("/infra/maintenance").get_data(as_text=True)
+        for priority in ("low", "medium", "high", "urgent"):
+            self.assertIn(f"maintenance-row-priority-{priority}", page)
+        self.assertIn('class="maintenance-age-green">12</strong>', page)
+        self.assertIn('class="maintenance-age-orange">20</strong>', page)
+        self.assertIn('class="maintenance-age-red">30</strong>', page)
+        self.assertIn("Tempo aberto", page)
+        self.assertIn("16 a 25 dias", page)
 
     def test_maintenance_crud_dashboard_photos_and_report(self):
         with self.client.session_transaction() as session:

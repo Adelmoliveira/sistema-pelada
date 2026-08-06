@@ -356,6 +356,9 @@ CREATE TABLE IF NOT EXISTS load_entry_photos (
     load_entry_id INTEGER NOT NULL REFERENCES load_entries(id) ON DELETE CASCADE,
     photo_data TEXT NOT NULL,
     thumbnail_data TEXT NOT NULL,
+    photo_kind TEXT NOT NULL DEFAULT 'registration',
+    captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    captured_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_load_entries_material ON load_entries(material_id);
@@ -1478,6 +1481,18 @@ def init_sqlite(wrapper):
     for column, definition in load_migrations.items():
         if column not in load_columns:
             conn.execute(f"ALTER TABLE load_entries ADD COLUMN {column} {definition}")
+    photo_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entry_photos)")}
+    photo_migrations = {
+        "photo_kind": "TEXT NOT NULL DEFAULT 'registration'",
+        # SQLite does not accept CURRENT_TIMESTAMP as the default while adding
+        # a column to an existing table. New rows set this value explicitly.
+        "captured_at": "TEXT",
+        "captured_by": "INTEGER REFERENCES users(id)",
+    }
+    for column, definition in photo_migrations.items():
+        if column not in photo_columns:
+            conn.execute(f"ALTER TABLE load_entry_photos ADD COLUMN {column} {definition}")
+    conn.execute("UPDATE load_entry_photos SET captured_at=COALESCE(captured_at,created_at,CURRENT_TIMESTAMP)")
     conn.execute("UPDATE load_entries SET bmp=bmp || ' | BAR' WHERE bmp NOT LIKE '%|%'")
     conn.execute("""CREATE TABLE IF NOT EXISTS load_entry_movements (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1628,6 +1643,9 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS last_checked_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS next_check_due_at TIMESTAMP")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS responsible TEXT NOT NULL DEFAULT ''")
+    wrapper.execute("ALTER TABLE load_entry_photos ADD COLUMN IF NOT EXISTS photo_kind TEXT NOT NULL DEFAULT 'registration'")
+    wrapper.execute("ALTER TABLE load_entry_photos ADD COLUMN IF NOT EXISTS captured_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    wrapper.execute("ALTER TABLE load_entry_photos ADD COLUMN IF NOT EXISTS captured_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE load_entries DROP CONSTRAINT IF EXISTS load_entries_status_check")
     wrapper.execute("""ALTER TABLE load_entries ADD CONSTRAINT load_entries_status_check
         CHECK(status IN ('active','maintenance','discharged','lost','borrowed'))""")

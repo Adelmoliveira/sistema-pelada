@@ -2,13 +2,20 @@
 {% block title %}Validar conferência · PELADEIROS GPCTA{% endblock %}
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
-  <div><a class="btn btn-sm btn-outline-secondary mb-2" href="{{url_for('infra.load_relation')}}">← Voltar para Relação de Carga</a><h1 class="h3 mb-1">Validar conferência</h1><p class="text-muted mb-0">Aponte a câmera para o QR Code de cada carga. A conferência será registrada automaticamente.</p></div>
+  <div><a class="btn btn-sm btn-outline-secondary mb-2" href="{{url_for('infra.load_relation')}}">← Voltar para Relação de Carga</a><h1 class="h3 mb-1">Validar conferência</h1><p class="text-muted mb-0">Leia o QR Code e tire uma foto atual de cada carga para concluir a conferência.</p></div>
   <div class="text-end"><div class="fs-4 fw-bold text-danger">{{entries|length}}</div><small class="text-muted">pendente(s) de {{total}}</small></div>
 </div>
-<div class="alert alert-info"><strong>Como funciona:</strong> toque em <strong>Iniciar conferência</strong> e leia os códigos em sequência. Se houver uma divergência física, interrompa a leitura e use <strong>Abrir carga</strong> para revisar e validar manualmente.</div>
+<div class="alert alert-info"><strong>Como funciona:</strong> toque em <strong>Iniciar conferência</strong>, leia o código e tire a foto solicitada. A foto, a data, o horário e o responsável serão armazenados no histórico da carga.</div>
 <div class="card shadow-sm mb-4"><div class="card-body">
   <div class="d-flex flex-wrap align-items-center gap-2 mb-3"><button id="start-load-scanner" type="button" class="btn btn-primary btn-lg">Iniciar conferência</button><button id="stop-load-scanner" type="button" class="btn btn-outline-secondary btn-lg" disabled>Parar câmera</button><span id="load-scanner-status" class="text-muted" aria-live="polite">Câmera parada.</span></div>
   <div id="load-qr-reader" class="mx-auto" style="max-width:420px;min-height:20px"></div>
+  <div id="load-photo-step" class="card border-primary mt-3 d-none" aria-live="polite"><div class="card-body">
+    <h2 class="h5">Foto obrigatória da carga</h2>
+    <p class="mb-3">QR Code lido para <strong id="load-photo-bmp"></strong>. Tire uma foto atual da carga para concluir a conferência.</p>
+    <input id="load-check-photo" class="form-control" type="file" accept="image/jpeg,image/png,image/webp" capture="environment">
+    <img id="load-photo-preview" class="img-fluid rounded border mt-3 d-none" style="max-height:280px" alt="Prévia da foto da carga">
+    <div class="d-flex flex-wrap gap-2 mt-3"><button id="confirm-load-check" type="button" class="btn btn-primary" disabled>Salvar foto e conferir</button><button id="cancel-load-check" type="button" class="btn btn-outline-secondary">Cancelar</button></div>
+  </div></div>
   <div class="row g-2 mt-3 text-center"><div class="col-6"><div class="border rounded p-2"><strong id="checked-count">0</strong><div class="small text-muted">Conferidas agora</div></div></div><div class="col-6"><div class="border rounded p-2"><strong id="issue-count" class="text-danger">0</strong><div class="small text-muted">Inconsistências</div></div></div></div>
   <div id="load-scan-results" class="mt-3" aria-live="polite"></div>
 </div></div>
@@ -26,7 +33,13 @@
   const issues = document.getElementById('issue-count');
   const csrf = {{ csrf_token()|tojson }};
   const endpointTemplate = {{ url_for('infra.check_load_entry_auto', entry_id=0)|tojson }};
-  let scanner = null, running = false, processing = false;
+  const photoStep = document.getElementById('load-photo-step');
+  const photoBmp = document.getElementById('load-photo-bmp');
+  const photoInput = document.getElementById('load-check-photo');
+  const photoPreview = document.getElementById('load-photo-preview');
+  const confirm = document.getElementById('confirm-load-check');
+  const cancel = document.getElementById('cancel-load-check');
+  let scanner = null, running = false, processing = false, pendingId = null, previewUrl = null;
   const seen = new Set();
   function addResult(text, kind) { const el = document.createElement('div'); el.className = `alert alert-${kind} py-2 mb-2`; el.textContent = text; results.prepend(el); }
   function entryIdFrom(text) { const m = String(text || '').match(/\/load-relation\/(\d+)/); return m && m[1]; }
@@ -36,23 +49,51 @@
     if (!id) { addResult('QR Code não reconhecido como uma carga do sistema.', 'warning'); return; }
     if (seen.has(id)) return;
     processing = true;
-    try {
-      const url = endpointTemplate.replace('/0/check-auto', `/${id}/check-auto`);
-      const response = await fetch(url, {method:'POST', headers:{'Accept':'application/json','Content-Type':'application/x-www-form-urlencoded','X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'}, body:new URLSearchParams({csrf_token:csrf})});
-      const data = await response.json();
-      if (!response.ok) { issues.textContent = Number(issues.textContent) + 1; addResult(data.error || 'Não foi possível conferir esta carga.', 'danger'); }
-      else { seen.add(id); checked.textContent = Number(checked.textContent) + 1; const row = document.querySelector(`tr[data-entry-id="${id}"]`); if (row) row.remove(); addResult(`${data.bmp} conferida com sucesso.`, 'success'); }
-    } catch (error) { issues.textContent = Number(issues.textContent) + 1; addResult('Não foi possível conectar ao servidor. Tente novamente.', 'danger'); }
-    finally { setTimeout(() => { processing = false; }, 900); }
+    pendingId = id;
+    const row = document.querySelector(`tr[data-entry-id="${id}"]`);
+    photoBmp.textContent = row ? row.querySelector('strong').textContent : `carga #${id}`;
+    await stopScanner();
+    photoStep.classList.remove('d-none');
+    status.textContent = 'QR Code reconhecido. Tire a foto da carga.';
+    processing = false;
   }
   async function startScanner() {
-    if (running) return;
+    if (running || pendingId) return;
     if (typeof Html5Qrcode === 'undefined') { status.textContent = 'Leitor de QR indisponível neste navegador. Abra a carga pela lista abaixo.'; return; }
     scanner = new Html5Qrcode('load-qr-reader');
     try { await scanner.start({facingMode:'environment'}, {fps:10, qrbox:{width:240,height:240}}, handleScan, () => {}); running = true; start.disabled = true; stop.disabled = false; status.textContent = 'Câmera ativa. Leia os QR Codes em sequência.'; }
     catch (error) { status.textContent = 'Não foi possível abrir a câmera. Verifique a permissão e use HTTPS.'; scanner = null; }
   }
-  async function stopScanner() { if (!scanner || !running) return; try { await scanner.stop(); scanner.clear(); } catch (_) {} running = false; start.disabled = false; stop.disabled = true; status.textContent = 'Câmera parada.'; }
+  async function stopScanner() { if (!scanner || !running) return; try { await scanner.stop(); scanner.clear(); } catch (_) {} scanner = null; running = false; start.disabled = false; stop.disabled = true; status.textContent = 'Câmera parada.'; }
+  function clearPhotoStep() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null; pendingId = null; photoInput.value = ''; confirm.disabled = true;
+    photoPreview.removeAttribute('src'); photoPreview.classList.add('d-none'); photoStep.classList.add('d-none');
+  }
+  photoInput.addEventListener('change', () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    const file = photoInput.files[0]; confirm.disabled = !file;
+    if (!file) { photoPreview.classList.add('d-none'); return; }
+    previewUrl = URL.createObjectURL(file); photoPreview.src = previewUrl; photoPreview.classList.remove('d-none');
+  });
+  confirm.addEventListener('click', async () => {
+    const file = photoInput.files[0];
+    if (!pendingId || !file || processing) return;
+    processing = true; confirm.disabled = true; cancel.disabled = true; status.textContent = 'Salvando foto e conferência...';
+    const id = pendingId;
+    const body = new FormData(); body.append('csrf_token', csrf); body.append('photo', file, file.name);
+    try {
+      const url = endpointTemplate.replace('/0/check-auto', `/${id}/check-auto`);
+      const response = await fetch(url, {method:'POST', headers:{'Accept':'application/json','X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'}, body});
+      const data = await response.json();
+      if (!response.ok) { issues.textContent = Number(issues.textContent) + 1; addResult(data.error || 'Não foi possível conferir esta carga.', 'danger'); confirm.disabled = false; status.textContent = 'Corrija a foto e tente novamente.'; return; }
+      seen.add(id); checked.textContent = Number(checked.textContent) + 1;
+      const row = document.querySelector(`tr[data-entry-id="${id}"]`); if (row) row.remove();
+      addResult(`${data.bmp} conferida com foto e horário registrados.`, 'success'); clearPhotoStep(); await startScanner();
+    } catch (error) { issues.textContent = Number(issues.textContent) + 1; addResult('Não foi possível conectar ao servidor. Tente novamente.', 'danger'); confirm.disabled = false; status.textContent = 'Falha de conexão.'; }
+    finally { processing = false; cancel.disabled = false; }
+  });
+  cancel.addEventListener('click', async () => { if (processing) return; clearPhotoStep(); await startScanner(); });
   start.addEventListener('click', startScanner); stop.addEventListener('click', stopScanner);
 })();
 </script>

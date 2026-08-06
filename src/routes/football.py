@@ -335,8 +335,45 @@ def dashboard():
     for label, start, end in (("Mês atual", month_start, month_end), ("Ano atual", year_start, year_end)):
         row = db.execute("SELECT COUNT(CASE WHEN fm.blue_score > fm.white_score THEN 1 END) blue_wins, COUNT(CASE WHEN fm.white_score > fm.blue_score THEN 1 END) white_wins FROM football_matches fm JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fm.status='ENCERRADA' AND fs.situacao!='CANCELADA' AND fs.match_date>=? AND fs.match_date<?", (start.isoformat(), end.isoformat())).fetchone()
         wins[label] = {"azul": int(row["blue_wins"] or 0), "branco": int(row["white_wins"] or 0)}
+    attendance_rows = db.execute(
+        """SELECT substr(CAST(fs.match_date AS TEXT),1,7) month_key,
+                  COUNT(DISTINCT fs.id) peladas,
+                  COUNT(CASE WHEN fp.status='CONFIRMADO' THEN 1 END) participants
+           FROM football_sumulas fs
+           LEFT JOIN football_participants fp ON fp.sumula_id=fs.id
+           WHERE fs.situacao='FINALIZADA' AND fs.match_date>=? AND fs.match_date<?
+           GROUP BY substr(CAST(fs.match_date AS TEXT),1,7)
+           ORDER BY month_key""",
+        (year_start.isoformat(), year_end.isoformat()),
+    ).fetchall()
+    attendance_by_month = {
+        str(row["month_key"]): {
+            "peladas": int(row["peladas"] or 0),
+            "participants": int(row["participants"] or 0),
+            "average": round(int(row["participants"] or 0) / int(row["peladas"]), 1) if row["peladas"] else 0,
+        }
+        for row in attendance_rows
+    }
+    month_names = ("Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez")
+    annual_peladas = sum(value["peladas"] for value in attendance_by_month.values())
+    annual_participants = sum(value["participants"] for value in attendance_by_month.values())
+    months_with_matches = [(key, value) for key, value in attendance_by_month.items() if value["peladas"]]
+    highest_month = max(months_with_matches, key=lambda item: (item[1]["average"], -int(item[0][-2:]))) if months_with_matches else None
+    lowest_month = min(months_with_matches, key=lambda item: (item[1]["average"], int(item[0][-2:]))) if months_with_matches else None
+    current_month_key = today.strftime("%Y-%m")
+    attendance = {
+        "month_average": attendance_by_month.get(current_month_key, {}).get("average", 0),
+        "year_average": round(annual_participants / annual_peladas, 1) if annual_peladas else 0,
+        "month_peladas": attendance_by_month.get(current_month_key, {}).get("peladas", 0),
+        "year_peladas": annual_peladas,
+        "labels": list(month_names),
+        "values": [attendance_by_month.get(f"{today.year}-{month:02d}", {}).get("average", 0) for month in range(1, 13)],
+        "highest": ({"label": month_names[int(highest_month[0][-2:]) - 1], **highest_month[1]} if highest_month else None),
+        "lowest": ({"label": month_names[int(lowest_month[0][-2:]) - 1], **lowest_month[1]} if lowest_month else None),
+        "year": today.year,
+    }
     position_summary, eligible_total, positioned_total = _position_distribution(db)
-    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, team_wins=wins, management_view=True)
+    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, team_wins=wins, attendance=attendance, management_view=True)
 
 
 @bp.get("/gestao/posicoes")
