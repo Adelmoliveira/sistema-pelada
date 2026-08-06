@@ -40,6 +40,21 @@
         <div class="alert alert-info mt-3 mb-0 small">Rascunhos ficam salvos sem enviar notificações. O envio só alcança quem já permitiu notificações e cadastrou o celular no PWA.</div>
       </div>
     </section>
+    <section class="card shadow-sm mt-4 border-primary">
+      <div class="card-body">
+        <h2 class="h5 mb-2">Testar homenagem</h2>
+        <p class="text-muted small">Envie a foto e a mensagem <strong>🗣️ VEEENHAAAMMM...</strong> para apenas um peladeiro.</p>
+        <form method="post" action="{{url_for('football.test_tribute_notification')}}" onsubmit="return confirm('Enviar o teste da homenagem somente para o peladeiro selecionado?')">
+          <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+          <label class="form-label" for="tribute-player">Peladeiro</label>
+          <select class="form-select mb-3" id="tribute-player" name="player_id" required>
+            <option value="">Selecione...</option>
+            {% for player in active_players %}<option value="{{player.id}}">{{player.war_name or player.name}}{% if player.war_name %} · {{player.name}}{% endif %}</option>{% endfor %}
+          </select>
+          <button class="btn btn-outline-primary w-100" type="submit">Enviar teste individual</button>
+        </form>
+      </div>
+    </section>
   </div>
 
   <div class="col-12 col-xl-7">
@@ -58,7 +73,7 @@
               <tr>
                 <td class="text-nowrap">{{item.created_at|brdate}}</td>
                 <td><strong>{{item.title}}</strong><div class="small text-muted text-break" style="white-space:pre-line">{{item.body}}</div></td>
-                <td>{{'Todos os peladeiros' if item.audience == 'all' else 'Aptos para futebol'}}</td>
+                <td>{% if item.audience == 'all' %}Todos os peladeiros{% elif item.audience == 'football' %}Aptos para futebol{% elif item.audience.startswith('player:') %}Somente {{player_names.get(item.audience[7:], 'peladeiro específico')}}{% else %}Público específico{% endif %}</td>
                 <td><span class="badge text-bg-{{'warning' if item.status == 'RASCUNHO' else 'success'}}">{{'Rascunho' if item.status == 'RASCUNHO' else 'Enviado'}}</span>
                   {% if item.status == 'RASCUNHO' %}
                   <div class="d-flex gap-1 mt-2">
