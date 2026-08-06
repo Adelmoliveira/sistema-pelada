@@ -15,7 +15,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from app import app
-from src.db import get_db
+from src.db import get_db, init_postgres
 from src.routes.auth import make_password_hash
 from src.routes.sales import pix_access_token
 from src.services.mercadopago import validate_webhook_signature
@@ -31,6 +31,31 @@ from werkzeug.security import check_password_hash
 
 
 class MercadoPagoFlowTest(unittest.TestCase):
+    def test_postgres_schema_omits_sqlite_seed_syntax(self):
+        class Recorder:
+            def __init__(self):
+                self.statements = []
+
+            def execute(self, statement, params=()):
+                self.statements.append(statement)
+                return self
+
+            def commit(self):
+                return None
+
+        recorder = Recorder()
+        init_postgres(recorder)
+        self.assertFalse(
+            any("INSERT OR IGNORE" in statement.upper() for statement in recorder.statements)
+        )
+        schedule_seeds = [
+            statement
+            for statement in recorder.statements
+            if statement.upper().startswith("INSERT INTO TRIBUTE_SCHEDULES")
+        ]
+        self.assertTrue(schedule_seeds)
+        self.assertTrue(all("RETURNING WEEKDAY" in statement.upper() for statement in schedule_seeds))
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         app.config.update(

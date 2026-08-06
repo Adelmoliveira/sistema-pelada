@@ -1581,6 +1581,10 @@ def init_postgres(wrapper):
     
     for stmt in pg_schema.split(';'):
         stmt_clean = stmt.strip()
+        # SQLite seed statements are reapplied below with PostgreSQL's
+        # idempotent ON CONFLICT syntax after their tables exist.
+        if stmt_clean.upper().startswith("INSERT OR IGNORE"):
+            continue
         if stmt_clean:
             wrapper.execute(stmt_clean)
     
@@ -1624,8 +1628,8 @@ def init_postgres(wrapper):
     wrapper.execute("""CREATE TABLE IF NOT EXISTS tribute_schedules (
         weekday INTEGER PRIMARY KEY CHECK(weekday BETWEEN 0 AND 6), enabled INTEGER NOT NULL DEFAULT 0,
         hour INTEGER NOT NULL DEFAULT 12 CHECK(hour BETWEEN 0 AND 23), updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
-    wrapper.execute("INSERT INTO tribute_schedules(weekday,enabled,hour) VALUES(2,1,17) ON CONFLICT(weekday) DO NOTHING")
-    wrapper.execute("INSERT INTO tribute_schedules(weekday,enabled,hour) VALUES(5,1,15) ON CONFLICT(weekday) DO NOTHING")
+    wrapper.execute("INSERT INTO tribute_schedules(weekday,enabled,hour) VALUES(2,1,17) ON CONFLICT(weekday) DO NOTHING RETURNING weekday")
+    wrapper.execute("INSERT INTO tribute_schedules(weekday,enabled,hour) VALUES(5,1,15) ON CONFLICT(weekday) DO NOTHING RETURNING weekday")
     wrapper.execute("ALTER TABLE bar_restock_request_items ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''")
     wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS workflow_status TEXT NOT NULL DEFAULT 'PENDENTE'")
     wrapper.execute("UPDATE bar_restock_requests SET workflow_status=status WHERE workflow_status='PENDENTE' AND status<>'PENDENTE'")
