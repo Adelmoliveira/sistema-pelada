@@ -829,7 +829,8 @@ def update_tribute_settings():
             enabled = 1 if request.form.get(f"day_{weekday}") == "1" else 0
             db.execute(
                 """INSERT INTO tribute_schedules(weekday,enabled,hour,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP)
-                   ON CONFLICT(weekday) DO UPDATE SET enabled=?,hour=?,updated_at=CURRENT_TIMESTAMP""",
+                   ON CONFLICT(weekday) DO UPDATE SET enabled=?,hour=?,updated_at=CURRENT_TIMESTAMP
+                   RETURNING weekday""",
                 (weekday, enabled, hour, enabled, hour),
             )
     flash("Agendamento da homenagem atualizado.", "success")
