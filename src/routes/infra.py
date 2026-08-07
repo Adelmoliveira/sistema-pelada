@@ -458,15 +458,32 @@ def bulk_edit_load_entries():
 def load_check():
     db = get_db()
     today = local_today().isoformat()
+    pending_total = db.execute(
+        """SELECT COUNT(*) total FROM load_entries
+           WHERE status NOT IN ('discharged','lost')
+             AND (next_check_due_at IS NULL OR date(next_check_due_at)<=?)""",
+        (today,),
+    ).fetchone()["total"]
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    per_page = 15
+    pages = max(1, (pending_total + per_page - 1) // per_page)
+    page = min(page, pages)
     entries = db.execute(
         """SELECT le.id,le.bmp,le.location,le.next_check_due_at,m.description material_description
            FROM load_entries le JOIN materials m ON m.id=le.material_id
            WHERE le.status NOT IN ('discharged','lost') AND (le.next_check_due_at IS NULL OR date(le.next_check_due_at)<=?)
-           ORDER BY CASE WHEN le.next_check_due_at IS NULL THEN 0 ELSE 1 END,le.next_check_due_at,le.id""",
-        (today,),
+           ORDER BY CASE WHEN le.next_check_due_at IS NULL THEN 0 ELSE 1 END,le.next_check_due_at,le.id
+           LIMIT ? OFFSET ?""",
+        (today, per_page, (page - 1) * per_page),
     ).fetchall()
     total = db.execute("SELECT COUNT(*) total FROM load_entries WHERE status NOT IN ('discharged','lost')").fetchone()["total"]
-    return render_template("load_check.html", entries=entries, total=total, today=today)
+    return render_template(
+        "load_check.html", entries=entries, total=total, pending_total=pending_total,
+        page=page, pages=pages, today=today,
+    )
 
 
 @bp.get("/load-relation/qr-codes")

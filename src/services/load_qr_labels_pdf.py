@@ -1,6 +1,4 @@
 from io import BytesIO
-from pathlib import Path
-
 import qrcode
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -12,7 +10,9 @@ from reportlab.pdfgen import canvas
 
 LABEL_SIZES = {
     "small": {"label": (48 * mm, 30 * mm), "columns": 4, "rows": 9},
-    "standard": {"label": (65 * mm, 42 * mm), "columns": 3, "rows": 6},
+    # The standard label is 10 mm wider to make the material identification
+    # easier to read. Two columns keep the labels inside an A4 sheet.
+    "standard": {"label": (75 * mm, 42 * mm), "columns": 2, "rows": 6},
     "large": {"label": (95 * mm, 62 * mm), "columns": 2, "rows": 4},
 }
 
@@ -29,18 +29,6 @@ def _qr_image(payload):
     image.save(output, "PNG")
     output.seek(0)
     return ImageReader(output)
-
-
-def _gpcta_logo():
-    """Return the GPCTA logo used on printed asset labels, when available."""
-    logo_path = Path(__file__).resolve().parents[2] / "static" / "logo-gpcta.jpeg"
-    try:
-        if logo_path.is_file():
-            return ImageReader(str(logo_path))
-    except OSError:
-        # A missing logo must not prevent the QR labels from being generated.
-        pass
-    return None
 
 
 def _fitted_text(value, width, font_name, font_size):
@@ -66,8 +54,6 @@ def build_load_qr_labels_pdf(entries, base_url, size="standard"):
     pdf = canvas.Canvas(output, pagesize=A4)
     pdf.setTitle("Etiquetas QR - Relação de Carga")
     pdf.setAuthor("PELADEIROS GPCTA")
-    logo = _gpcta_logo()
-
     for index, entry in enumerate(entries):
         position = index % per_page
         if index and position == 0:
@@ -103,12 +89,14 @@ def build_load_qr_labels_pdf(entries, base_url, size="standard"):
         pdf.drawString(text_x, y + label_height - 13 * mm, area)
 
         if size != "small":
+            # The material name replaces the logo on the printed label so the
+            # QR code can be identified quickly after it is fixed in place.
             pdf.setFillColor(colors.HexColor("#253D4A"))
             description_size = 7 if size == "standard" else 8.5
-            pdf.setFont("Helvetica", description_size)
+            pdf.setFont("Helvetica-Bold", description_size)
             pdf.drawString(
                 text_x, y + label_height - 20 * mm,
-                _fitted_text(entry["material_description"], text_width, "Helvetica", description_size),
+                _fitted_text(entry["material_description"], text_width, "Helvetica-Bold", description_size),
             )
             if entry["location"]:
                 location_size = 6.5 if size == "standard" else 8
@@ -118,22 +106,8 @@ def build_load_qr_labels_pdf(entries, base_url, size="standard"):
                     _fitted_text(f"Local: {entry['location']}", text_width, "Helvetica", location_size),
                 )
 
-        # Keep the mark in the gap between the area code and the GPCTA footer.
-        # It is intentionally small so it never interferes with the QR code,
-        # BMP identifier or optional material/location text.
-        if logo:
-            logo_size = 5.5 * mm if size == "small" else (8 * mm if size == "standard" else 10 * mm)
-            logo_x = text_x + max(0, (text_width - logo_size) / 2)
-            # Leave room for the optional location line at the bottom and the
-            # material description above it.
-            logo_y = y + (9 * mm if size == "small" else (11 * mm if size == "standard" else 12 * mm))
-            pdf.drawImage(
-                logo, logo_x, logo_y, logo_size, logo_size,
-                preserveAspectRatio=True, anchor="c", mask="auto",
-            )
-
         pdf.setFillColor(colors.HexColor("#6C757D"))
-        pdf.setFont("Helvetica", 5.5 if size == "small" else 6.5)
+        pdf.setFont("Helvetica-Bold", 5.5 if size == "small" else 6.5)
         pdf.drawRightString(x + label_width - 3.5 * mm, y + 2.8 * mm, "GPCTA")
 
     if not entries:
