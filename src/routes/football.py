@@ -787,6 +787,15 @@ def notifications():
         "SELECT id,name,war_name FROM players WHERE active=1 ORDER BY name"
     ).fetchall()
     player_names = {str(player["id"]): player["war_name"] or player["name"] for player in active_players}
+    health_page_size = 5
+    try:
+        health_page = max(1, int(request.args.get("health_page", "1")))
+    except (TypeError, ValueError):
+        health_page = 1
+    health_total = int(db.execute("SELECT COUNT(*) AS total FROM players WHERE active=1").fetchone()["total"] or 0)
+    health_pages = max(1, (health_total + health_page_size - 1) // health_page_size)
+    health_page = min(health_page, health_pages)
+    health_offset = (health_page - 1) * health_page_size
     health_rows = db.execute(
         """SELECT p.id,p.name,p.war_name,
                   (SELECT COUNT(*) FROM push_subscriptions s WHERE s.player_id=p.id) device_count,
@@ -794,7 +803,8 @@ def notifications():
                   (SELECT MAX(s.last_push_at) FROM push_subscriptions s WHERE s.player_id=p.id) last_push_at,
                   (SELECT s.last_push_status FROM push_subscriptions s WHERE s.player_id=p.id ORDER BY s.last_push_at DESC,s.id DESC LIMIT 1) last_push_status,
                   (SELECT COUNT(*) FROM push_inbox i WHERE i.player_id=p.id AND i.read_at IS NULL) unread_count
-           FROM players p WHERE p.active=1 ORDER BY p.name"""
+           FROM players p WHERE p.active=1 ORDER BY p.name LIMIT ? OFFSET ?""",
+        (health_page_size, health_offset),
     ).fetchall()
     tribute_settings = db.execute("SELECT * FROM tribute_settings WHERE id=1").fetchone()
     schedule_rows = db.execute("SELECT * FROM tribute_schedules ORDER BY weekday").fetchall()
@@ -809,6 +819,9 @@ def notifications():
         active_players=active_players,
         player_names=player_names,
         health_rows=health_rows,
+        health_page=health_page,
+        health_pages=health_pages,
+        health_total=health_total,
         tribute_settings=tribute_settings,
         tribute_schedules=schedules,
         weekday_labels=WEEKDAY_LABELS,
