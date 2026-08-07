@@ -1,6 +1,6 @@
 import uuid
 from datetime import date
-from flask import Blueprint, render_template, request, redirect, url_for, flash, g, jsonify, current_app
+from flask import Blueprint, render_template, request, redirect, url_for, flash, g, jsonify, current_app, send_file
 from itsdangerous import BadData, URLSafeTimedSerializer
 from src.db import get_db
 from src.routes.auth import roles_allowed
@@ -16,6 +16,7 @@ from src.services.stock_alerts import notify_low_stock
 from src.services.purchase_receipts import send_purchase_receipt, send_delivery_update
 from src.services.push_notifications import send_player_push_once
 from src.services.bar_credits import approve_topup, balance as credit_balance, consume as consume_credit, low_balance_threshold, notify_low_balance
+from src.services.pending_delivery_pdf import build_pending_delivery_pdf
 
 bp = Blueprint("sales", __name__)
 PIX_TOKEN_MAX_AGE = 60 * 60
@@ -434,7 +435,68 @@ def delivered_history():
 def canceled_history():
     return render_template("order_history.html", history_kind="canceled")
 
+
+def pending_delivery_orders(db):
+    """Return paid orders with at least one item still awaiting pickup.
+
+    This is deliberately independent from the operational delivery feed: the
+    page using it has no delivery actions and is intended only for counting
+    and planning the pending withdrawals.
+    """
+    select = """SELECT s.*,p.name player_name,p.war_name,p.thumbnail_data player_thumbnail_data,
+                e.name event_name,u.name delivered_by_name
+                FROM sales s LEFT JOIN players p ON p.id=s.player_id
+                LEFT JOIN bar_events e ON e.id=s.event_id
+                LEFT JOIN users u ON u.id=s.delivered_by"""
+    sales = db.execute(
+        f"""{select}
+             WHERE s.paid=1 AND s.delivered_at IS NULL
+               AND (s.ready_for_delivery=1 OR s.event_id IS NOT NULL)
+             ORDER BY COALESCE(s.paid_at,s.created_at),s.id"""
+    ).fetchall()
+    result = []
+    for sale in sales:
+        order = delivery_order_data(db, sale)
+        if order["pending_quantity"] > 0:
+            result.append(order)
+    return result
+
+
+@bp.get("/orders/pending-delivery")
+@roles_allowed("manager", "staff")
+def pending_delivery():
+    orders = pending_delivery_orders(get_db())
+    return render_template(
+        "pending_delivery.html",
+        orders=orders,
+        total_orders=len(orders),
+        total_items=sum(order["pending_quantity"] for order in orders),
+    )
+
+
+@bp.get("/orders/pending-delivery.pdf")
+@roles_allowed("manager", "staff")
+def pending_delivery_pdf():
+    orders = pending_delivery_orders(get_db())
+    pdf = build_pending_delivery_pdf(orders)
+    return send_file(
+        pdf,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name="pedidos-aguardando-retirada.pdf",
+    )
+
 def delivery_order_data(db, sale):
+    # Normalize rows before reading optional columns.  sqlite3.Row and the
+    # PostgreSQL adapters do not expose ``keys`` in exactly the same way; in
+    # particular, iterating over ``row.keys`` (without calling it) raises
+    # ``'builtin_function_or_method' object is not iterable`` on the recent
+    # deliveries page.
+    sale_keys = getattr(sale, "keys", None)
+    if callable(sale_keys):
+        sale_keys = sale_keys()
+    sale_keys = set(sale_keys or ())
+    sale = {key: sale[key] for key in sale_keys}
     items = db.execute(
         """SELECT si.id,si.quantity,p.name,
                   COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=si.id),0) delivered_quantity
@@ -446,8 +508,15 @@ def delivery_order_data(db, sale):
     # detalhes em sale_item_deliveries não eram gravados. Um pedido com
     # delivered_at preenchido, mas sem nenhum detalhe, foi integralmente
     # entregue e não deve exibir itens pendentes.
-    if sale["delivered_at"] and items and not any(int(item["delivered_quantity"] or 0) > 0 for item in items):
-        items = [dict(item, delivered_quantity=item["quantity"]) for item in items]
+    item_data_rows = []
+    for item in items:
+        item_keys = getattr(item, "keys", None)
+        if callable(item_keys):
+            item_keys = item_keys()
+        item_data_rows.append({key: item[key] for key in set(item_keys or ())})
+    items = item_data_rows
+    if sale.get("delivered_at") and items and not any(int(item.get("delivered_quantity") or 0) > 0 for item in items):
+        items = [dict(item, delivered_quantity=item.get("quantity")) for item in items]
     item_data = [{
         "id": item["id"], "name": item["name"], "quantity": int(item["quantity"] or 0),
         "delivered_quantity": int(item["delivered_quantity"] or 0),
@@ -457,26 +526,26 @@ def delivery_order_data(db, sale):
     pending_quantity = sum(item["pending_quantity"] for item in item_data)
     return {
         "id": sale["id"],
-        "player_name": sale["guest_name"] or sale["war_name"] or sale["player_name"] or f"Convidado #{sale['id']}",
-        "player_full_name": sale["player_name"] or sale["guest_name"] or "",
-        "player_war_name": sale["war_name"] or "",
-        "player_photo": sale["player_thumbnail_data"] or "",
-        "event_name": sale["event_name"] if "event_name" in sale.keys() else "",
-        "is_event": bool(sale["event_id"]),
-        "guest_name": sale["guest_name"] or "",
-        "total_cents": sale["total_cents"],
-        "payment_method": sale["payment_method"],
-        "payment_status": sale["payment_status"],
-        "paid": bool(sale["paid"]),
-        "waiting_cash": sale["payment_status"] == "pending_cash" and not sale["paid"],
-        "notes": sale["notes"] or "",
-        "paid_at": datetime_iso(sale["paid_at"] or sale["created_at"]),
-        "delivered_at": datetime_iso(sale["delivered_at"]),
-        "delivered_by_name": sale["delivered_by_name"] or "",
-        "canceled": sale["payment_status"] == "canceled",
-        "canceled_at": datetime_iso(sale["canceled_at"]) if "canceled_at" in sale.keys() else None,
-        "canceled_by_name": sale["canceled_by_name"] or "" if "canceled_by_name" in sale.keys() else "",
-        "cancellation_reason": sale["cancellation_reason"] or "" if "cancellation_reason" in sale.keys() else "",
+        "player_name": sale.get("guest_name") or sale.get("war_name") or sale.get("player_name") or f"Convidado #{sale['id']}",
+        "player_full_name": sale.get("player_name") or sale.get("guest_name") or "",
+        "player_war_name": sale.get("war_name") or "",
+        "player_photo": sale.get("player_thumbnail_data") or "",
+        "event_name": sale.get("event_name") or "",
+        "is_event": bool(sale.get("event_id")),
+        "guest_name": sale.get("guest_name") or "",
+        "total_cents": sale.get("total_cents", 0),
+        "payment_method": sale.get("payment_method") or "",
+        "payment_status": sale.get("payment_status") or "",
+        "paid": bool(sale.get("paid")),
+        "waiting_cash": sale.get("payment_status") == "pending_cash" and not sale.get("paid"),
+        "notes": sale.get("notes") or "",
+        "paid_at": datetime_iso(sale.get("paid_at") or sale.get("created_at")),
+        "delivered_at": datetime_iso(sale.get("delivered_at")),
+        "delivered_by_name": sale.get("delivered_by_name") or "",
+        "canceled": sale.get("payment_status") == "canceled",
+        "canceled_at": datetime_iso(sale.get("canceled_at")) if "canceled_at" in sale else None,
+        "canceled_by_name": sale.get("canceled_by_name") or "",
+        "cancellation_reason": sale.get("cancellation_reason") or "",
         "partial": delivered_quantity > 0 and pending_quantity > 0,
         "delivered_quantity": delivered_quantity,
         "pending_quantity": pending_quantity,

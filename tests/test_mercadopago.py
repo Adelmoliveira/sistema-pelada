@@ -725,11 +725,18 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("<span>Bar</span>", page)
         self.assertIn("<span>Infra-Estrutura</span>", page)
         self.assertIn(">Novo chamado</a>", page)
+        self.assertIn(">Relação de Carga</a>", page)
+        self.assertIn(">Validar conferência</a>", page)
         self.assertIn("<span>Urgente</span>", page)
         self.assertNotIn(">Materiais</a>", page)
-        self.assertNotIn(">Relação de Carga</a>", page)
         self.assertNotIn(">Manutenção</a>", page)
         self.assertNotIn("Acompanhamento e resolução", page)
+
+        relation = self.client.get("/infra/load-relation")
+        self.assertEqual(relation.status_code, 200)
+        self.assertNotIn("Edição em lote", relation.get_data(as_text=True))
+        check = self.client.get("/infra/load-relation/check")
+        self.assertEqual(check.status_code, 200)
 
         submitted = self.client.post(
             "/infra/maintenance/new",
@@ -757,10 +764,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 ("open", "", 0),
             )
 
-        for forbidden_path in ("/infra/maintenance", "/infra/materials", "/infra/load-relation"):
+        for forbidden_path in ("/infra/maintenance", "/infra/materials", "/infra/load-relation/qr-codes"):
             denied = self.client.get(forbidden_path)
             self.assertEqual(denied.status_code, 302)
-            self.assertEqual(denied.headers["Location"], "/")
+            self.assertEqual(denied.headers["Location"], "/orders")
 
     def test_client_can_create_maintenance_request_without_internal_access_error(self):
         """A abertura pelo peladeiro não deve redirecionar para detalhes internos."""
@@ -794,7 +801,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertNotIn("Seu usuário não possui acesso a essa funcionalidade.", page)
         with app.app_context():
             request_row = get_db().execute(
-                "SELECT created_by,status FROM maintenance_requests WHERE created_by=? ORDER BY id DESC LIMIT 1",
+                "SELECT id,created_by,status FROM maintenance_requests WHERE created_by=? ORDER BY id DESC LIMIT 1",
                 (self.user_id,),
             ).fetchone()
             self.assertIsNotNone(request_row)
@@ -1365,7 +1372,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             "/login", data={"username": "infra.teste", "password": "senha-infra-123"}
         )
         self.assertEqual(login.status_code, 303)
-        self.assertTrue(login.headers["Location"].endswith("/infra/load-relation"))
+        self.assertTrue(login.headers["Location"].endswith("/infra/maintenance"))
 
         page = self.client.get("/infra/load-relation")
         self.assertEqual(page.status_code, 200)
@@ -1386,7 +1393,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         for forbidden_path in ("/", "/sale", "/stock", "/cash", "/players", "/users"):
             denied = self.client.get(forbidden_path)
             self.assertEqual(denied.status_code, 302)
-            self.assertTrue(denied.headers["Location"].endswith("/infra/load-relation"))
+            self.assertTrue(denied.headers["Location"].endswith("/infra/maintenance"))
 
         self.client.post("/logout")
         protected = self.client.get("/infra/materials")

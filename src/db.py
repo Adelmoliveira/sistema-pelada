@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS bar_restock_requests (
     reviewed_at TEXT,
     review_notes TEXT DEFAULT '',
     workflow_status TEXT NOT NULL DEFAULT 'PENDENTE',
+    supplier TEXT NOT NULL DEFAULT '',
+    purchase_amount_cents INTEGER NOT NULL DEFAULT 0,
+    payment_account TEXT NOT NULL DEFAULT 'bank',
+    receipt_data TEXT NOT NULL DEFAULT '',
+    receipt_filename TEXT NOT NULL DEFAULT '',
+    receipt_mime TEXT NOT NULL DEFAULT '',
+    purchase_recorded_at TEXT,
+    purchase_recorded_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS bar_restock_request_history (
@@ -1311,6 +1319,19 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE bar_restock_requests ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'PENDENTE'")
         conn.execute("UPDATE bar_restock_requests SET workflow_status=status WHERE workflow_status='PENDENTE' AND status<>'PENDENTE'")
         conn.commit()
+    for column, definition in (
+        ("supplier", "TEXT NOT NULL DEFAULT ''"),
+        ("purchase_amount_cents", "INTEGER NOT NULL DEFAULT 0"),
+        ("payment_account", "TEXT NOT NULL DEFAULT 'bank'"),
+        ("receipt_data", "TEXT NOT NULL DEFAULT ''"),
+        ("receipt_filename", "TEXT NOT NULL DEFAULT ''"),
+        ("receipt_mime", "TEXT NOT NULL DEFAULT ''"),
+        ("purchase_recorded_at", "TEXT"),
+        ("purchase_recorded_by", "INTEGER REFERENCES users(id)"),
+    ):
+        if column not in restock_request_columns:
+            conn.execute(f"ALTER TABLE bar_restock_requests ADD COLUMN {column} {definition}")
+    conn.commit()
     conn.execute("""CREATE TABLE IF NOT EXISTS bar_restock_request_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
@@ -1547,6 +1568,14 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE bar_restock_request_items ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''")
     wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS workflow_status TEXT NOT NULL DEFAULT 'PENDENTE'")
+    wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS supplier TEXT NOT NULL DEFAULT ''")
+    wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS purchase_amount_cents INTEGER NOT NULL DEFAULT 0")
+    wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS payment_account TEXT NOT NULL DEFAULT 'bank'")
+    wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS receipt_data TEXT NOT NULL DEFAULT ''")
+    wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS receipt_filename TEXT NOT NULL DEFAULT ''")
+    wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS receipt_mime TEXT NOT NULL DEFAULT ''")
+    wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS purchase_recorded_at TIMESTAMP")
+    wrapper.execute("ALTER TABLE bar_restock_requests ADD COLUMN IF NOT EXISTS purchase_recorded_by INTEGER REFERENCES users(id)")
     wrapper.execute("UPDATE bar_restock_requests SET workflow_status=status WHERE workflow_status='PENDENTE' AND status<>'PENDENTE'")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS bar_restock_request_history (
         id SERIAL PRIMARY KEY, request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,

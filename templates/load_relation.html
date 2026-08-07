@@ -10,29 +10,52 @@
     <form method="get" class="d-flex gap-2">
       <select class="form-select" name="area" aria-label="Filtrar por área"><option value="">Todas as áreas</option>{% for code,name in load_areas.items() %}<option value="{{code}}" {{'selected' if code == area_code}}>{{code}} - {{name}}</option>{% endfor %}</select>
       <input class="form-control" type="search" name="q" value="{{query}}" placeholder="Filtrar cargas" aria-label="Filtrar cargas">
-      <select class="form-select" name="status" aria-label="Situação"><option value="">Todas as situações</option>{% for code,label in load_statuses.items() %}<option value="{{code}}" {{'selected' if code==status}}>{{label}}</option>{% endfor %}</select><select class="form-select" name="due" aria-label="Conferência"><option value="">Qualquer conferência</option><option value="pending" {{'selected' if due=='pending'}}>Sem conferência ou vencida</option></select>
+      <select class="form-select" name="status" aria-label="Situação"><option value="">Todas as situações</option>{% for code,label in load_statuses.items() %}<option value="{{code}}" {{'selected' if code==status}}>{{label}}</option>{% endfor %}</select><select class="form-select" name="material_id" aria-label="Filtrar por material"><option value="">Todos os materiais</option>{% for material in materials %}<option value="{{material.id}}" {{'selected' if material.id == material_id}}>{{material.description}}</option>{% endfor %}</select><select class="form-select" name="due" aria-label="Conferência"><option value="">Qualquer conferência</option><option value="pending" {{'selected' if due=='pending'}}>Sem conferência ou vencida</option></select>
       <button class="btn btn-outline-secondary">Filtrar</button>
     </form>
-    <a class="btn btn-outline-danger" href="{{url_for('infra.load_check')}}">Conferência{% if due_count %} ({{due_count}} pendente(s)){% endif %}</a><a class="btn btn-outline-primary" href="{{url_for('infra.load_relation_report_page',q=query,area=area_code,status=status,location=location,responsible=responsible,due=due)}}">Relatório patrimonial</a><a class="btn btn-outline-primary" href="{{url_for('infra.load_relation_report',q=query,area=area_code,status=status,location=location,responsible=responsible,due=due)}}">PDF</a>
-    <a class="btn btn-outline-secondary" href="{{url_for('infra.load_qr_codes',area=area_code)}}">Códigos QR</a>
-    <a class="btn btn-outline-primary" href="{{url_for('infra.batch_load_entries')}}">Cadastro em lote</a><a class="btn btn-primary" href="{{url_for('infra.new_load_entry')}}">Adicionar carga</a>
+    <a class="btn btn-outline-danger" href="{{url_for('infra.load_check')}}">Conferência{% if due_count %} ({{due_count}} pendente(s)){% endif %}</a>{% if current_user.role in ['manager','infra'] %}<a class="btn btn-outline-primary" href="{{url_for('infra.load_relation_report_page',q=query,area=area_code,status=status,material_id=material_id,location=location,responsible=responsible,due=due)}}">Relatório patrimonial</a><a class="btn btn-outline-primary" href="{{url_for('infra.load_relation_report',q=query,area=area_code,status=status,material_id=material_id,location=location,responsible=responsible,due=due)}}">PDF</a><a class="btn btn-outline-success" href="{{url_for('infra.load_relation_quantities_pdf',q=query,area=area_code,status=status,material_id=material_id,location=location,responsible=responsible,due=due)}}">Quantidades por material</a>
+    <a class="btn btn-outline-secondary" href="{{url_for('infra.load_qr_codes',area=area_code,material_id=material_id)}}">Códigos QR</a>
+    <a class="btn btn-outline-primary" href="{{url_for('infra.batch_load_entries')}}">Cadastro em lote</a><a class="btn btn-primary" href="{{url_for('infra.new_load_entry')}}">Adicionar carga</a>{% endif %}
   </div>
 </div>
 {% if due_count or due_soon_count %}<div class="alert {{'alert-danger' if due_count else 'alert-warning'}} shadow-sm">{% if due_count %}<strong>{{due_count}}</strong> carga(s) estão com a conferência vencida ou pendente. {% endif %}{% if due_soon_count %}<strong>{{due_soon_count}}</strong> carga(s) vencem nos próximos 30 dias. {% endif %} Avise o responsável e programe a conferência.</div>{% endif %}
 
+{% if current_user.role in ['manager','infra'] %}<details class="card shadow-sm mb-3" id="bulk-edit-panel">
+  <summary class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2" style="cursor:pointer">
+    <strong>Edição em lote</strong><span id="bulk-selection-summary" class="text-muted">Nenhuma carga selecionada.</span>
+  </summary>
+  <div class="card-body">
+    <p class="text-muted small mb-3">Selecione uma ou mais cargas (ou todos os resultados filtrados) e marque apenas os campos que deseja alterar. Mudanças de localização e responsável ficam registradas no histórico.</p>
+    <form method="post" action="{{url_for('infra.bulk_edit_load_entries')}}" id="bulk-edit-form">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+      <input type="hidden" name="q" value="{{query}}"><input type="hidden" name="area" value="{{area_code}}"><input type="hidden" name="status" value="{{status}}"><input type="hidden" name="material_id" value="{{material_id or ''}}"><input type="hidden" name="location" value="{{location}}"><input type="hidden" name="responsible" value="{{responsible}}"><input type="hidden" name="due" value="{{due}}"><input type="hidden" name="page" value="{{page}}">
+      <div id="bulk-entry-ids"></div>
+      <div class="row g-3">
+        <div class="col-md-6"><div class="input-group"><span class="input-group-text"><input class="form-check-input bulk-apply" type="checkbox" name="apply_location" value="1" aria-label="Aplicar localização"></span><input class="form-control" type="text" name="bulk_location" maxlength="200" placeholder="Nova localização"></div></div>
+        <div class="col-md-6"><div class="input-group"><span class="input-group-text"><input class="form-check-input bulk-apply" type="checkbox" name="apply_area" value="1" aria-label="Aplicar área"></span><select class="form-select" name="bulk_area" aria-label="Nova área"><option value="">Nova área</option>{% for code,name in load_areas.items() %}<option value="{{code}}">{{code}} - {{name}}</option>{% endfor %}</select></div></div>
+        <div class="col-md-6"><div class="input-group"><span class="input-group-text"><input class="form-check-input bulk-apply" type="checkbox" name="apply_responsible" value="1" aria-label="Aplicar responsável"></span><input class="form-control" type="text" name="bulk_responsible" maxlength="200" placeholder="Novo responsável"></div></div>
+        <div class="col-md-6"><div class="input-group"><span class="input-group-text"><input class="form-check-input bulk-apply" type="checkbox" name="apply_status" value="1" aria-label="Aplicar situação"></span><select class="form-select" name="bulk_status" aria-label="Nova situação"><option value="">Nova situação</option>{% for code,label in load_statuses.items() %}<option value="{{code}}">{{label}}</option>{% endfor %}</select></div></div>
+        <div class="col-md-6"><div class="input-group"><span class="input-group-text"><input class="form-check-input bulk-apply" type="checkbox" name="apply_notes" value="1" aria-label="Aplicar observações"></span><input class="form-control" type="text" name="bulk_notes" maxlength="5000" placeholder="Novas observações"></div></div>
+      </div>
+      <div class="d-flex flex-wrap gap-2 mt-3"><button class="btn btn-primary" id="bulk-submit" type="submit" disabled>Aplicar alterações</button><button class="btn btn-outline-secondary" id="bulk-clear" type="button">Limpar seleção</button></div>
+    </form>
+  </div>
+</details>{% endif %}
+
 <div class="card shadow-sm">
   <div class="table-responsive load-table-responsive">
     <table class="table table-hover align-middle mb-0">
-      <thead><tr><th>BMP</th><th>Material</th><th>Nº de série</th><th>Localização</th><th>Fotos</th><th>Cadastro</th><th class="text-end">Ações</th></tr></thead>
+      <thead><tr>{% if current_user.role in ['manager','infra'] %}<th style="width:44px"><input class="form-check-input" type="checkbox" id="select-all-loads" aria-label="Selecionar todos os resultados"></th>{% endif %}<th>BMP</th><th>Material</th><th>Nº de série</th><th>Localização</th><th>Fotos</th><th>Cadastro</th>{% if current_user.role in ['manager','infra'] %}<th class="text-end">Ações</th>{% endif %}</tr></thead>
       <tbody>
         {% for entry in entries %}<tr>
+          {% if current_user.role in ['manager','infra'] %}<td><input class="form-check-input load-select" type="checkbox" value="{{entry.id}}" aria-label="Selecionar {{entry.bmp}}"></td>{% endif %}
           <td><strong class="text-nowrap">{{entry.bmp}}</strong><div><span class="badge {{load_status_classes.get(entry.status,'text-bg-secondary')}}">{{load_statuses.get(entry.status,entry.status)}}</span></div></td>
           <td class="load-material"><strong>{{entry.material_description}}</strong>{% if entry.material_fcg %}<div class="small text-muted">FCG: {{entry.material_fcg}}</div>{% endif %}</td>
           <td>{{entry.serial_number or '—'}}</td>
           <td>{{entry.location or '—'}}{% if entry.responsible %}<div class="small text-muted">{{entry.responsible}}</div>{% endif %}</td>
           <td>{% if entry.thumbnail_data %}<span class="load-photo-preview"><img class="load-thumb" src="{{entry.thumbnail_data}}" alt="Foto de {{entry.bmp}}"><span class="badge text-bg-secondary">{{entry.photo_count}}</span></span>{% else %}<span class="text-muted">Sem fotos</span>{% endif %}</td>
           <td class="text-nowrap">{{entry.created_at|brdate}}</td>
-          <td class="text-end"><div class="dropdown">
+          {% if current_user.role in ['manager','infra'] %}<td class="text-end"><div class="dropdown">
             <button class="btn btn-sm btn-light load-actions-button" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Ações de {{entry.bmp}}">•••</button>
             <ul class="dropdown-menu dropdown-menu-end">
               <li><a class="dropdown-item" href="{{url_for('infra.load_entry_detail',entry_id=entry.id)}}">Detalhes</a></li>
@@ -41,17 +64,17 @@
               <li><a class="dropdown-item" href="{{url_for('infra.load_entry_qr_code',entry_id=entry.id)}}">Código QR</a></li>
               {% if entry.status == 'active' %}<li><form method="post" action="{{url_for('infra.discharge_load_entry',entry_id=entry.id)}}" onsubmit="return confirm('Descarregar {{entry.bmp}}? O item será mantido no histórico.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="dropdown-item" type="submit">Descarregar</button></form></li>{% endif %}
             </ul>
-          </div></td>
-        </tr>{% else %}<tr><td colspan="7" class="text-center text-muted py-5">{{'Nenhuma carga encontrada para este filtro.' if query else 'Nenhuma carga cadastrada.'}}</td></tr>{% endfor %}
+          </div></td>{% endif %}
+        </tr>{% else %}<tr><td colspan="8" class="text-center text-muted py-5">{{'Nenhuma carga encontrada para este filtro.' if query else 'Nenhuma carga cadastrada.'}}</td></tr>{% endfor %}
       </tbody>
     </table>
   </div>
 </div>
 
 {% if pages > 1 %}<nav class="mt-3" aria-label="Paginação da Relação de Carga"><ul class="pagination justify-content-end">
-  <li class="page-item {{'disabled' if page == 1}}"><a class="page-link" href="{{url_for('infra.load_relation',q=query,area=area_code,status=status,location=location,responsible=responsible,due=due,page=page-1)}}">Anterior</a></li>
-  {% for number in range(1, pages + 1) %}<li class="page-item {{'active' if number == page}}"><a class="page-link" href="{{url_for('infra.load_relation',q=query,area=area_code,status=status,location=location,responsible=responsible,due=due,page=number)}}">{{number}}</a></li>{% endfor %}
-  <li class="page-item {{'disabled' if page == pages}}"><a class="page-link" href="{{url_for('infra.load_relation',q=query,area=area_code,status=status,location=location,responsible=responsible,due=due,page=page+1)}}">Próxima</a></li>
+  <li class="page-item {{'disabled' if page == 1}}"><a class="page-link" href="{{url_for('infra.load_relation',q=query,area=area_code,status=status,material_id=material_id,location=location,responsible=responsible,due=due,page=page-1)}}">Anterior</a></li>
+  {% for number in range(1, pages + 1) %}<li class="page-item {{'active' if number == page}}"><a class="page-link" href="{{url_for('infra.load_relation',q=query,area=area_code,status=status,material_id=material_id,location=location,responsible=responsible,due=due,page=number)}}">{{number}}</a></li>{% endfor %}
+  <li class="page-item {{'disabled' if page == pages}}"><a class="page-link" href="{{url_for('infra.load_relation',q=query,area=area_code,status=status,material_id=material_id,location=location,responsible=responsible,due=due,page=page+1)}}">Próxima</a></li>
 </ul></nav>{% endif %}
 {% endblock %}
 {% block scripts %}<script>
@@ -66,5 +89,40 @@ document.querySelectorAll('.load-actions-button').forEach(button=>{
       ]};
     }
   });
+});
+
+const allLoadIds = {{ all_entry_ids|tojson }};
+const selectedLoadIds = new Set();
+const selectionSummary = document.getElementById('bulk-selection-summary');
+const bulkSubmit = document.getElementById('bulk-submit');
+const hiddenIds = document.getElementById('bulk-entry-ids');
+const selectAll = document.getElementById('select-all-loads');
+function syncBulkSelection(){
+  if(!selectionSummary || !bulkSubmit || !hiddenIds || !selectAll) return;
+  hiddenIds.innerHTML = '';
+  selectedLoadIds.forEach(id=>{
+    const input = document.createElement('input'); input.type='hidden'; input.name='entry_ids'; input.value=id; hiddenIds.appendChild(input);
+  });
+  const count = selectedLoadIds.size;
+  selectionSummary.textContent = count ? `${count} carga(s) selecionada(s).` : 'Nenhuma carga selecionada.';
+  bulkSubmit.disabled = count === 0;
+  selectAll.checked = count > 0 && count === allLoadIds.length;
+  selectAll.indeterminate = count > 0 && count < allLoadIds.length;
+}
+document.querySelectorAll('.load-select').forEach(box=>box.addEventListener('change',()=>{
+  box.checked ? selectedLoadIds.add(box.value) : selectedLoadIds.delete(box.value); syncBulkSelection();
+}));
+selectAll?.addEventListener('change',()=>{
+  if(selectAll.checked) allLoadIds.forEach(id=>selectedLoadIds.add(String(id)));
+  else allLoadIds.forEach(id=>selectedLoadIds.delete(String(id)));
+  document.querySelectorAll('.load-select').forEach(box=>box.checked=selectedLoadIds.has(box.value)); syncBulkSelection();
+});
+document.getElementById('bulk-clear')?.addEventListener('click',()=>{
+  selectedLoadIds.clear(); document.querySelectorAll('.load-select').forEach(box=>box.checked=false); syncBulkSelection();
+});
+document.getElementById('bulk-edit-form')?.addEventListener('submit',event=>{
+  if(!selectedLoadIds.size || !document.querySelector('.bulk-apply:checked')){
+    event.preventDefault(); alert('Selecione cargas e marque ao menos um campo para aplicar.');
+  }
 });
 </script>{% endblock %}

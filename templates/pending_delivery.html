@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{% block title %}Aguardando retiradas · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
+  <div>
+    <h1 class="h3 mb-1">Aguardando retiradas</h1>
+    <p class="text-muted mb-0">Consulta somente leitura dos pedidos pagos que ainda possuem produtos pendentes.</p>
+  </div>
+  <a class="btn btn-outline-primary" href="{{ url_for('sales.pending_delivery_pdf') }}" target="_blank" rel="noopener">Gerar PDF</a>
+</div>
+<div class="row g-3 mb-3">
+  <div class="col-sm-6"><div class="card shadow-sm"><div class="card-body"><small class="text-muted">Pedidos</small><div class="fs-3 fw-semibold">{{ total_orders }}</div></div></div></div>
+  <div class="col-sm-6"><div class="card shadow-sm"><div class="card-body"><small class="text-muted">Produtos aguardando retirada</small><div class="fs-3 fw-semibold">{{ total_items }}</div></div></div></div>
+</div>
+<div class="card shadow-sm">
+  <div class="list-group list-group-flush">
+    {% for order in orders %}
+    <div class="list-group-item py-3">
+      <div class="d-flex flex-wrap justify-content-between gap-2 mb-2">
+        <div><strong>Pedido #{{ order.id }}</strong> · <span class="fw-semibold">{{ order.player_war_name or order.player_name or 'Convidado' }}</span>{% if order.player_full_name and order.player_full_name != (order.player_war_name or order.player_name) %}<small class="d-block text-muted">{{ order.player_full_name }}</small>{% endif %}{% if order.event_name %}<small class="d-block text-primary">Evento: {{ order.event_name }}</small>{% endif %}</div>
+        <div class="text-end"><span class="badge text-bg-secondary">{{ order.payment_method }}</span><small class="d-block text-muted">{{ order.paid_at|brdate }}</small></div>
+      </div>
+      <div class="row g-2">
+        {% for item in order['items'] if item['pending_quantity'] > 0 %}
+        <div class="col-md-6 col-lg-4"><div class="border rounded p-2"><strong>{{ item['name'] }}</strong><div class="text-muted">{{ item['pending_quantity'] }} aguardando retirada</div></div></div>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <div class="list-group-item text-center text-muted py-5">Nenhum pedido aguardando retirada.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

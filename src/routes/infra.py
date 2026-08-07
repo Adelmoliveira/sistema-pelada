@@ -7,6 +7,7 @@ from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_te
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.services.load_relation_pdf import build_load_relation_pdf
+from src.services.load_quantity_pdf import build_load_quantity_pdf
 from src.services.load_qr_labels_pdf import build_load_qr_labels_pdf
 from src.services.material_photos import process_material_photo
 from src.services.pix import generate_qrcode_base64
@@ -107,7 +108,7 @@ def process_load_photos(uploads):
     return [process_material_photo(upload) for upload in uploads]
 
 
-def load_entry_rows(db, query="", area_code="", status="", location="", responsible="", due=""):
+def load_entry_rows(db, query="", area_code="", status="", location="", responsible="", due="", material_id=None):
     sql = """SELECT le.*,m.description material_description,m.load_sheet material_fcg,
                     (SELECT COUNT(*) FROM load_entry_photos lp WHERE lp.load_entry_id=le.id) photo_count,
                     (SELECT thumbnail_data FROM load_entry_photos lp
@@ -122,6 +123,9 @@ def load_entry_rows(db, query="", area_code="", status="", location="", responsi
     if area_code in LOAD_AREAS:
         conditions.append("le.area_code=?")
         params.append(area_code)
+    if material_id:
+        conditions.append("le.material_id=?")
+        params.append(material_id)
     if status in LOAD_STATUS_LABELS:
         conditions.append("le.status=?")
         params.append(status)
@@ -264,7 +268,7 @@ def delete_material(material_id):
 
 
 @bp.get("/load-relation")
-@roles_allowed("manager", "infra")
+@roles_allowed("manager", "infra", "staff")
 def load_relation():
     db = get_db()
     query = request.args.get("q", "").strip()
@@ -273,7 +277,11 @@ def load_relation():
     location = request.args.get("location", "").strip()
     responsible = request.args.get("responsible", "").strip()
     due = request.args.get("due", "").strip()
-    rows = load_entry_rows(db, query, area_code, status, location, responsible, due)
+    try:
+        material_id = int(request.args.get("material_id", ""))
+    except (TypeError, ValueError):
+        material_id = None
+    rows = load_entry_rows(db, query, area_code, status, location, responsible, due, material_id)
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
@@ -296,17 +304,157 @@ def load_relation():
              AND date(next_check_due_at)<=?""",
         (local_today().isoformat(), (local_today() + timedelta(days=30)).isoformat()),
     ).fetchone()["total"]
+    available_material_ids = {row["material_id"] for row in rows}
+    available_materials = [
+        material for material in material_options(db)
+        if material["id"] in available_material_ids or material["id"] == material_id
+    ]
     return render_template(
         "load_relation.html", entries=visible, total=len(rows), query=query,
         page=page, pages=pages, area_code=area_code, load_areas=LOAD_AREAS, due_count=due_count,
         due_soon_count=due_soon_count,
         status=status, location=location, responsible=responsible, due=due,
+        material_id=material_id, materials=available_materials,
         load_statuses=LOAD_STATUS_LABELS, load_status_classes=LOAD_STATUS_CLASSES,
+        all_entry_ids=[row["id"] for row in rows],
     )
 
 
-@bp.get("/load-relation/check")
+@bp.post("/load-relation/bulk-edit")
 @roles_allowed("manager", "infra")
+def bulk_edit_load_entries():
+    """Apply the same selected changes to several load entries at once."""
+    db = get_db()
+    raw_ids = request.form.getlist("entry_ids")
+    try:
+        entry_ids = list(dict.fromkeys(int(value) for value in raw_ids))
+    except (TypeError, ValueError):
+        entry_ids = []
+
+    redirect_args = {
+        key: request.form.get(key, "")
+        for key in ("q", "area", "status", "material_id", "location", "responsible", "due", "page")
+        if request.form.get(key, "")
+    }
+    if not entry_ids:
+        flash("Selecione ao menos uma carga para editar.", "warning")
+        return redirect(url_for("infra.load_relation", **redirect_args))
+    if len(entry_ids) > 5000:
+        flash("Selecione no máximo 5.000 cargas por atualização.", "danger")
+        return redirect(url_for("infra.load_relation", **redirect_args))
+
+    updates = {}
+    if request.form.get("apply_location") == "1":
+        location = request.form.get("bulk_location", "").strip()
+        if len(location) > 200:
+            flash("A localização deve ter no máximo 200 caracteres.", "danger")
+            return redirect(url_for("infra.load_relation", **redirect_args))
+        updates["location"] = location
+    if request.form.get("apply_area") == "1":
+        area_code = request.form.get("bulk_area", "").strip().upper()
+        if area_code not in LOAD_AREAS:
+            flash("Selecione uma área válida.", "danger")
+            return redirect(url_for("infra.load_relation", **redirect_args))
+        updates["area_code"] = area_code
+    if request.form.get("apply_responsible") == "1":
+        responsible = request.form.get("bulk_responsible", "").strip()
+        if len(responsible) > 200:
+            flash("O responsável deve ter no máximo 200 caracteres.", "danger")
+            return redirect(url_for("infra.load_relation", **redirect_args))
+        updates["responsible"] = responsible
+    status = request.form.get("bulk_status", "").strip().lower()
+    if request.form.get("apply_status") == "1":
+        if status not in LOAD_STATUS_LABELS:
+            flash("Selecione uma situação válida.", "danger")
+            return redirect(url_for("infra.load_relation", **redirect_args))
+        updates["status"] = status
+    if request.form.get("apply_notes") == "1":
+        notes = request.form.get("bulk_notes", "").strip()
+        if len(notes) > 5000:
+            flash("As observações devem ter no máximo 5.000 caracteres.", "danger")
+            return redirect(url_for("infra.load_relation", **redirect_args))
+        updates["notes"] = notes
+
+    if not updates:
+        flash("Marque ao menos um campo para aplicar em lote.", "warning")
+        return redirect(url_for("infra.load_relation", **redirect_args))
+
+    placeholders = ",".join("?" for _ in entry_ids)
+    try:
+        entries = db.execute(
+            f"SELECT id,area_code,location,responsible,status FROM load_entries WHERE id IN ({placeholders})",
+            tuple(entry_ids),
+        ).fetchall()
+        if len(entries) != len(entry_ids):
+            flash("Uma ou mais cargas selecionadas não foram encontradas.", "danger")
+            return redirect(url_for("infra.load_relation", **redirect_args))
+        with db:
+            for entry in entries:
+                movement_changed = any(
+                    field in updates and (entry[field] or "") != updates[field]
+                    for field in ("area_code", "location", "responsible")
+                )
+                if movement_changed:
+                    movement_reason = "Atualização em lote"
+                    if "area_code" in updates and (entry["area_code"] or "") != updates["area_code"]:
+                        movement_reason += " (área)"
+                    db.execute(
+                        """INSERT INTO load_entry_movements
+                           (load_entry_id,from_location,to_location,from_responsible,to_responsible,reason,moved_by)
+                           VALUES(?,?,?,?,?,?,?)""",
+                        (
+                            entry["id"], entry["location"] or "", updates.get("location", entry["location"] or ""),
+                            entry["responsible"] or "", updates.get("responsible", entry["responsible"] or ""),
+                            movement_reason, g.user["id"],
+                        ),
+                    )
+                set_parts = [f"{field}=?" for field in updates]
+                values = [updates[field] for field in updates]
+                # O código BMP incorpora a área (por exemplo, ``BMP-000001 | COZ``).
+                # Ao alterar a área em lote, atualize-o junto com ``area_code``;
+                # caso contrário a alteração fica gravada no banco, mas a tela
+                # continua exibindo o BMP antigo e parece que nada mudou.
+                if "area_code" in updates:
+                    set_parts.append("bmp=?")
+                    values.append(bmp_code(entry["id"], updates["area_code"]))
+                if updates.get("status") == "discharged":
+                    set_parts.extend(["discharged_at=CURRENT_TIMESTAMP", "discharged_by=?"])
+                    values.append(g.user["id"])
+                elif "status" in updates:
+                    set_parts.extend(["discharged_at=NULL", "discharged_by=NULL"])
+                set_parts.append("updated_at=CURRENT_TIMESTAMP")
+                values.append(entry["id"])
+                db.execute(
+                    f"UPDATE load_entries SET {','.join(set_parts)} WHERE id=?",
+                    tuple(values),
+                )
+            # Não mostre sucesso se a atualização não persistiu. Isso também
+            # protege contra diferenças de schema/driver (por exemplo, a área
+            # foi alterada, mas o BMP exibido continuou antigo).
+            check_rows = db.execute(
+                f"SELECT id,area_code,location,responsible,status,bmp FROM load_entries WHERE id IN ({placeholders})",
+                tuple(entry_ids),
+            ).fetchall()
+            check_by_id = {row["id"]: row for row in check_rows}
+            for entry_id in entry_ids:
+                row = check_by_id.get(entry_id)
+                if not row:
+                    raise ValueError(f"A carga {entry_id} não foi encontrada após a atualização.")
+                for field, expected in updates.items():
+                    if (row[field] or "") != expected:
+                        raise ValueError(f"Não foi possível atualizar a carga {entry_id}.")
+                if "area_code" in updates and row["bmp"] != bmp_code(entry_id, updates["area_code"]):
+                    raise ValueError(f"Não foi possível atualizar o BMP da carga {entry_id}.")
+        flash(f"{len(entries)} carga(s) atualizada(s) com sucesso.", "success")
+    except Exception:
+        db.rollback()
+        current_app.logger.exception("Erro ao editar cargas em lote: ids=%s", entry_ids)
+        flash("Erro interno ao atualizar as cargas selecionadas.", "danger")
+    return redirect(url_for("infra.load_relation", **redirect_args))
+
+
+@bp.get("/load-relation/check")
+@roles_allowed("manager", "infra", "staff")
 def load_check():
     db = get_db()
     today = local_today().isoformat()
@@ -325,10 +473,17 @@ def load_check():
 @roles_allowed("manager", "infra")
 def load_qr_codes():
     area_code = request.args.get("area", "").strip().upper()
-    entries = load_entry_rows(get_db(), area_code=area_code)
+    try:
+        material_id = int(request.args.get("material_id", ""))
+    except (TypeError, ValueError):
+        material_id = None
+    db = get_db()
+    entries = load_entry_rows(db, area_code=area_code, material_id=material_id)
+    available_material_ids = {row["material_id"] for row in entries}
+    available_materials = [material for material in material_options(db) if material["id"] in available_material_ids or material["id"] == material_id]
     return render_template(
         "load_qr_codes.html", entries=entries, area_code=area_code,
-        load_areas=LOAD_AREAS,
+        load_areas=LOAD_AREAS, material_id=material_id, materials=available_materials,
     )
 
 
@@ -342,10 +497,10 @@ def load_qr_codes_pdf():
         entry_ids = []
     if not entry_ids:
         flash("Selecione ao menos um BMP para gerar os códigos QR.", "danger")
-        return redirect(url_for("infra.load_qr_codes", area=request.form.get("area_code", "")))
+        return redirect(url_for("infra.load_qr_codes", area=request.form.get("area_code", ""), material_id=request.form.get("material_id", "")))
     if len(entry_ids) > 200:
         flash("Selecione no máximo 200 BMPs por impressão.", "danger")
-        return redirect(url_for("infra.load_qr_codes", area=request.form.get("area_code", "")))
+        return redirect(url_for("infra.load_qr_codes", area=request.form.get("area_code", ""), material_id=request.form.get("material_id", "")))
     placeholders = ",".join("?" for _ in entry_ids)
     entries = get_db().execute(
         f"""SELECT le.id,le.bmp,le.location,m.description material_description
@@ -533,7 +688,7 @@ def update_load_status(entry_id):
 
 
 @bp.post("/load-relation/<int:entry_id>/check")
-@roles_allowed("manager", "infra")
+@roles_allowed("manager", "infra", "staff")
 def check_load_entry(entry_id):
     db = get_db()
     entry = db.execute("SELECT id,bmp,status FROM load_entries WHERE id=?", (entry_id,)).fetchone()
@@ -553,7 +708,7 @@ def check_load_entry(entry_id):
 
 
 @bp.post("/load-relation/<int:entry_id>/check-auto")
-@roles_allowed("manager", "infra")
+@roles_allowed("manager", "infra", "staff")
 def check_load_entry_auto(entry_id):
     """Register a QR-based conference without leaving the mobile scanner."""
     db = get_db()
@@ -709,15 +864,51 @@ def load_relation_report():
     location = request.args.get("location", "").strip()
     responsible = request.args.get("responsible", "").strip()
     due = request.args.get("due", "").strip()
-    report_filter = " · ".join(value for value in (query, area_code, LOAD_STATUS_LABELS.get(status, ""), location, responsible, due) if value)
+    try:
+        material_id = int(request.args.get("material_id", ""))
+    except (TypeError, ValueError):
+        material_id = None
+    material = get_db().execute("SELECT description FROM materials WHERE id=?", (material_id,)).fetchone() if material_id else None
+    report_filter = " · ".join(value for value in (query, area_code, material["description"] if material else "", LOAD_STATUS_LABELS.get(status, ""), location, responsible, due) if value)
     report = build_load_relation_pdf(
-        load_entry_rows(get_db(), query, area_code, status, location, responsible, due), local_today(), report_filter,
+        load_entry_rows(get_db(), query, area_code, status, location, responsible, due, material_id),
+        local_today(), report_filter, material["description"] if material else "",
     )
     return send_file(
         report,
         mimetype="application/pdf",
         as_attachment=True,
         download_name=f"relacao-de-carga-{local_today().isoformat()}.pdf",
+    )
+
+
+@bp.get("/load-relation/quantities.pdf")
+@roles_allowed("manager", "infra")
+def load_relation_quantities_pdf():
+    """Export the filtered relation of load as a material quantity summary."""
+    query = request.args.get("q", "").strip()
+    area_code = request.args.get("area", "").strip().upper()
+    status = request.args.get("status", "").strip().lower()
+    location = request.args.get("location", "").strip()
+    responsible = request.args.get("responsible", "").strip()
+    due = request.args.get("due", "").strip()
+    try:
+        material_id = int(request.args.get("material_id", ""))
+    except (TypeError, ValueError):
+        material_id = None
+    filters = " · ".join(value for value in (
+        query, area_code, LOAD_STATUS_LABELS.get(status, ""), location, responsible, due,
+    ) if value)
+    report = build_load_quantity_pdf(
+        load_entry_rows(get_db(), query, area_code, status, location, responsible, due, material_id),
+        local_today(),
+        filters,
+    )
+    return send_file(
+        report,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"quantidade-por-material-{local_today().isoformat()}.pdf",
     )
 
 
@@ -730,8 +921,13 @@ def load_relation_report_page():
     location = request.args.get("location", "").strip()
     responsible = request.args.get("responsible", "").strip()
     due = request.args.get("due", "").strip()
-    entries = load_entry_rows(get_db(), query, area_code, status, location, responsible, due)
+    try:
+        material_id = int(request.args.get("material_id", ""))
+    except (TypeError, ValueError):
+        material_id = None
+    db = get_db()
+    entries = load_entry_rows(db, query, area_code, status, location, responsible, due, material_id)
     return render_template("load_report.html", entries=entries, total=len(entries), query=query,
                            area_code=area_code, status=status, location=location, responsible=responsible,
-                           due=due, load_areas=LOAD_AREAS, load_statuses=LOAD_STATUS_LABELS,
+                           due=due, material_id=material_id, materials=material_options(db), load_areas=LOAD_AREAS, load_statuses=LOAD_STATUS_LABELS,
                            load_status_classes=LOAD_STATUS_CLASSES)

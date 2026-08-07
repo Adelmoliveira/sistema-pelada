@@ -18,7 +18,13 @@ def home_endpoint(role):
     if role == "client":
         return "sales.sale"
     if role == "infra":
-        return "infra.load_relation"
+        # A tela inicial do perfil Infra é a fila de chamados, que concentra
+        # as ocorrências que precisam de acompanhamento.
+        return "maintenance.requests_list"
+    if role == "staff":
+        # Staff/atendimento deve começar pelos pedidos, sem exposição ao
+        # dashboard financeiro da direção.
+        return "sales.orders"
     if role == "maintenance":
         return "maintenance.new_request"
     if role == "display":
