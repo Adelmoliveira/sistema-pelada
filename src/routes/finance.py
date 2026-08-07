@@ -1,5 +1,5 @@
 import hmac
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from email.utils import parseaddr
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify, send_file, g
@@ -19,8 +19,12 @@ from src.services.finance_accounts import (
 )
 from src.services.finance_ledger_pdf import build_finance_ledger_pdf
 from src.services.monthly_sales_report import build_monthly_sales_pdf, monthly_sales_data
-from src.services.push_notifications import send_birthday_notifications, send_transfer_window_notifications
-from src.utils import alphabetical_key, money, brdate, cents, month_bounds, add_months, local_today
+from src.services.push_notifications import (
+    send_birthday_notifications,
+    send_transfer_window_notifications,
+    send_weekly_tribute_notifications,
+)
+from src.utils import SAO_PAULO, alphabetical_key, money, brdate, cents, month_bounds, add_months, local_today
 
 bp = Blueprint("finance", __name__)
 
@@ -112,6 +116,38 @@ def dashboard():
           COALESCE(SUM(CASE WHEN created_at>=? AND created_at<? AND payment_method='Débito' THEN total_cents END),0) debit_total
         FROM sales WHERE paid=1
     """, (today, start, end, start, end, start, end)).fetchone()
+    current_month_start = today_date.replace(day=1)
+    current_month_end = (current_month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    current_year_start = date(today_date.year, 1, 1)
+    current_year_end = date(today_date.year + 1, 1, 1)
+    ticket_rows = db.execute(
+        """SELECT
+             COALESCE(SUM(CASE WHEN COALESCE(paid_at,created_at)>=?
+                                    AND COALESCE(paid_at,created_at)<? THEN total_cents END),0) month_revenue,
+             COUNT(CASE WHEN COALESCE(paid_at,created_at)>=?
+                              AND COALESCE(paid_at,created_at)<? THEN 1 END) month_sales,
+             COALESCE(SUM(CASE WHEN COALESCE(paid_at,created_at)>=?
+                                    AND COALESCE(paid_at,created_at)<? THEN total_cents END),0) year_revenue,
+             COUNT(CASE WHEN COALESCE(paid_at,created_at)>=?
+                              AND COALESCE(paid_at,created_at)<? THEN 1 END) year_sales
+           FROM sales WHERE paid=1 AND payment_method!='Cortesia'""",
+        (
+            current_month_start.isoformat(), current_month_end.isoformat(),
+            current_month_start.isoformat(), current_month_end.isoformat(),
+            current_year_start.isoformat(), current_year_end.isoformat(),
+            current_year_start.isoformat(), current_year_end.isoformat(),
+        ),
+    ).fetchone()
+    month_sales_count = int(ticket_rows["month_sales"] or 0)
+    year_sales_count = int(ticket_rows["year_sales"] or 0)
+    ticket_average = {
+        "month": round(int(ticket_rows["month_revenue"] or 0) / month_sales_count) if month_sales_count else 0,
+        "year": round(int(ticket_rows["year_revenue"] or 0) / year_sales_count) if year_sales_count else 0,
+        "month_sales": month_sales_count,
+        "year_sales": year_sales_count,
+        "month_label": current_month_start.strftime("%m/%Y"),
+        "year_label": str(today_date.year),
+    }
     
     low = db.execute("SELECT * FROM products WHERE active=1 AND stock<=min_stock ORDER BY stock, name").fetchall()
     recent = db.execute("""SELECT s.*, COALESCE(p.name,s.guest_name,'Convidado') player_name FROM sales s LEFT JOIN players p ON p.id=s.player_id
@@ -268,11 +304,14 @@ def dashboard():
         "player_values": [int(row["total"] or 0) for row in player_rows],
         "player_product_labels": [f"{row['war_name'] or row['player_name']} — {row['product_name']}" for row in player_product_rows],
         "player_product_values": [int(row["quantity"] or 0) for row in player_product_rows],
+        "ticket_labels": [f"Mês ({ticket_average['month_label']})", f"Ano ({ticket_average['year_label']})"],
+        "ticket_values": [ticket_average["month"], ticket_average["year"]],
     }
     return render_template(
         "dashboard.html", metrics=metrics, low=low, recent=recent, month=month,
         finance=finance, bar=bar, membership=membership, maintenance_open=maintenance,
         chart_data=chart_data, membership_chart=membership_chart,
+        ticket_average=ticket_average,
         load_conference=load_conference,
         dashboard_period=period, dashboard_start=period_start.isoformat(),
         dashboard_end=(period_end - timedelta(days=1)).isoformat(),
@@ -917,3 +956,22 @@ def payment_reminders_cron():
         return jsonify(error="Configuração de e-mail incompleta.", transfer_push_sent=transfer_push_sent, birthday_push_sent=birthday_push_sent), 503
     result = dispatch_reminders(db, settings, sender, password, today)
     return jsonify(ok=result["failed"] == 0, transfer_push_sent=transfer_push_sent, birthday_push_sent=birthday_push_sent, **result), 200 if result["failed"] == 0 else 502
+
+
+@bp.get("/cron/weekly-tribute")
+def weekly_tribute_cron():
+    secret = current_app.config.get("CRON_SECRET") or ""
+    authorization = request.headers.get("Authorization", "")
+    if not secret or not hmac.compare_digest(authorization, f"Bearer {secret}"):
+        return jsonify(error="Não autorizado."), 401
+
+    now = datetime.now(SAO_PAULO)
+    today = now.date()
+    schedule = get_db().execute(
+        "SELECT enabled,hour FROM tribute_schedules WHERE weekday=?", (today.weekday(),)
+    ).fetchone()
+    if not schedule or not int(schedule["enabled"] or 0) or int(schedule["hour"]) != now.hour:
+        return jsonify(ok=True, sent=0, reason="Fora do horário programado.")
+
+    sent = send_weekly_tribute_notifications(get_db(), today)
+    return jsonify(ok=True, sent=sent)

@@ -1,7 +1,9 @@
 from datetime import date
-from html import escape
+from html import escape, unescape
+import base64
+import re
 
-from flask import Blueprint, current_app, flash, g, redirect, render_template, request, send_file, url_for
+from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, send_file, url_for
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
@@ -10,6 +12,7 @@ from src.services.football_stats_pdf import build_football_stats_pdf
 from src.services.football_tenure_pdf import build_football_tenure_pdf
 from src.services.email_reminders import send_gmail_html
 from src.services.push_notifications import send_player_push, send_player_push_once
+from src.services.material_photos import process_material_photo
 
 bp = Blueprint("football", __name__, url_prefix="/futebol")
 
@@ -27,6 +30,19 @@ TRANSFER_STATUSES = {"PENDENTE": "Pendente", "APROVADA": "Deferido", "RECUSADA":
 # 2026. Súmulas históricas cadastradas de janeiro a junho não devem disparar
 # notificações ao serem finalizadas.
 MATEMATICO_PUSH_START_DATE = date(2026, 7, 1)
+WEEKDAY_LABELS = ("Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo")
+
+
+def _safe_notification_html(raw):
+    raw = (raw or "")[:4000]
+    raw = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw, flags=re.I | re.S)
+    raw = re.sub(r"<(?!/?(?:strong|b|em|i|small|big|br)\b)[^>]*>", "", raw, flags=re.I)
+    raw = re.sub(r"<(strong|b|em|i|small|big|br)\b[^>]*>", r"<\1>", raw, flags=re.I)
+    return raw
+
+
+def _plain_notification_text(raw):
+    return unescape(re.sub(r"<[^>]+>", "", raw or "")).strip()[:800]
 
 
 def _audit(db, sumula_id, action, details=""):
@@ -335,8 +351,45 @@ def dashboard():
     for label, start, end in (("Mês atual", month_start, month_end), ("Ano atual", year_start, year_end)):
         row = db.execute("SELECT COUNT(CASE WHEN fm.blue_score > fm.white_score THEN 1 END) blue_wins, COUNT(CASE WHEN fm.white_score > fm.blue_score THEN 1 END) white_wins FROM football_matches fm JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fm.status='ENCERRADA' AND fs.situacao!='CANCELADA' AND fs.match_date>=? AND fs.match_date<?", (start.isoformat(), end.isoformat())).fetchone()
         wins[label] = {"azul": int(row["blue_wins"] or 0), "branco": int(row["white_wins"] or 0)}
+    attendance_rows = db.execute(
+        """SELECT substr(CAST(fs.match_date AS TEXT),1,7) month_key,
+                  COUNT(DISTINCT fs.id) peladas,
+                  COUNT(CASE WHEN fp.status='CONFIRMADO' THEN 1 END) participants
+           FROM football_sumulas fs
+           LEFT JOIN football_participants fp ON fp.sumula_id=fs.id
+           WHERE fs.situacao='FINALIZADA' AND fs.match_date>=? AND fs.match_date<?
+           GROUP BY substr(CAST(fs.match_date AS TEXT),1,7)
+           ORDER BY month_key""",
+        (year_start.isoformat(), year_end.isoformat()),
+    ).fetchall()
+    attendance_by_month = {
+        str(row["month_key"]): {
+            "peladas": int(row["peladas"] or 0),
+            "participants": int(row["participants"] or 0),
+            "average": round(int(row["participants"] or 0) / int(row["peladas"]), 1) if row["peladas"] else 0,
+        }
+        for row in attendance_rows
+    }
+    month_names = ("Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez")
+    annual_peladas = sum(value["peladas"] for value in attendance_by_month.values())
+    annual_participants = sum(value["participants"] for value in attendance_by_month.values())
+    months_with_matches = [(key, value) for key, value in attendance_by_month.items() if value["peladas"]]
+    highest_month = max(months_with_matches, key=lambda item: (item[1]["average"], -int(item[0][-2:]))) if months_with_matches else None
+    lowest_month = min(months_with_matches, key=lambda item: (item[1]["average"], int(item[0][-2:]))) if months_with_matches else None
+    current_month_key = today.strftime("%Y-%m")
+    attendance = {
+        "month_average": attendance_by_month.get(current_month_key, {}).get("average", 0),
+        "year_average": round(annual_participants / annual_peladas, 1) if annual_peladas else 0,
+        "month_peladas": attendance_by_month.get(current_month_key, {}).get("peladas", 0),
+        "year_peladas": annual_peladas,
+        "labels": list(month_names),
+        "values": [attendance_by_month.get(f"{today.year}-{month:02d}", {}).get("average", 0) for month in range(1, 13)],
+        "highest": ({"label": month_names[int(highest_month[0][-2:]) - 1], **highest_month[1]} if highest_month else None),
+        "lowest": ({"label": month_names[int(lowest_month[0][-2:]) - 1], **lowest_month[1]} if lowest_month else None),
+        "year": today.year,
+    }
     position_summary, eligible_total, positioned_total = _position_distribution(db)
-    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, team_wins=wins, management_view=True)
+    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, team_wins=wins, attendance=attendance, management_view=True)
 
 
 @bp.get("/gestao/posicoes")
@@ -677,7 +730,7 @@ def notifications():
         action = request.form.get("action", "send")
         announcement_id = request.form.get("announcement_id", type=int)
         title = request.form.get("title", "").strip()[:80]
-        body = request.form.get("body", "").strip()[:500]
+        body = request.form.get("body", "").strip()[:800]
         audience = request.form.get("audience", "all")
         if audience not in ("all", "football"):
             audience = "all"
@@ -721,7 +774,124 @@ def notifications():
     draft = db.execute("SELECT * FROM push_announcements WHERE id=? AND status='RASCUNHO'", (edit_id,)).fetchone() if edit_id else None
     history = db.execute("""SELECT pa.*,u.name user_name FROM push_announcements pa
         LEFT JOIN users u ON u.id=pa.created_by ORDER BY pa.id DESC LIMIT 50""").fetchall()
-    return render_template("football_notifications.html", history=history, draft=draft)
+    active_players = db.execute(
+        "SELECT id,name,war_name FROM players WHERE active=1 ORDER BY name"
+    ).fetchall()
+    player_names = {str(player["id"]): player["war_name"] or player["name"] for player in active_players}
+    health_rows = db.execute(
+        """SELECT p.id,p.name,p.war_name,
+                  (SELECT COUNT(*) FROM push_subscriptions s WHERE s.player_id=p.id) device_count,
+                  (SELECT MAX(s.updated_at) FROM push_subscriptions s WHERE s.player_id=p.id) last_renewal,
+                  (SELECT MAX(s.last_push_at) FROM push_subscriptions s WHERE s.player_id=p.id) last_push_at,
+                  (SELECT s.last_push_status FROM push_subscriptions s WHERE s.player_id=p.id ORDER BY s.last_push_at DESC,s.id DESC LIMIT 1) last_push_status,
+                  (SELECT COUNT(*) FROM push_inbox i WHERE i.player_id=p.id AND i.read_at IS NULL) unread_count
+           FROM players p WHERE p.active=1 ORDER BY p.name"""
+    ).fetchall()
+    tribute_settings = db.execute("SELECT * FROM tribute_settings WHERE id=1").fetchone()
+    schedule_rows = db.execute("SELECT * FROM tribute_schedules ORDER BY weekday").fetchall()
+    schedules = {int(row["weekday"]): row for row in schedule_rows}
+    return render_template(
+        "football_notifications.html",
+        history=history,
+        draft=draft,
+        active_players=active_players,
+        player_names=player_names,
+        health_rows=health_rows,
+        tribute_settings=tribute_settings,
+        tribute_schedules=schedules,
+        weekday_labels=WEEKDAY_LABELS,
+    )
+
+
+@bp.post("/notificacoes/homenagem/configuracao")
+@roles_allowed("manager")
+def update_tribute_settings():
+    db = get_db()
+    title = request.form.get("tribute_title", "").strip()[:80]
+    body_html = _safe_notification_html(request.form.get("tribute_body_html", ""))
+    body = _plain_notification_text(body_html)
+    if not title or not body:
+        flash("Informe o título e a mensagem da homenagem.", "danger")
+        return redirect(url_for("football.notifications"))
+    image_data = db.execute("SELECT image_data FROM tribute_settings WHERE id=1").fetchone()["image_data"] or ""
+    if request.form.get("remove_tribute_image") == "1":
+        image_data = ""
+    processed = process_material_photo(request.files.get("tribute_image"))
+    if processed:
+        image_data = processed[0]
+    with db:
+        db.execute(
+            """UPDATE tribute_settings SET enabled=?,title=?,body=?,body_html=?,image_data=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=1""",
+            (1 if request.form.get("tribute_enabled") == "1" else 0, title, body, body_html, image_data, g.user["id"]),
+        )
+        for weekday in range(7):
+            hour = max(0, min(23, int(request.form.get(f"hour_{weekday}", 12))))
+            enabled = 1 if request.form.get(f"day_{weekday}") == "1" else 0
+            db.execute(
+                """INSERT INTO tribute_schedules(weekday,enabled,hour,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP)
+                   ON CONFLICT(weekday) DO UPDATE SET enabled=?,hour=?,updated_at=CURRENT_TIMESTAMP""",
+                (weekday, enabled, hour, enabled, hour),
+            )
+    flash("Agendamento da homenagem atualizado.", "success")
+    return redirect(url_for("football.notifications"))
+
+
+@bp.get("/notificacoes/homenagem/imagem")
+def tribute_image():
+    row = get_db().execute("SELECT image_data FROM tribute_settings WHERE id=1").fetchone()
+    data_url = (row["image_data"] if row else "") or ""
+    match = re.match(r"^data:(image/(?:jpeg|png|webp));base64,(.+)$", data_url, re.S)
+    if not match:
+        return redirect("/static/images/veeenhaaammm.png")
+    return Response(base64.b64decode(match.group(2)), mimetype=match.group(1), headers={"Cache-Control": "no-store"})
+
+
+@bp.post("/notificacoes/testar-homenagem")
+@roles_allowed("manager")
+def test_tribute_notification():
+    db = get_db()
+    player_id = request.form.get("player_id", type=int)
+    player = db.execute(
+        "SELECT id,name,war_name FROM players WHERE id=? AND active=1",
+        (player_id,),
+    ).fetchone()
+    if not player:
+        flash("Selecione um peladeiro ativo para o teste.", "danger")
+        return redirect(url_for("football.notifications"))
+
+    settings = db.execute("SELECT * FROM tribute_settings WHERE id=1").fetchone()
+    title = settings["title"]
+    body = settings["body"]
+    body_html = settings["body_html"]
+    image_url = "/futebol/notificacoes/homenagem/imagem"
+    try:
+        result = send_player_push(
+            db,
+            player["id"],
+            title,
+            body,
+            "/notificacoes",
+            image_url,
+            True,
+            True,
+            body_html,
+        )
+        sent = int(result.get("sent", 0))
+        db.execute(
+            "INSERT INTO push_announcements(title,body,audience,status,sent_count,created_by) VALUES(?,?,?,?,?,?)",
+            (title, body, f"player:{player['id']}", "ENVIADO", sent, g.user["id"]),
+        )
+        db.commit()
+        display_name = player["war_name"] or player["name"]
+        if sent:
+            flash(f"Teste da homenagem enviado para {display_name}.", "success")
+        else:
+            flash(f"{display_name} não possui dispositivo inscrito para notificações.", "warning")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.error("Erro ao enviar teste da homenagem: %s", exc)
+        flash("Não foi possível enviar o teste da homenagem.", "danger")
+    return redirect(url_for("football.notifications"))
 
 
 @bp.post("/notificacoes/historico/limpar")

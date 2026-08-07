@@ -159,6 +159,8 @@ def load_user_and_protect_routes():
         "sales.mercadopago_order_status",
         "sales.mercadopago_webhook",
         "finance.payment_reminders_cron",
+        "finance.weekly_tribute_cron",
+        "football.tribute_image",
     }:
         return None
 

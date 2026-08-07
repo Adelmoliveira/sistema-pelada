@@ -1,17 +1,21 @@
 import hashlib
 import hmac
+import json
+import os
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 
 from PIL import Image
 
 from app import app
-from src.db import get_db
+from src.db import get_db, init_postgres
 from src.routes.auth import make_password_hash
 from src.routes.sales import pix_access_token
 from src.services.mercadopago import validate_webhook_signature
@@ -21,11 +25,37 @@ from src.services.email_reminders import dispatch_reminders, get_reminder_settin
 from src.services.cash_register import get_session, session_summary
 from src.services.monthly_sales_report import monthly_sales_data
 from src.services.stock_alerts import notify_low_stock
+from src.services.push_notifications import send_player_push
 from src.utils import alphabetical_key, brdate, local_today, month_bounds
 from werkzeug.security import check_password_hash
 
 
 class MercadoPagoFlowTest(unittest.TestCase):
+    def test_postgres_schema_omits_sqlite_seed_syntax(self):
+        class Recorder:
+            def __init__(self):
+                self.statements = []
+
+            def execute(self, statement, params=()):
+                self.statements.append(statement)
+                return self
+
+            def commit(self):
+                return None
+
+        recorder = Recorder()
+        init_postgres(recorder)
+        self.assertFalse(
+            any("INSERT OR IGNORE" in statement.upper() for statement in recorder.statements)
+        )
+        schedule_seeds = [
+            statement
+            for statement in recorder.statements
+            if statement.upper().startswith("INSERT INTO TRIBUTE_SCHEDULES")
+        ]
+        self.assertTrue(schedule_seeds)
+        self.assertTrue(all("RETURNING WEEKDAY" in statement.upper() for statement in schedule_seeds))
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         app.config.update(
@@ -496,6 +526,81 @@ class MercadoPagoFlowTest(unittest.TestCase):
         invalid = self.client.get("/pix?day=data-invalida").get_data(as_text=True)
         self.assertIn("data informada era inválida", invalid)
 
+    def test_finance_dashboard_shows_monthly_and_annual_average_ticket(self):
+        today = local_today()
+        current_month = today.replace(day=1).isoformat()
+        previous_month = (today.replace(day=1) - timedelta(days=1)).replace(day=1).isoformat()
+        with app.app_context():
+            db = get_db()
+            for total, paid_at, method in (
+                (1000, f"{current_month} 10:00:00", "Pix"),
+                (3000, f"{current_month} 11:00:00", "Dinheiro"),
+                (6000, f"{previous_month} 12:00:00", "Débito"),
+                (9000, f"{current_month} 13:00:00", "Cortesia"),
+            ):
+                db.execute(
+                    """INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,paid_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (self.player_id, method, total, 1, "approved", paid_at),
+                )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Ticket médio do bar", page)
+        self.assertIn("R$ 20,00", page)
+        self.assertIn("R$ 33,33", page)
+        self.assertIn("2 venda(s) paga(s)", page)
+        self.assertIn("3 venda(s) paga(s)", page)
+        self.assertIn('id="ticket-average-chart"', page)
+
+    def test_football_dashboard_shows_monthly_annual_attendance_and_extremes(self):
+        today = local_today()
+        other_months = [month for month in range(1, 13) if month != today.month][:2]
+        dates_and_counts = (
+            (date(today.year, today.month, 1).isoformat(), 1),
+            (date(today.year, other_months[0], 1).isoformat(), 3),
+            (date(today.year, other_months[1], 1).isoformat(), 2),
+        )
+        with app.app_context():
+            db = get_db()
+            player_ids = [self.player_id]
+            for index in range(2):
+                player_ids.append(db.execute(
+                    "INSERT INTO players(name,war_name) VALUES(?,?)",
+                    (f"Participante {index}", f"P{index}"),
+                ).lastrowid)
+            for match_date, confirmed_count in dates_and_counts:
+                sumula_id = db.execute(
+                    """INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by)
+                       VALUES(?,'SABADO','FINALIZADA',?)""",
+                    (match_date, self.user_id),
+                ).lastrowid
+                for player_id in player_ids[:confirmed_count]:
+                    db.execute(
+                        "INSERT INTO football_participants(sumula_id,player_id,status) VALUES(?,?,'CONFIRMADO')",
+                        (sumula_id, player_id),
+                    )
+                if confirmed_count < len(player_ids):
+                    db.execute(
+                        "INSERT INTO football_participants(sumula_id,player_id,status) VALUES(?,?,'AUSENTE')",
+                        (sumula_id, player_ids[-1]),
+                    )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        page = self.client.get("/futebol").get_data(as_text=True)
+        highest_label = ("Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez")[other_months[0] - 1]
+        current_label = ("Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez")[today.month - 1]
+        self.assertIn("Participação nas peladas", page)
+        self.assertIn("Média do mês atual", page)
+        self.assertIn("Média anual", page)
+        self.assertIn(f"Maior participação: {highest_label}", page)
+        self.assertIn(f"Menor participação: {current_label}", page)
+        self.assertIn('id="football-attendance-chart"', page)
+
     def test_player_names_sort_ignoring_case_and_accents(self):
         names = ["Zeca", "áureo", "Ana", "Álvaro", "bruno"]
         self.assertEqual(
@@ -819,6 +924,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Lâmpada queimada", mine_page)
         self.assertIn("Aberto", mine_page)
         self.assertIn("Detalhes", mine_page)
+        self.assertIn("Chamados por status", mine_page)
+        self.assertIn('data-status-count="open">1</strong>', mine_page)
+        self.assertIn('data-status-count="completed">0</strong>', mine_page)
+        self.assertIn("maintenance-card-priority-medium", mine_page)
+        self.assertIn("Tempo aberto:", mine_page)
+        self.assertIn("maintenance-age-green", mine_page)
         # A listagem é resumida; os dados completos ficam na tela de detalhes.
         self.assertNotIn("A lâmpada não acende.", mine_page)
         self.assertNotIn("/edit", mine_page)
@@ -1031,6 +1142,19 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertIsNotNone(checked_entry["next_check_due_at"])
         checked_detail = self.client.get(f"/infra/load-relation/{entry_id}").get_data(as_text=True)
         self.assertIn("Válida até", checked_detail)
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                """INSERT INTO load_entry_photos
+                   (load_entry_id,photo_data,thumbnail_data,photo_kind,captured_by)
+                   VALUES(?,?,?,?,?)""",
+                (entry_id, "data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB", "conference", self.user_id),
+            )
+            db.commit()
+        timeline = self.client.get(f"/infra/load-relation/{entry_id}").get_data(as_text=True)
+        self.assertIn("Linha do tempo das conferências", timeline)
+        self.assertIn("Foto anterior", timeline)
+        self.assertIn("Foto da conferência", timeline)
 
         qr_page = self.client.get(f"/infra/load-relation/{entry_id}/qr-code")
         self.assertEqual(qr_page.status_code, 200)
@@ -1075,7 +1199,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             ).fetchone()[0]
             self.assertEqual(
                 (entry["bmp"], entry["area_code"], entry["serial_number"], entry["location"], photo_count),
-                (f"BMP-{entry_id:06d} | SAL", "SAL", "SERIE-002", "Armário H-14", 1),
+                (f"BMP-{entry_id:06d} | SAL", "SAL", "SERIE-002", "Armário H-14", 2),
             )
 
         report = self.client.get("/infra/load-relation/report.pdf?q=cadeira")
@@ -1100,6 +1224,62 @@ class MercadoPagoFlowTest(unittest.TestCase):
             db = get_db()
             self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entries").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entry_photos").fetchone()[0], 0)
+
+    def test_qr_load_check_requires_and_atomically_stores_photo_evidence(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            material_id = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES(?,?)",
+                ("Carga para conferência", "FCG-QR"),
+            ).lastrowid
+            entry_id = db.execute(
+                """INSERT INTO load_entries(material_id,bmp,area_code,status)
+                   VALUES(?,?,'BAR','active')""",
+                (material_id, "BMP-QR | BAR"),
+            ).lastrowid
+            db.commit()
+
+        missing = self.client.post(f"/infra/load-relation/{entry_id}/check-auto")
+        self.assertEqual(missing.status_code, 400)
+        self.assertIn("foto", missing.get_json()["error"].lower())
+        with app.app_context():
+            db = get_db()
+            entry = db.execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+            self.assertIsNone(entry["last_checked_at"])
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM load_entry_photos WHERE load_entry_id=?", (entry_id,)).fetchone()[0],
+                0,
+            )
+
+        photo = BytesIO()
+        Image.new("RGB", (900, 700), color=(55, 125, 75)).save(photo, format="JPEG")
+        photo.seek(0)
+        checked = self.client.post(
+            f"/infra/load-relation/{entry_id}/check-auto",
+            data={"photo": (photo, "conferencia.jpg")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(checked.status_code, 200, checked.get_json())
+        self.assertTrue(checked.get_json()["ok"])
+        with app.app_context():
+            db = get_db()
+            entry = db.execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
+            evidence = db.execute(
+                "SELECT * FROM load_entry_photos WHERE load_entry_id=?", (entry_id,)
+            ).fetchone()
+            self.assertIsNotNone(entry["last_checked_at"])
+            self.assertEqual(entry["last_checked_by"], self.user_id)
+            self.assertEqual(evidence["photo_kind"], "reference")
+            self.assertEqual(evidence["captured_by"], self.user_id)
+            self.assertIsNotNone(evidence["captured_at"])
+            self.assertTrue(evidence["photo_data"].startswith("data:image/jpeg;base64,"))
+
+        detail = self.client.get(f"/infra/load-relation/{entry_id}").get_data(as_text=True)
+        self.assertIn("Referência inicial", detail)
+        self.assertIn("utilizada como referência", detail)
+        self.assertIn("Por Teste", detail)
 
     def test_load_batch_movement_status_and_report_filters(self):
         with self.client.session_transaction() as session:
@@ -1135,6 +1315,35 @@ class MercadoPagoFlowTest(unittest.TestCase):
         report = self.client.get("/infra/load-relation/report?q=banqueta&status=maintenance")
         self.assertEqual(report.status_code, 200)
         self.assertIn("Equipe B", report.get_data(as_text=True))
+
+    def test_maintenance_list_colors_priority_and_open_age(self):
+        today = local_today()
+        with app.app_context():
+            db = get_db()
+            for index, (priority, age) in enumerate((("low", 12), ("medium", 20), ("high", 30), ("urgent", 5)), start=1):
+                db.execute(
+                    """INSERT INTO maintenance_requests
+                       (code,title,area_code,category,priority,description,status,occurred_on,created_at,created_by)
+                       VALUES(?,?,?,'electrical',?,?,'open',?,?,?)""",
+                    (
+                        f"MAN-AGE-{index}", f"Chamado idade {age}", "BAR", priority,
+                        "Teste de indicador de tempo.", today.isoformat(),
+                        (today - timedelta(days=age)).isoformat(), self.user_id,
+                    ),
+                )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        page = self.client.get("/infra/maintenance").get_data(as_text=True)
+        for priority in ("low", "medium", "high", "urgent"):
+            self.assertIn(f"maintenance-row-priority-{priority}", page)
+        self.assertIn('class="maintenance-age-green">12</strong>', page)
+        self.assertIn('class="maintenance-age-orange">20</strong>', page)
+        self.assertIn('class="maintenance-age-red">30</strong>', page)
+        self.assertIn("Tempo aberto", page)
+        self.assertIn("16 a 25 dias", page)
+        self.assertIn('<option value="open" selected>Aberto</option>', page)
 
     def test_maintenance_crud_dashboard_photos_and_report(self):
         with self.client.session_transaction() as session:
@@ -1254,6 +1463,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(worker_response.status_code, 200)
         self.assertEqual(worker_response.headers["Service-Worker-Allowed"], "/")
         self.assertIn('const OFFLINE_URL = "/offline"', worker)
+        self.assertIn('data.web_push === 8030', worker)
+        self.assertIn('notification.navigate || notification.url', worker)
         self.assertNotIn('request.mode === "navigate"', worker)
         self.assertNotIn('"/sale"', worker)
         self.assertNotIn('"/finance"', worker)
@@ -1491,6 +1702,154 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.mimetype, "application/pdf")
         self.assertTrue(response.data.startswith(b"%PDF-"))
         self.assertIn("attachment", response.headers["Content-Disposition"])
+
+    def test_weekly_tribute_cron_requires_secret_and_runs_on_scheduled_days(self):
+        unauthorized = self.client.get("/cron/weekly-tribute")
+        self.assertEqual(unauthorized.status_code, 401)
+
+        with patch("src.routes.finance.datetime") as clock, patch(
+            "src.routes.finance.send_weekly_tribute_notifications", return_value=3
+        ) as send_mock:
+            clock.now.return_value = datetime(2026, 8, 5, 17, 0)
+            response = self.client.get(
+                "/cron/weekly-tribute",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["sent"], 3)
+        send_mock.assert_called_once()
+
+        with patch("src.routes.finance.datetime") as clock, patch(
+            "src.routes.finance.send_weekly_tribute_notifications"
+        ) as send_mock:
+            clock.now.return_value = datetime(2026, 8, 3, 17, 0)
+            response = self.client.get(
+                "/cron/weekly-tribute",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["sent"], 0)
+        send_mock.assert_not_called()
+
+    def test_manager_sends_tribute_test_to_only_one_active_player(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with patch("src.routes.football.send_player_push", return_value={"sent": 1, "skipped": 0}) as send_mock:
+            response = self.client.post(
+                "/futebol/notificacoes/testar-homenagem",
+                data={"player_id": str(self.player_id)},
+            )
+        self.assertEqual(response.status_code, 302)
+        send_mock.assert_called_once_with(
+            unittest.mock.ANY,
+            self.player_id,
+            "PELADEIROS GPCTA",
+            "🗣️ VEEENHAAAMMM...",
+            "/notificacoes",
+            "/futebol/notificacoes/homenagem/imagem",
+            True,
+            True,
+            "🗣️ VEEENHAAAMMM...",
+        )
+        with app.app_context():
+            saved = get_db().execute(
+                "SELECT audience,sent_count FROM push_announcements ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertEqual(saved["audience"], f"player:{self.player_id}")
+            self.assertEqual(saved["sent_count"], 1)
+
+    def test_tribute_test_rejects_invalid_player(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with patch("src.routes.football.send_player_push") as send_mock:
+            response = self.client.post(
+                "/futebol/notificacoes/testar-homenagem",
+                data={"player_id": "999999"},
+            )
+        self.assertEqual(response.status_code, 302)
+        send_mock.assert_not_called()
+
+    def test_manager_configures_tribute_schedule_and_sanitizes_rich_text(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        response = self.client.post(
+            "/futebol/notificacoes/homenagem/configuracao",
+            data={
+                "tribute_enabled": "1", "tribute_title": "Convocação",
+                "tribute_body_html": "<strong>Venham</strong><script>alert(1)</script><big>agora</big>",
+                "day_1": "1", "hour_1": "19",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        with app.app_context():
+            db = get_db(); settings = db.execute("SELECT * FROM tribute_settings WHERE id=1").fetchone()
+            schedule = db.execute("SELECT * FROM tribute_schedules WHERE weekday=1").fetchone()
+            self.assertEqual(settings["title"], "Convocação")
+            self.assertEqual(settings["body"], "Venhamagora")
+            self.assertNotIn("script", settings["body_html"])
+            self.assertEqual((schedule["enabled"], schedule["hour"]), (1, 19))
+
+    def test_tribute_image_is_in_push_payload_and_inbox(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO push_subscriptions(player_id,endpoint,p256dh,auth) VALUES(?,?,?,?)",
+                (self.player_id, "https://push.example/test", "key", "auth"),
+            )
+            db.commit()
+            webpush_mock = unittest.mock.Mock()
+            pywebpush_module = ModuleType("pywebpush")
+            pywebpush_module.webpush = webpush_mock
+            with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "test-key"}), patch.dict(
+                sys.modules, {"pywebpush": pywebpush_module}
+            ):
+                result = send_player_push(
+                    db,
+                    self.player_id,
+                    "Teste da homenagem",
+                    "🗣️ VEEENHAAAMMM...",
+                    "/notificacoes",
+                    "/static/images/veeenhaaammm.png",
+                    True,
+                    True,
+                )
+            self.assertEqual(result["sent"], 1)
+            payload = json.loads(webpush_mock.call_args.kwargs["data"])
+            self.assertEqual(payload["web_push"], 8030)
+            self.assertEqual(payload["notification"]["title"], "Teste da homenagem")
+            self.assertEqual(payload["notification"]["navigate"], "/notificacoes")
+            self.assertIs(payload["notification"]["silent"], False)
+            self.assertEqual(
+                payload["notification"]["image"],
+                "/static/images/veeenhaaammm.png",
+            )
+            inbox = db.execute(
+                "SELECT image_url FROM push_inbox WHERE player_id=? ORDER BY id DESC LIMIT 1",
+                (self.player_id,),
+            ).fetchone()
+            self.assertEqual(inbox["image_url"], "/static/images/veeenhaaammm.png")
+            subscription = db.execute(
+                "SELECT last_push_status,last_push_at FROM push_subscriptions WHERE player_id=?",
+                (self.player_id,),
+            ).fetchone()
+            self.assertEqual(subscription["last_push_status"], "accepted")
+            self.assertIsNotNone(subscription["last_push_at"])
+
+    def test_stock_page_groups_intelligent_alerts(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "UPDATE products SET stock=1,min_stock=2,expiry_date=? WHERE id=?",
+                ((local_today() + timedelta(days=5)).isoformat(), self.product_id),
+            )
+            db.commit()
+        page = self.client.get("/stock").get_data(as_text=True)
+        self.assertIn("Alertas inteligentes", page)
+        self.assertIn("Estoque baixo", page)
+        self.assertIn("Próximos do vencimento", page)
+        self.assertIn("5 dia(s)", page)
 
     def test_manager_downloads_monthly_sales_accountability_pdf(self):
         month = local_today().strftime("%Y-%m")

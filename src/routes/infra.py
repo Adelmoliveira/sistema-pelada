@@ -539,9 +539,10 @@ def new_load_entry():
                 db.execute("UPDATE load_entries SET bmp=?,area_code=? WHERE id=?", (bmp, area_code, entry_id))
                 for photo, thumbnail in photos:
                     db.execute(
-                        """INSERT INTO load_entry_photos(load_entry_id,photo_data,thumbnail_data)
-                           VALUES(?,?,?)""",
-                        (entry_id, photo, thumbnail),
+                        """INSERT INTO load_entry_photos
+                           (load_entry_id,photo_data,thumbnail_data,photo_kind,captured_at,captured_by)
+                           VALUES(?,?,?,'registration',CURRENT_TIMESTAMP,?)""",
+                        (entry_id, photo, thumbnail, g.user["id"]),
                     )
             flash(f"Carga cadastrada com o código {bmp}.", "success")
             return redirect(url_for("infra.load_entry_detail", entry_id=entry_id))
@@ -611,17 +612,30 @@ def load_entry_detail(entry_id):
         flash("Carga não encontrada.", "warning")
         return redirect(url_for("infra.load_relation"))
     photos = db.execute(
-        "SELECT * FROM load_entry_photos WHERE load_entry_id=? ORDER BY id", (entry_id,)
+        """SELECT lp.*,u.name captured_by_name FROM load_entry_photos lp
+           LEFT JOIN users u ON u.id=lp.captured_by
+           WHERE lp.load_entry_id=? ORDER BY lp.id""", (entry_id,)
     ).fetchall()
     movements = db.execute(
         """SELECT lm.*,u.name moved_by_name FROM load_entry_movements lm
            LEFT JOIN users u ON u.id=lm.moved_by WHERE lm.load_entry_id=? ORDER BY lm.moved_at DESC,lm.id DESC""",
         (entry_id,),
     ).fetchall()
+    photo_list = [dict(photo) for photo in photos]
+    conference_timeline = []
+    for index, photo in enumerate(photo_list):
+        if photo.get("photo_kind") in ("reference", "conference"):
+            conference_timeline.append({
+                "current": photo,
+                "previous": photo_list[index - 1] if index else None,
+                "is_reference": photo.get("photo_kind") == "reference",
+            })
+    conference_timeline.reverse()
     check_due = entry["status"] not in ("discharged", "lost") and (
         not entry["next_check_due_at"] or str(entry["next_check_due_at"])[:10] <= local_today().isoformat()
     )
     return render_template("load_entry_detail.html", entry=entry, photos=photos, movements=movements,
+                           conference_timeline=conference_timeline,
                            check_due=check_due, load_statuses=LOAD_STATUS_LABELS,
                            load_status_classes=LOAD_STATUS_CLASSES)
 
@@ -710,7 +724,7 @@ def check_load_entry(entry_id):
 @bp.post("/load-relation/<int:entry_id>/check-auto")
 @roles_allowed("manager", "infra", "staff")
 def check_load_entry_auto(entry_id):
-    """Register a QR-based conference without leaving the mobile scanner."""
+    """Atomically store QR conference evidence and register the conference."""
     db = get_db()
     try:
         entry = db.execute(
@@ -725,14 +739,31 @@ def check_load_entry_auto(entry_id):
                 bmp=entry["bmp"],
                 error=f"A carga {entry['bmp']} está baixada/extraviada e não pode ser conferida.",
             ), 409
+        upload = request.files.get("photo")
+        if not upload or not upload.filename:
+            return jsonify(ok=False, error="Tire uma foto da carga para concluir a conferência."), 400
+        photo, thumbnail = process_material_photo(upload)
         due_at = next_load_check_date()
-        db.execute(
-            """UPDATE load_entries SET last_checked_at=CURRENT_TIMESTAMP,
-               last_checked_by=?,next_check_due_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-            (g.user["id"], due_at, entry_id),
-        )
-        db.commit()
+        with db:
+            has_existing_photo = db.execute(
+                "SELECT 1 FROM load_entry_photos WHERE load_entry_id=? LIMIT 1", (entry_id,)
+            ).fetchone()
+            photo_kind = "conference" if has_existing_photo else "reference"
+            db.execute(
+                """INSERT INTO load_entry_photos
+                   (load_entry_id,photo_data,thumbnail_data,photo_kind,captured_at,captured_by)
+                   VALUES(?,?,?,?,CURRENT_TIMESTAMP,?)""",
+                (entry_id, photo, thumbnail, photo_kind, g.user["id"]),
+            )
+            db.execute(
+                """UPDATE load_entries SET last_checked_at=CURRENT_TIMESTAMP,
+                   last_checked_by=?,next_check_due_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (g.user["id"], due_at, entry_id),
+            )
         return jsonify(ok=True, bmp=entry["bmp"], next_check_due_at=due_at)
+    except ValueError as exc:
+        db.rollback()
+        return jsonify(ok=False, error=str(exc)), 400
     except Exception:
         db.rollback()
         current_app.logger.exception("Erro na conferência automática da carga %s", entry_id)
@@ -786,7 +817,8 @@ def edit_load_entry(entry_id):
         flash("Carga não encontrada.", "warning")
         return redirect(url_for("infra.load_relation"))
     photos = db.execute(
-        "SELECT * FROM load_entry_photos WHERE load_entry_id=? ORDER BY id", (entry_id,)
+        """SELECT * FROM load_entry_photos
+           WHERE load_entry_id=? AND photo_kind='registration' ORDER BY id""", (entry_id,)
     ).fetchall()
     if request.method == "POST":
         try:
@@ -810,14 +842,16 @@ def edit_load_entry(entry_id):
                 )
                 for photo_id in remove_ids:
                     db.execute(
-                        "DELETE FROM load_entry_photos WHERE id=? AND load_entry_id=?",
+                        """DELETE FROM load_entry_photos
+                           WHERE id=? AND load_entry_id=? AND photo_kind='registration'""",
                         (photo_id, entry_id),
                     )
                 for photo, thumbnail in new_photos:
                     db.execute(
-                        """INSERT INTO load_entry_photos(load_entry_id,photo_data,thumbnail_data)
-                           VALUES(?,?,?)""",
-                        (entry_id, photo, thumbnail),
+                        """INSERT INTO load_entry_photos
+                           (load_entry_id,photo_data,thumbnail_data,photo_kind,captured_at,captured_by)
+                           VALUES(?,?,?,'registration',CURRENT_TIMESTAMP,?)""",
+                        (entry_id, photo, thumbnail, g.user["id"]),
                     )
             flash("Carga atualizada.", "success")
             return redirect(url_for("infra.load_entry_detail", entry_id=entry_id))
@@ -828,7 +862,8 @@ def edit_load_entry(entry_id):
             flash("Erro interno ao atualizar a carga.", "danger")
         entry = db.execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
         photos = db.execute(
-            "SELECT * FROM load_entry_photos WHERE load_entry_id=? ORDER BY id", (entry_id,)
+            """SELECT * FROM load_entry_photos
+               WHERE load_entry_id=? AND photo_kind='registration' ORDER BY id""", (entry_id,)
         ).fetchall()
     return render_template(
         "load_entry_form.html", entry=entry, materials=material_options(db),

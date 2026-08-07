@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO
 import base64
 
@@ -108,8 +108,8 @@ def products():
             
             initial_stock = loose_units + cases * units_per_case
             created = db.execute(
-                """INSERT INTO products(name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,supplier_email,photo_data,thumbnail_data)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                """INSERT INTO products(name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,supplier_email,photo_data,thumbnail_data,expiry_date)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     request.form["name"].strip(),
                     category,
@@ -122,6 +122,7 @@ def products():
                     request.form.get("supplier_email", "").strip().lower(),
                     photo_data,
                     thumbnail_data,
+                    request.form.get("expiry_date", ""),
                 )
             )
             db.commit()
@@ -192,7 +193,7 @@ def edit_product(product_id):
 
             db.execute(
                 """UPDATE products SET name=?,category=?,package_type=?,units_per_case=?,
-                price_cents=?,cost_cents=?,min_stock=?,stock=?,supplier_email=?,photo_data=?,thumbnail_data=? WHERE id=?""",
+                price_cents=?,cost_cents=?,min_stock=?,stock=?,supplier_email=?,photo_data=?,thumbnail_data=?,expiry_date=? WHERE id=?""",
                 (
                     request.form["name"].strip(),
                     category,
@@ -205,6 +206,7 @@ def edit_product(product_id):
                     request.form.get("supplier_email", "").strip().lower(),
                     photo_data,
                     thumbnail_data,
+                    request.form.get("expiry_date", ""),
                     product_id
                 )
             )
@@ -293,6 +295,28 @@ def stock():
         return redirect(url_for("products.stock"))
 
     product_rows = db.execute("SELECT * FROM products WHERE active=1 ORDER BY stock, name").fetchall()
+    alert_rows = [dict(row) for row in product_rows]
+    sales = db.execute(
+        """SELECT si.product_id,si.quantity,s.created_at FROM sale_items si JOIN sales s ON s.id=si.sale_id
+           WHERE s.paid=1 AND s.created_at>=?""", ((local_today() - timedelta(days=35)).isoformat(),)
+    ).fetchall()
+    usage = {row["id"]: {"recent": 0, "prior": 0, "last": None} for row in alert_rows}
+    for sale in sales:
+        when = date.fromisoformat(str(sale["created_at"])[:10]); bucket = usage.get(sale["product_id"])
+        if not bucket: continue
+        bucket["last"] = max(bucket["last"] or when, when); age = (local_today() - when).days
+        bucket["recent" if age <= 7 else "prior"] += int(sale["quantity"])
+    stock_alerts = {"low": [], "dormant": [], "expiring": [], "unusual": []}
+    for product in alert_rows:
+        stats = usage[product["id"]]
+        if int(product["stock"]) <= int(product["min_stock"]): stock_alerts["low"].append(product)
+        if int(product["stock"]) > 0 and (not stats["last"] or (local_today() - stats["last"]).days >= 30): stock_alerts["dormant"].append(product)
+        if product.get("expiry_date"):
+            days = (date.fromisoformat(str(product["expiry_date"])[:10]) - local_today()).days
+            if days <= 30: product["expiry_days"] = days; stock_alerts["expiring"].append(product)
+        weekly_average = stats["prior"] / 4
+        if stats["recent"] >= 5 and stats["recent"] > weekly_average * 2:
+            product["recent_usage"] = stats["recent"]; stock_alerts["unusual"].append(product)
     history_total = db.execute("SELECT COUNT(*) total FROM restocks").fetchone()["total"]
     try:
         history_page = max(1, int(request.args.get("history_page", 1)))
@@ -320,6 +344,7 @@ def stock():
         ORDER BY a.id DESC LIMIT 30"""
     ).fetchall()
     return render_template("stock.html", products=product_rows, history=history, adjustments=adjustments,
+                           stock_alerts=stock_alerts,
                            history_total=history_total, history_page=history_page,
                            history_pages=history_pages, report_start=request.args.get("start", ""),
                            report_end=request.args.get("end", ""))
