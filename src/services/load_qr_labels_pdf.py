@@ -10,9 +10,13 @@ from reportlab.pdfgen import canvas
 
 LABEL_SIZES = {
     "small": {"label": (48 * mm, 30 * mm), "columns": 4, "rows": 9},
-    # The standard label is wider rather than taller, leaving more room for
-    # the material name while remaining compatible with the A4 2x6 layout.
-    "standard": {"label": (85 * mm, 32 * mm), "columns": 2, "rows": 6},
+    # Standard adhesive sheet: three 63 mm columns with 3 mm between them,
+    # 10 mm top/bottom margins and 9 rows of 30 mm labels (27 per A4 sheet).
+    "standard": {
+        "label": (63 * mm, 30 * mm), "columns": 3, "rows": 9,
+        "margin_x": 7 * mm, "margin_y": 10 * mm,
+        "column_gap": 3 * mm, "row_gap": 0,
+    },
     "large": {"label": (95 * mm, 62 * mm), "columns": 2, "rows": 4},
 }
 
@@ -46,8 +50,10 @@ def build_load_qr_labels_pdf(entries, base_url, size="standard"):
     label_width, label_height = config["label"]
     columns, rows = config["columns"], config["rows"]
     page_width, page_height = A4
-    margin_x = (page_width - columns * label_width) / 2
-    margin_y = (page_height - rows * label_height) / 2
+    margin_x = config.get("margin_x", (page_width - columns * label_width) / 2)
+    margin_y = config.get("margin_y", (page_height - rows * label_height) / 2)
+    column_gap = config.get("column_gap", 0)
+    row_gap = config.get("row_gap", 0)
     per_page = columns * rows
 
     output = BytesIO()
@@ -59,8 +65,8 @@ def build_load_qr_labels_pdf(entries, base_url, size="standard"):
         if index and position == 0:
             pdf.showPage()
         column, row = position % columns, position // columns
-        x = margin_x + column * label_width
-        y = page_height - margin_y - (row + 1) * label_height
+        x = margin_x + column * (label_width + column_gap)
+        y = page_height - margin_y - (row + 1) * label_height - row * row_gap
 
         pdf.setStrokeColor(colors.HexColor("#AAB7BF"))
         pdf.setLineWidth(0.35)
