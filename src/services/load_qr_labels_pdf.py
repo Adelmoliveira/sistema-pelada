@@ -10,9 +10,9 @@ from reportlab.pdfgen import canvas
 
 LABEL_SIZES = {
     "small": {"label": (48 * mm, 30 * mm), "columns": 4, "rows": 9},
-    # The standard label is 10 mm wider to make the material identification
-    # easier to read. Two columns keep the labels inside an A4 sheet.
-    "standard": {"label": (75 * mm, 42 * mm), "columns": 2, "rows": 6},
+    # The standard label is wider rather than taller, leaving more room for
+    # the material name while remaining compatible with the A4 2x6 layout.
+    "standard": {"label": (85 * mm, 32 * mm), "columns": 2, "rows": 6},
     "large": {"label": (95 * mm, 62 * mm), "columns": 2, "rows": 4},
 }
 
