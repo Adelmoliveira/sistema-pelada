@@ -9,7 +9,7 @@
     <h2 class="h5">Filtrar QR Codes</h2>
     <form method="get"><select class="form-select mb-3" name="area"><option value="">Todas as áreas</option>{% for code,name in load_areas.items() %}<option value="{{code}}" {{'selected' if code == area_code}}>{{code}} - {{name}}</option>{% endfor %}</select><select class="form-select mb-3" name="material_id"><option value="">Todos os materiais</option>{% for material in materials %}<option value="{{material.id}}" {{'selected' if material.id == material_id}}>{{material.description}}</option>{% endfor %}</select><button class="btn btn-outline-primary w-100">Aplicar filtro</button></form>
     <hr>
-    <div class="small text-muted">Capacidade por folha A4:</div><ul class="small mb-0"><li>Pequeno: até 36 etiquetas</li><li>Padrão: até 12 etiquetas (mais largo)</li><li>Grande: até 8 etiquetas</li></ul>
+    <div class="small text-muted">Capacidade por folha A4:</div><ul class="small mb-0"><li>Pequeno: até 36 etiquetas</li><li>Padrão: até 27 etiquetas (3 colunas × 9 linhas)</li><li>Grande: até 8 etiquetas</li></ul>
   </div></div></div>
   <div class="col-lg-8"><form method="post" action="{{url_for('infra.load_qr_codes_pdf')}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="area_code" value="{{area_code}}"><input type="hidden" name="material_id" value="{{material_id or ''}}">
     <div class="card shadow-sm"><div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2 py-3"><div><strong>{{entries|length}}</strong> BMPs disponíveis</div><div class="form-check"><input class="form-check-input" type="checkbox" id="select-all"><label class="form-check-label" for="select-all">Selecionar todos</label></div></div>
