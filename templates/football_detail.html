@@ -13,6 +13,9 @@ document.querySelector('[data-participant-tab="2"]')?.remove();
 const addMatchForm=[...document.querySelectorAll('form')].find(form=>form.querySelector('input[name="action"][value="third_match"]'));
 if(addMatchForm){addMatchForm.querySelector('input[name="action"]').value='second_match';const button=addMatchForm.querySelector('button');if(button) button.textContent='Adicionar 2ª partida';}
 </script>{% endif %}
+<script>
+(()=>{const labelFor=(order,match)=>{const n=Number(order), local=match===2?n-22:n;if(local>=1&&local<=2)return `G${local}`;if(local>=3&&local<=10)return `D${local-2}`;if(local>=11&&local<=16)return `M${local-10}`;if(local>=17&&local<=22)return `A${local-16}`;return ''};document.querySelectorAll('.participant-match-pane').forEach((pane)=>{const match=pane.id.endsWith('-2')?2:1;pane.querySelectorAll('.list-group-item').forEach((item)=>{const input=item.querySelector('input[name="draw_order"]');const strong=item.querySelector('strong');const label=input&&strong?labelFor(input.value,match):'';if(label)strong.textContent=label;});});})();
+</script>
 {% endblock %}
 {% block scripts %}<script>
 const footballPage=document.querySelector('main')||document.body;
