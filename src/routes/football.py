@@ -772,8 +772,17 @@ def notifications():
         return redirect(url_for("football.notifications"))
     edit_id = request.args.get("edit_id", type=int)
     draft = db.execute("SELECT * FROM push_announcements WHERE id=? AND status='RASCUNHO'", (edit_id,)).fetchone() if edit_id else None
+    history_page_size = 5
+    try:
+        history_page = max(1, int(request.args.get("page", "1")))
+    except (TypeError, ValueError):
+        history_page = 1
+    history_total = int(db.execute("SELECT COUNT(*) AS total FROM push_announcements").fetchone()["total"] or 0)
+    history_pages = max(1, (history_total + history_page_size - 1) // history_page_size)
+    history_page = min(history_page, history_pages)
+    history_offset = (history_page - 1) * history_page_size
     history = db.execute("""SELECT pa.*,u.name user_name FROM push_announcements pa
-        LEFT JOIN users u ON u.id=pa.created_by ORDER BY pa.id DESC LIMIT 50""").fetchall()
+        LEFT JOIN users u ON u.id=pa.created_by ORDER BY pa.id DESC LIMIT ? OFFSET ?""", (history_page_size, history_offset)).fetchall()
     active_players = db.execute(
         "SELECT id,name,war_name FROM players WHERE active=1 ORDER BY name"
     ).fetchall()
@@ -793,6 +802,9 @@ def notifications():
     return render_template(
         "football_notifications.html",
         history=history,
+        history_page=history_page,
+        history_pages=history_pages,
+        history_total=history_total,
         draft=draft,
         active_players=active_players,
         player_names=player_names,

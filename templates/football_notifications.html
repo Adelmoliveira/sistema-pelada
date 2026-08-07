@@ -62,7 +62,7 @@
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-3">
           <h2 class="h4 mb-0">Histórico de avisos</h2>
-          <div class="d-flex align-items-center gap-2"><span class="text-muted small">Últimos 50 envios</span>{% if history %}<form method="post" action="{{url_for('football.clear_notification_history')}}" onsubmit="return confirm('Apagar todo o histórico de avisos? As notificações já enviadas não serão canceladas.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger" type="submit">Limpar histórico</button></form>{% endif %}</div>
+          <div class="d-flex align-items-center gap-2"><span class="text-muted small">{{history_total}} envio(s) · 5 por página</span>{% if history_total %}<form method="post" action="{{url_for('football.clear_notification_history')}}" onsubmit="return confirm('Apagar todo o histórico de avisos? As notificações já enviadas não serão canceladas.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger" type="submit">Limpar histórico</button></form>{% endif %}</div>
         </div>
         {% if history %}
         <div class="table-responsive">
@@ -96,6 +96,17 @@
         </div>
         {% else %}
         <p class="text-muted mb-0">Nenhum aviso foi enviado ainda.</p>
+        {% endif %}
+        {% if history_pages > 1 %}
+        <nav class="mt-3" aria-label="Paginação do histórico de avisos">
+          <ul class="pagination pagination-sm justify-content-end mb-0">
+            <li class="page-item {{'disabled' if history_page == 1}}"><a class="page-link" href="{{url_for('football.notifications', page=history_page-1, edit_id=request.args.get('edit_id'))}}">Anterior</a></li>
+            {% for number in range(1, history_pages + 1) %}
+            <li class="page-item {{'active' if number == history_page}}"><a class="page-link" href="{{url_for('football.notifications', page=number, edit_id=request.args.get('edit_id'))}}">{{number}}</a></li>
+            {% endfor %}
+            <li class="page-item {{'disabled' if history_page == history_pages}}"><a class="page-link" href="{{url_for('football.notifications', page=history_page+1, edit_id=request.args.get('edit_id'))}}">Próxima</a></li>
+          </ul>
+        </nav>
         {% endif %}
       </div>
     </section>
