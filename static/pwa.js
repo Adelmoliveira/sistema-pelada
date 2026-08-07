@@ -23,6 +23,38 @@
   window.syncAppBadge = syncAppBadge;
   syncAppBadge();
   document.addEventListener("visibilitychange", () => { if (!document.hidden) syncAppBadge(); });
+
+  const updatePendingDelivery = count => {
+    const total = Math.max(0, Number(count) || 0);
+    const bell = document.querySelector("#pending-delivery-bell");
+    const badge = document.querySelector("#pending-delivery-count");
+    const menu = document.querySelector("#sidebar-pending-delivery-link");
+    const menuBadge = document.querySelector("#sidebar-pending-delivery-count");
+    [bell, menu].forEach(element => { if (element) element.hidden = total === 0; });
+    [badge, menuBadge].forEach(element => {
+      if (!element) return;
+      element.hidden = total === 0;
+      element.textContent = total > 99 ? "99+" : String(total || "");
+    });
+    if (bell) {
+      bell.classList.toggle("has-pending-delivery", total > 0);
+      bell.setAttribute("aria-label", total > 0 ? `Aguardando retirada: ${total} item(ns)` : "Aguardando retirada");
+      bell.title = total > 0 ? `${total} item(ns) aguardando retirada` : "Aguardando retirada";
+    }
+  };
+
+  const syncPendingDelivery = async () => {
+    if (!document.querySelector("#pending-delivery-bell") && !document.querySelector("#sidebar-pending-delivery-link")) return;
+    try {
+      const response = await fetch("/minhas-compras/pending-count", {credentials: "same-origin", cache: "no-store"});
+      if (!response.ok) return;
+      const data = await response.json();
+      updatePendingDelivery(data.count);
+    } catch (_) {}
+  };
+  syncPendingDelivery();
+  window.setInterval(syncPendingDelivery, 20000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) syncPendingDelivery(); });
   let serviceWorkerRegistration;
   let registrationPromise;
   if ("serviceWorker" in navigator) {

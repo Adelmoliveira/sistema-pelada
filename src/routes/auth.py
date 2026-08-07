@@ -629,6 +629,43 @@ def my_purchases():
     )
 
 
+@bp.get("/minhas-compras/pending-count")
+@roles_allowed("client")
+def pending_purchase_count():
+    """Return the number of paid item units still awaiting pickup.
+
+    This endpoint is intentionally read-only so the menu/topbar indicator can
+    refresh frequently without changing the order or delivery state.
+    """
+    player_id = g.user["player_id"]
+    row = get_db().execute(
+        """SELECT COALESCE(SUM(pending_quantity), 0) pending_quantity
+           FROM (
+             SELECT CASE
+                 WHEN i.quantity - COALESCE((
+                   SELECT SUM(sid.quantity)
+                   FROM sale_item_deliveries sid
+                   WHERE sid.sale_item_id=i.id
+                 ), 0) > 0
+                 THEN i.quantity - COALESCE((
+                   SELECT SUM(sid.quantity)
+                   FROM sale_item_deliveries sid
+                   WHERE sid.sale_item_id=i.id
+                 ), 0)
+                 ELSE 0
+             END pending_quantity
+             FROM sales s
+             JOIN sale_items i ON i.sale_id=s.id
+             WHERE s.player_id=?
+               AND s.paid=1
+               AND s.delivered_at IS NULL
+               AND (s.ready_for_delivery=1 OR s.event_id IS NOT NULL)
+           ) pending_items""",
+        (player_id,),
+    ).fetchone()
+    return jsonify(count=int(row["pending_quantity"] or 0))
+
+
 @bp.get("/regulamento")
 @roles_allowed("client")
 def regulation():
