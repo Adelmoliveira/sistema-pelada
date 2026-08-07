@@ -40,21 +40,6 @@
         <div class="alert alert-info mt-3 mb-0 small">Rascunhos ficam salvos sem enviar notificações. O envio só alcança quem já permitiu notificações e cadastrou o celular no PWA.</div>
       </div>
     </section>
-    <section class="card shadow-sm mt-4 border-primary">
-      <div class="card-body">
-        <h2 class="h5 mb-2">Testar homenagem</h2>
-        <p class="text-muted small">Envie a foto e a mensagem <strong>🗣️ VEEENHAAAMMM...</strong> para apenas um peladeiro.</p>
-        <form method="post" action="{{url_for('football.test_tribute_notification')}}" onsubmit="return confirm('Enviar o teste da homenagem somente para o peladeiro selecionado?')">
-          <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
-          <label class="form-label" for="tribute-player">Peladeiro</label>
-          <select class="form-select mb-3" id="tribute-player" name="player_id" required>
-            <option value="">Selecione...</option>
-            {% for player in active_players %}<option value="{{player.id}}">{{player.war_name or player.name}}{% if player.war_name %} · {{player.name}}{% endif %}</option>{% endfor %}
-          </select>
-          <button class="btn btn-outline-primary w-100" type="submit">Enviar teste individual</button>
-        </form>
-      </div>
-    </section>
   </div>
 
   <div class="col-12 col-xl-7">
@@ -62,7 +47,7 @@
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-3">
           <h2 class="h4 mb-0">Histórico de avisos</h2>
-          <div class="d-flex align-items-center gap-2"><span class="text-muted small">Últimos 50 envios</span>{% if history %}<form method="post" action="{{url_for('football.clear_notification_history')}}" onsubmit="return confirm('Apagar todo o histórico de avisos? As notificações já enviadas não serão canceladas.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger" type="submit">Limpar histórico</button></form>{% endif %}</div>
+          <div class="d-flex align-items-center gap-2"><span class="text-muted small">{{history_total}} envio(s) · 5 por página</span>{% if history_total %}<form method="post" action="{{url_for('football.clear_notification_history')}}" onsubmit="return confirm('Apagar todo o histórico de avisos? As notificações já enviadas não serão canceladas.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-sm btn-outline-danger" type="submit">Limpar histórico</button></form>{% endif %}</div>
         </div>
         {% if history %}
         <div class="table-responsive">
@@ -97,6 +82,17 @@
         {% else %}
         <p class="text-muted mb-0">Nenhum aviso foi enviado ainda.</p>
         {% endif %}
+        {% if history_pages > 1 %}
+        <nav class="mt-3" aria-label="Paginação do histórico de avisos">
+          <ul class="pagination pagination-sm justify-content-end mb-0">
+            <li class="page-item {{'disabled' if history_page == 1}}"><a class="page-link" href="{{url_for('football.notifications', page=history_page-1, edit_id=request.args.get('edit_id'))}}">Anterior</a></li>
+            {% for number in range(1, history_pages + 1) %}
+            <li class="page-item {{'active' if number == history_page}}"><a class="page-link" href="{{url_for('football.notifications', page=number, edit_id=request.args.get('edit_id'))}}">{{number}}</a></li>
+            {% endfor %}
+            <li class="page-item {{'disabled' if history_page == history_pages}}"><a class="page-link" href="{{url_for('football.notifications', page=history_page+1, edit_id=request.args.get('edit_id'))}}">Próxima</a></li>
+          </ul>
+        </nav>
+        {% endif %}
       </div>
     </section>
   </div>
@@ -114,7 +110,7 @@
       <button class="btn btn-info w-100 mt-3">Salvar agendamento</button>
     </form>
   </div></section></div>
-  <div class="col-12 col-xl-7"><section class="card shadow-sm"><div class="card-body"><h2 class="h4">Saúde das notificações</h2><p class="text-muted small">“Aceito” confirma o serviço push; a apresentação final depende do aparelho.</p><div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Peladeiro</th><th>Dispositivos</th><th>Renovação</th><th>Último envio</th><th>Push</th><th>Não lidas</th></tr></thead><tbody>{% for row in health_rows %}<tr><td>{{row.war_name or row.name}}</td><td><span class="badge text-bg-{{'success' if row.device_count else 'secondary'}}">{{row.device_count}}</span></td><td>{{row.last_renewal|brdate if row.last_renewal else '—'}}</td><td>{{row.last_push_at|brdate if row.last_push_at else '—'}}</td><td><span class="badge text-bg-{{'success' if row.last_push_status == 'accepted' else 'danger' if row.last_push_status == 'failed' else 'secondary'}}">{{'Aceito' if row.last_push_status == 'accepted' else 'Falhou' if row.last_push_status == 'failed' else 'Nunca'}}</span></td><td>{{row.unread_count}}</td></tr>{% endfor %}</tbody></table></div></div></section></div>
+  <div class="col-12 col-xl-7"><section class="card shadow-sm"><div class="card-body"><div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h4 mb-0">Saúde das notificações</h2><span class="text-muted small">{{health_total}} peladeiro(s) · 5 por página</span></div><p class="text-muted small">“Aceito” confirma o serviço push; a apresentação final depende do aparelho.</p><div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Peladeiro</th><th>Dispositivos</th><th>Renovação</th><th>Último envio</th><th>Push</th><th>Não lidas</th></tr></thead><tbody>{% for row in health_rows %}<tr><td>{{row.war_name or row.name}}</td><td><span class="badge text-bg-{{'success' if row.device_count else 'secondary'}}">{{row.device_count}}</span></td><td>{{row.last_renewal|brdate if row.last_renewal else '—'}}</td><td>{{row.last_push_at|brdate if row.last_push_at else '—'}}</td><td><span class="badge text-bg-{{'success' if row.last_push_status == 'accepted' else 'danger' if row.last_push_status == 'failed' else 'secondary'}}">{{'Aceito' if row.last_push_status == 'accepted' else 'Falhou' if row.last_push_status == 'failed' else 'Nunca'}}</span></td><td>{{row.unread_count}}</td></tr>{% endfor %}</tbody></table></div>{% if health_pages > 1 %}<nav class="mt-3" aria-label="Paginação da saúde das notificações"><ul class="pagination pagination-sm justify-content-end mb-0"><li class="page-item {{'disabled' if health_page == 1}}"><a class="page-link" href="{{url_for('football.notifications', health_page=health_page-1, page=request.args.get('page'), edit_id=request.args.get('edit_id'))}}">Anterior</a></li>{% for number in range(1, health_pages + 1) %}<li class="page-item {{'active' if number == health_page}}"><a class="page-link" href="{{url_for('football.notifications', health_page=number, page=request.args.get('page'), edit_id=request.args.get('edit_id'))}}">{{number}}</a></li>{% endfor %}<li class="page-item {{'disabled' if health_page == health_pages}}"><a class="page-link" href="{{url_for('football.notifications', health_page=health_page+1, page=request.args.get('page'), edit_id=request.args.get('edit_id'))}}">Próxima</a></li></ul></nav>{% endif %}</div></section></div>
 </div>
 {% endblock %}
 {% block scripts %}<script>(()=>{const form=document.querySelector('#tribute-settings-form'),editor=document.querySelector('#tribute-editor'),hidden=document.querySelector('#tribute-body-html');document.querySelectorAll('[data-format]').forEach(button=>button.addEventListener('click',()=>{document.execCommand(button.dataset.format,false,button.dataset.value||null);editor.focus()}));form?.addEventListener('submit',()=>{hidden.value=editor.innerHTML})})();</script>{% endblock %}

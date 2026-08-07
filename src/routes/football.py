@@ -772,12 +772,30 @@ def notifications():
         return redirect(url_for("football.notifications"))
     edit_id = request.args.get("edit_id", type=int)
     draft = db.execute("SELECT * FROM push_announcements WHERE id=? AND status='RASCUNHO'", (edit_id,)).fetchone() if edit_id else None
+    history_page_size = 5
+    try:
+        history_page = max(1, int(request.args.get("page", "1")))
+    except (TypeError, ValueError):
+        history_page = 1
+    history_total = int(db.execute("SELECT COUNT(*) AS total FROM push_announcements").fetchone()["total"] or 0)
+    history_pages = max(1, (history_total + history_page_size - 1) // history_page_size)
+    history_page = min(history_page, history_pages)
+    history_offset = (history_page - 1) * history_page_size
     history = db.execute("""SELECT pa.*,u.name user_name FROM push_announcements pa
-        LEFT JOIN users u ON u.id=pa.created_by ORDER BY pa.id DESC LIMIT 50""").fetchall()
+        LEFT JOIN users u ON u.id=pa.created_by ORDER BY pa.id DESC LIMIT ? OFFSET ?""", (history_page_size, history_offset)).fetchall()
     active_players = db.execute(
         "SELECT id,name,war_name FROM players WHERE active=1 ORDER BY name"
     ).fetchall()
     player_names = {str(player["id"]): player["war_name"] or player["name"] for player in active_players}
+    health_page_size = 5
+    try:
+        health_page = max(1, int(request.args.get("health_page", "1")))
+    except (TypeError, ValueError):
+        health_page = 1
+    health_total = int(db.execute("SELECT COUNT(*) AS total FROM players WHERE active=1").fetchone()["total"] or 0)
+    health_pages = max(1, (health_total + health_page_size - 1) // health_page_size)
+    health_page = min(health_page, health_pages)
+    health_offset = (health_page - 1) * health_page_size
     health_rows = db.execute(
         """SELECT p.id,p.name,p.war_name,
                   (SELECT COUNT(*) FROM push_subscriptions s WHERE s.player_id=p.id) device_count,
@@ -785,7 +803,8 @@ def notifications():
                   (SELECT MAX(s.last_push_at) FROM push_subscriptions s WHERE s.player_id=p.id) last_push_at,
                   (SELECT s.last_push_status FROM push_subscriptions s WHERE s.player_id=p.id ORDER BY s.last_push_at DESC,s.id DESC LIMIT 1) last_push_status,
                   (SELECT COUNT(*) FROM push_inbox i WHERE i.player_id=p.id AND i.read_at IS NULL) unread_count
-           FROM players p WHERE p.active=1 ORDER BY p.name"""
+           FROM players p WHERE p.active=1 ORDER BY p.name LIMIT ? OFFSET ?""",
+        (health_page_size, health_offset),
     ).fetchall()
     tribute_settings = db.execute("SELECT * FROM tribute_settings WHERE id=1").fetchone()
     schedule_rows = db.execute("SELECT * FROM tribute_schedules ORDER BY weekday").fetchall()
@@ -793,10 +812,16 @@ def notifications():
     return render_template(
         "football_notifications.html",
         history=history,
+        history_page=history_page,
+        history_pages=history_pages,
+        history_total=history_total,
         draft=draft,
         active_players=active_players,
         player_names=player_names,
         health_rows=health_rows,
+        health_page=health_page,
+        health_pages=health_pages,
+        health_total=health_total,
         tribute_settings=tribute_settings,
         tribute_schedules=schedules,
         weekday_labels=WEEKDAY_LABELS,
@@ -829,7 +854,8 @@ def update_tribute_settings():
             enabled = 1 if request.form.get(f"day_{weekday}") == "1" else 0
             db.execute(
                 """INSERT INTO tribute_schedules(weekday,enabled,hour,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP)
-                   ON CONFLICT(weekday) DO UPDATE SET enabled=?,hour=?,updated_at=CURRENT_TIMESTAMP""",
+                   ON CONFLICT(weekday) DO UPDATE SET enabled=?,hour=?,updated_at=CURRENT_TIMESTAMP
+                   RETURNING weekday""",
                 (weekday, enabled, hour, enabled, hour),
             )
     flash("Agendamento da homenagem atualizado.", "success")
