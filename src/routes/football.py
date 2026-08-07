@@ -58,7 +58,11 @@ def _participant_player(db, sumula_id, player_id):
 
 
 def _fallback_roles(db, sumula_id):
-    """Calcula os papéis de emergência da segunda partida pela ordem do sorteio."""
+    """Calcula os papéis de emergência da segunda partida pela ordem do sorteio.
+
+    A ordem da súmula é agrupada por função: goleiros, defesa, meio e ataque
+    em cada partida. Assim, D8/M6/A6 correspondem às ordens 10/16/22.
+    """
     match = db.execute("SELECT id FROM football_matches WHERE sumula_id=? AND number=2", (sumula_id,)).fetchone()
     if not match or db.execute(
         "SELECT 1 FROM football_responsibles WHERE sumula_id=? AND match_id=? AND responsibility_type='GOLEIRO_VOLUNTARIO'",
@@ -73,7 +77,7 @@ def _fallback_roles(db, sumula_id):
         for row in db.execute(
             """SELECT fp.player_id,fp.draw_order,p.name,p.war_name
                FROM football_participants fp JOIN players p ON p.id=fp.player_id
-               WHERE fp.sumula_id=? AND fp.status='CONFIRMADO' AND fp.draw_order IN (1,8,14,20)""",
+               WHERE fp.sumula_id=? AND fp.status='CONFIRMADO' AND fp.draw_order IN (1,10,16,22)""",
             (sumula_id,),
         ).fetchall()
     }
@@ -81,7 +85,7 @@ def _fallback_roles(db, sumula_id):
     if players.get(1):
         player = players[1]
         roles.append({"player_id": player["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": 1, "name": player["war_name"] or player["name"]})
-    candidates = [players[order] for order in (8, 14, 20) if players.get(order)]
+    candidates = [players[order] for order in (10, 16, 22) if players.get(order)]
     if candidates:
         goalkeeper = candidates[0]
         roles.append({"player_id": goalkeeper["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": goalkeeper["draw_order"], "name": goalkeeper["war_name"] or goalkeeper["name"]})
@@ -936,10 +940,35 @@ def sumulas():
     db = get_db()
     conditions, params = [], []
     start, end, situation = request.args.get("start", ""), request.args.get("end", ""), request.args.get("situacao", "")
+    month = request.args.get("month", "")
+    selected_year = request.args.get("year", "") or str(local_today().year)
+    try:
+        month_number = int(month) if month else 0
+        if month_number not in range(1, 13):
+            month = ""
+            month_number = 0
+    except (TypeError, ValueError):
+        month = ""
+        month_number = 0
+    try:
+        year_number = int(selected_year)
+        if year_number < 2000 or year_number > 2100:
+            raise ValueError
+    except (TypeError, ValueError):
+        year_number = local_today().year
+        selected_year = str(year_number)
     if start:
         conditions.append("fs.match_date>=?"); params.append(start)
     if end:
         conditions.append("fs.match_date<=?"); params.append(end)
+    if month_number:
+        month_start = date(year_number, month_number, 1)
+        if month_number == 12:
+            month_end = date(year_number + 1, 1, 1)
+        else:
+            month_end = date(year_number, month_number + 1, 1)
+        conditions.extend(["fs.match_date>=?", "fs.match_date<?"])
+        params.extend([month_start.isoformat(), month_end.isoformat()])
     if situation == "ENCERRADA":
         conditions.append("fs.locked_at IS NOT NULL")
     elif situation in SITUATIONS:
@@ -948,7 +977,19 @@ def sumulas():
     if conditions: sql += " WHERE " + " AND ".join(conditions)
     sql += " GROUP BY fs.id ORDER BY fs.match_date DESC,fs.id DESC"
     rows = db.execute(sql, tuple(params)).fetchall()
-    return render_template("football_sumulas.html", rows=rows, situations=SITUATIONS, start=start, end=end, situation=situation)
+    months = ((1, "Janeiro"), (2, "Fevereiro"), (3, "Março"), (4, "Abril"), (5, "Maio"), (6, "Junho"), (7, "Julho"), (8, "Agosto"), (9, "Setembro"), (10, "Outubro"), (11, "Novembro"), (12, "Dezembro"))
+    return render_template(
+        "football_sumulas.html",
+        rows=rows,
+        situations=SITUATIONS,
+        start=start,
+        end=end,
+        situation=situation,
+        month=month,
+        month_number=month_number,
+        selected_year=selected_year,
+        months=months,
+    )
 
 
 @bp.route("/sumulas/nova", methods=["GET", "POST"])
@@ -1010,27 +1051,47 @@ def detail(sumula_id):
                 if not preferred_position:
                     player_position = db.execute("SELECT football_position FROM players WHERE id=?", (player_id,)).fetchone()
                     preferred_position = _lineup_position(player_position["football_position"]) if player_position else ""
+                # A ordem automática segue a posição e a partida: G1/G2,
+                # D1-D8, M1-M6 e A1-A6 na primeira partida (1-22), depois
+                # os mesmos blocos na segunda (23-44). Ordens digitadas
+                # manualmente continuam sendo respeitadas quando pertencem
+                # ao bloco da posição escolhida.
+                role_ranges = {
+                    "GOLEIRO": tuple(range(1, 3)) + tuple(range(23, 25)),
+                    "GOL": tuple(range(1, 3)) + tuple(range(23, 25)),
+                    "DEFENSOR": tuple(range(3, 11)) + tuple(range(25, 33)),
+                    "DEFESA": tuple(range(3, 11)) + tuple(range(25, 33)),
+                    "MEIO_CAMPO": tuple(range(11, 17)) + tuple(range(33, 39)),
+                    "MEIO": tuple(range(11, 17)) + tuple(range(33, 39)),
+                    "ATACANTE": tuple(range(17, 23)) + tuple(range(39, 45)),
+                    "ATAQUE": tuple(range(17, 23)) + tuple(range(39, 45)),
+                }
+                allowed_orders = role_ranges.get(preferred_position, tuple(range(1, 45)))
+                used_orders = {
+                    int(row["draw_order"])
+                    for row in db.execute(
+                        "SELECT draw_order FROM football_participants WHERE sumula_id=? AND draw_order IS NOT NULL",
+                        (sumula_id,),
+                    ).fetchall()
+                }
                 draw_order = request.form.get("draw_order", "").strip()
                 if draw_order:
                     draw_order = int(draw_order)
                     if draw_order < 1 or draw_order > 44:
                         raise ValueError("A ordem do sorteio deve estar entre 1 e 44.")
-                    if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND draw_order=?", (sumula_id, draw_order)).fetchone():
+                    # O valor exibido no formulário pode ser a próxima ordem
+                    # geral. Quando ela não pertence à posição escolhida,
+                    # substituímos pela primeira vaga do bloco correto.
+                    if draw_order not in allowed_orders:
+                        draw_order = next((number for number in allowed_orders if number not in used_orders), None)
+                    if draw_order is None:
+                        raise ValueError("Não há mais ordens disponíveis para esta posição.")
+                    if draw_order in used_orders:
                         raise ValueError("Esta ordem de sorteio já está ocupada.")
                 else:
-                    # A ordem é automática no cadastro normal.  Isso mantém o
-                    # sorteio sequencial mesmo quando o navegador envia o
-                    # formulário sem o valor visível do campo.
-                    used_orders = {
-                        int(row["draw_order"])
-                        for row in db.execute(
-                            "SELECT draw_order FROM football_participants WHERE sumula_id=? AND draw_order IS NOT NULL",
-                            (sumula_id,),
-                        ).fetchall()
-                    }
-                    draw_order = next((number for number in range(1, 45) if number not in used_orders), None)
+                    draw_order = next((number for number in allowed_orders if number not in used_orders), None)
                     if draw_order is None:
-                        raise ValueError("Não há mais ordens disponíveis para esta súmula.")
+                        raise ValueError("Não há mais ordens disponíveis para esta posição.")
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, draw_order or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
             elif action == "historical_participant":
