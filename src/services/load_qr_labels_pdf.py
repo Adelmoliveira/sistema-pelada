@@ -10,8 +10,8 @@ from reportlab.pdfgen import canvas
 
 LABEL_SIZES = {
     "small": {"label": (48 * mm, 30 * mm), "columns": 4, "rows": 9},
-    # Standard adhesive sheet: three 63 mm columns with 3 mm between them,
-    # 10 mm top/bottom margins and 9 rows of 30 mm labels (27 per A4 sheet).
+    # Standard adhesive sheet: three columns and nine rows (27 labels per
+    # A4 sheet), using 63 x 30 mm labels with the requested spacing.
     "standard": {
         "label": (63 * mm, 30 * mm), "columns": 3, "rows": 9,
         "margin_x": 7 * mm, "margin_y": 10 * mm,
