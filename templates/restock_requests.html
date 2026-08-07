@@ -1,10 +1,77 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-start gap-3 mb-4"><div><h1 class="h3 mb-1">Solicitações de reposição</h1><p class="text-muted mb-0">Acompanhe os pedidos enviados pela atendente.</p></div><a class="btn btn-outline-primary" href="{{url_for('products.restock_request')}}">Nova solicitação</a></div>
-{% for r in requests %}{% set workflow = r.workflow_status or r.status %}<div class="card shadow-sm mb-3"><div class="card-header d-flex justify-content-between align-items-center"><strong>Solicitação #{{r.id}}</strong><span class="badge {% if workflow=='PENDENTE' %}text-bg-warning{% elif workflow in ['COMPRA_EFETUADA','ATENDIDA'] %}text-bg-success{% elif workflow=='CANCELADA' %}text-bg-danger{% elif workflow=='VISTA' %}text-bg-info{% else %}text-bg-primary{% endif %}">{{status_labels.get(workflow, workflow|replace('_',' ')|title)}}</span></div><div class="card-body"><div class="small text-muted mb-3">Enviada em {{r.created_at|brdate}} por <strong>{{r.submitted_by_name}}</strong></div>
-<ul class="mb-3">{% for i in items_by_request.get(r.id, []) %}<li>{{i.quantity}} {{i.measure}} de <strong>{{i.product_name}}</strong>{% if i.description %} <span class="text-muted">({{i.description}})</span>{% endif %}</li>{% else %}<li>Nenhum item de bar informado.</li>{% endfor %}</ul>
-{% if r.cleaning_materials %}<p><strong>Materiais de limpeza:</strong><br>{{r.cleaning_materials|replace('\n','<br>')|safe}}</p>{% endif %}
-{% if status_options.get(r.id) %}<form method="post" class="row g-2 align-items-end"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="request_id" value="{{r.id}}"><div class="col-md-7"><label class="form-label">Observação / motivo</label><input name="review_notes" class="form-control" placeholder="Ex.: compra realizada na quarta-feira"></div><div class="col-md-5"><label class="form-label">Atualizar situação</label><select name="status" class="form-select">{% for next_status in status_options[r.id] %}<option value="{{next_status}}">{% if next_status == 'VISTA' %}Marcar como vista{% else %}{{status_labels[next_status]}}{% endif %}</option>{% endfor %}</select></div><div class="col-12"><button class="btn btn-primary">Salvar atualização</button></div></form>{% elif r.review_notes %}<p class="mb-0 text-muted"><strong>Observação:</strong> {{r.review_notes}}</p>{% else %}<p class="mb-0 text-muted">Fluxo finalizado.</p>{% endif %}
-{% if histories.get(r.id) %}<hr><h6>Histórico de alterações</h6><div class="border-start border-3 ps-3">{% for h in histories[r.id] %}<div class="mb-2"><strong>{{status_labels.get(h.status, h.status|replace('_',' ')|title)}}</strong><div class="small text-muted">{{h.created_at|brdate}} · {{h.changed_by_name}}</div>{% if h.notes %}<div class="small">{{h.notes}}</div>{% endif %}</div>{% endfor %}</div>{% endif %}
-</div></div>{% else %}<div class="alert alert-info">Nenhuma solicitação recebida.</div>{% endfor %}
+<div class="d-flex justify-content-between align-items-start gap-3 mb-4">
+  <div><h1 class="h3 mb-1">Solicitações de reposição</h1><p class="text-muted mb-0">Acompanhe os pedidos enviados pela atendente e registre a compra.</p></div>
+  <a class="btn btn-outline-primary" href="{{url_for('products.restock_request')}}">Nova solicitação</a>
+</div>
+
+{% if manager_notifications %}
+<div class="alert alert-info shadow-sm mb-4">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <strong>Avisos de reposição</strong>
+    {% if unread_manager_notifications %}<span class="badge rounded-pill text-bg-primary">{{unread_manager_notifications}} novo(s)</span>{% endif %}
+  </div>
+  {% for n in manager_notifications[:5] %}
+    <div class="{% if not loop.last %}border-bottom pb-2 mb-2{% endif %}">
+      <strong>{{n.title}}</strong><br>
+      <span>{{n.body}}</span>
+      <small class="d-block text-muted">{{n.created_at|brdate}}</small>
+    </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% for r in requests %}
+  {% set workflow = r.workflow_status or r.status %}
+  <div class="card shadow-sm mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong>Solicitação #{{r.id}}</strong>
+      <span class="badge {% if workflow=='PENDENTE' %}text-bg-warning{% elif workflow in ['COMPRA_EFETUADA','ATENDIDA'] %}text-bg-success{% elif workflow=='CANCELADA' %}text-bg-danger{% elif workflow=='VISTA' %}text-bg-info{% else %}text-bg-primary{% endif %}">{{status_labels.get(workflow, workflow|replace('_',' ')|title)}}</span>
+    </div>
+    <div class="card-body">
+      <div class="small text-muted mb-3">Enviada em {{r.created_at|brdate}} por <strong>{{r.submitted_by_name}}</strong></div>
+      <ul class="mb-3">
+        {% for i in items_by_request.get(r.id, []) %}
+          <li>{{i.quantity}} {{i.measure}} de <strong>{{i.product_name}}</strong>{% if i.description %} <span class="text-muted">({{i.description}})</span>{% endif %}</li>
+        {% else %}<li>Nenhum item de bar informado.</li>{% endfor %}
+      </ul>
+      {% if r.cleaning_materials %}<p><strong>Materiais de limpeza:</strong><br>{{r.cleaning_materials|replace('\n','<br>')|safe}}</p>{% endif %}
+
+      {% if r.purchase_recorded_at %}
+        <div class="alert alert-success py-2">
+          <strong>Compra registrada.</strong>
+          {% if r.supplier %} Fornecedor: {{r.supplier}}.{% endif %}
+          {% if r.purchase_amount_cents %} Total: R$ {{'%.2f'|format(r.purchase_amount_cents / 100)|replace('.', ',')}}.{% endif %}
+          Conta: {{'Dinheiro físico' if r.payment_account == 'cash' else 'Conta / Pix'}}.
+          {% if r.receipt_data %} <a href="{{url_for('products.restock_receipt', request_id=r.id)}}" target="_blank" rel="noopener">Ver comprovante</a>{% endif %}
+        </div>
+      {% endif %}
+
+      {% if status_options.get(r.id) %}
+        <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end">
+          <input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="request_id" value="{{r.id}}">
+          <div class="col-md-4"><label class="form-label">Atualizar situação</label><select name="status" class="form-select" required>{% for next_status in status_options[r.id] %}<option value="{{next_status}}">{% if next_status == 'VISTA' %}Marcar como vista{% else %}{{status_labels[next_status]}}{% endif %}</option>{% endfor %}</select></div>
+          <div class="col-md-8"><label class="form-label">Observação / motivo</label><input name="review_notes" class="form-control" placeholder="Ex.: compra realizada na quarta-feira"></div>
+          <div class="col-12" id="purchase-fields-{{r.id}}" hidden>
+            <div class="row g-2 border rounded p-3 mt-1 bg-light">
+              <div class="col-md-4"><label class="form-label">Fornecedor</label><input name="supplier" class="form-control" value="{{r.supplier or ''}}" placeholder="Nome do fornecedor"></div>
+              <div class="col-md-3"><label class="form-label">Valor total pago</label><div class="input-group"><span class="input-group-text">R$</span><input name="purchase_amount" type="number" min="0.01" step="0.01" class="form-control" value="{% if r.purchase_amount_cents %}{{'%.2f'|format(r.purchase_amount_cents / 100)}}{% endif %}"></div></div>
+              <div class="col-md-3"><label class="form-label">Conta de pagamento</label><select name="payment_account" class="form-select"><option value="bank" {% if r.payment_account != 'cash' %}selected{% endif %}>Banco / Pix</option><option value="cash" {% if r.payment_account == 'cash' %}selected{% endif %}>Dinheiro físico</option></select></div>
+              <div class="col-md-2"><label class="form-label">Nota/recibo</label><input name="receipt" type="file" accept="image/*,application/pdf" class="form-control"></div>
+              <div class="col-12 small text-muted">Ao salvar “Compra efetuada”, os itens serão adicionados ao estoque e a saída será registrada no caixa do Bar.</div>
+            </div>
+          </div>
+          <div class="col-12"><button class="btn btn-primary">Salvar atualização</button></div>
+        </form>
+        <script>
+          (() => { const form = document.currentScript.previousElementSibling; const select = form.querySelector('select[name="status"]'); const fields = form.querySelector('#purchase-fields-{{r.id}}');
+            const toggle = () => { fields.hidden = select.value !== 'COMPRA_EFETUADA'; }; select.addEventListener('change', toggle); toggle(); })();
+        </script>
+      {% elif r.review_notes %}<p class="mb-0 text-muted"><strong>Observação:</strong> {{r.review_notes}}</p>
+      {% else %}<p class="mb-0 text-muted">Fluxo finalizado.</p>{% endif %}
+
+      {% if histories.get(r.id) %}<hr><h6>Histórico de alterações</h6><div class="border-start border-3 ps-3">{% for h in histories[r.id] %}<div class="mb-2"><strong>{{status_labels.get(h.status, h.status|replace('_',' ')|title)}}</strong><div class="small text-muted">{{h.created_at|brdate}} · {{h.changed_by_name}}</div>{% if h.notes %}<div class="small">{{h.notes}}</div>{% endif %}</div>{% endfor %}</div>{% endif %}
+    </div>
+  </div>
+{% else %}<div class="alert alert-info">Nenhuma solicitação recebida.</div>{% endfor %}
 {% endblock %}

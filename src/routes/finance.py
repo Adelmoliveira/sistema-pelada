@@ -90,7 +90,7 @@ def _dashboard_period():
     return mode, start, end, granularity
 
 @bp.route("/")
-@roles_allowed("manager", "staff")
+@roles_allowed("manager")
 def dashboard():
     db = get_db()
     # Keep a date object for date arithmetic and a normalized ISO string for

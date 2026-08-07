@@ -18,7 +18,7 @@ LIGHT_GRAY = colors.HexColor("#F4F6F7")
 TEXT = colors.HexColor("#183042")
 
 
-def build_load_relation_pdf(entries, today, query=""):
+def build_load_relation_pdf(entries, today, query="", material_title=""):
     output = BytesIO()
     document = SimpleDocTemplate(
         output,
@@ -59,12 +59,16 @@ def build_load_relation_pdf(entries, today, query=""):
     story = [
         Paragraph("PELADEIROS GPCTA", styles["LoadTitle"]),
         Paragraph("Relação de Carga", styles["LoadHeading"]),
+    ]
+    if material_title:
+        story.append(Paragraph(f"Material: <b>{escape(material_title)}</b>", styles["LoadHeading"]))
+    story.extend([
         Paragraph(
             f"Emitido em {today.strftime('%d/%m/%Y')}" + (f" - Filtro: {escape(query)}" if query else ""),
             styles["LoadSubtitle"],
         ),
         Spacer(1, 6 * mm),
-    ]
+    ])
     summary = Table([
         [Paragraph("ITENS CADASTRADOS", styles["LoadCenter"]), Paragraph("FOTOS VINCULADAS", styles["LoadCenter"])],
         [Paragraph(f"<b>{len(entries)}</b>", styles["LoadCenter"]), Paragraph(f"<b>{total_photos}</b>", styles["LoadCenter"])],

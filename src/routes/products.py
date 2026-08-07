@@ -1,6 +1,9 @@
 from datetime import date, timedelta
+from io import BytesIO
+import base64
 
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, g, send_file
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, g, send_file, abort
+from werkzeug.utils import secure_filename
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import cents
@@ -28,6 +31,35 @@ RESTOCK_STATUS_LABELS = {
 }
 RESTOCK_STATUS_ORDER = ("PENDENTE", "VISTA", "EM_PROCESSO", "COMPRA_EFETUADA", "ATENDIDA", "CANCELADA")
 
+def _row_get(row, key, default=None):
+    """Read a column defensively from SQLite rows and psycopg DictRows.
+
+    Reposições criadas antes da migração podem ainda estar em uma tabela sem
+    os campos de compra. Atualizações simples de status não devem depender
+    desses campos opcionais.
+    """
+    try:
+        columns = _row_columns(row)
+        return row[key] if key in columns else default
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return default
+
+
+def _row_columns(row):
+    """Return row column names for sqlite3.Row and PostgreSQL rows.
+
+    Some PostgreSQL adapters expose ``keys`` as a method while others expose
+    it as an attribute.  Calling ``set(row.keys)`` on the latter produces a
+    set containing a method object and can make an otherwise valid update
+    fail with an opaque internal-server error.
+    """
+    keys = getattr(row, "keys", None)
+    if callable(keys):
+        keys = keys()
+    if keys is None:
+        return set()
+    return set(keys)
+
 
 def _restock_status_options(status):
     if status in {"ATENDIDA", "CANCELADA"}:
@@ -40,6 +72,20 @@ def _restock_status_options(status):
             options.append(next_status)
     options.append("CANCELADA")
     return options
+
+
+def _safe_rollback(db, operation):
+    """Rollback without masking the original database error.
+
+    psycopg connections can themselves raise while recovering from a failed
+    transaction (for example after a dropped serverless connection).  The
+    user-facing error must remain the original operation failure, while the
+    rollback problem is recorded for diagnosis.
+    """
+    try:
+        db.rollback()
+    except Exception:
+        current_app.logger.exception("Falha no rollback (%s)", operation)
 
 @bp.route("/products", methods=["GET", "POST"])
 @roles_allowed("manager", "staff")
@@ -508,13 +554,22 @@ def restock_request():
                     "INSERT INTO bar_restock_requests(submitted_by,cleaning_materials,workflow_status) VALUES(?,?,?)",
                     (g.user["id"], cleaning, "PENDENTE"),
                 )
+                request_id = cur.lastrowid
                 db.execute("INSERT INTO bar_restock_request_history(request_id,status,notes,changed_by) VALUES(?,?,?,?)",
-                           (cur.lastrowid, "PENDENTE", "Solicitação enviada.", g.user["id"]))
+                           (request_id, "PENDENTE", "Solicitação enviada.", g.user["id"]))
                 for product_id, quantity, measure, description in items:
                     db.execute(
                         "INSERT INTO bar_restock_request_items(request_id,product_id,quantity,measure,description) VALUES(?,?,?,?,?)",
-                        (cur.lastrowid, product_id, quantity, measure, description),
+                        (request_id, product_id, quantity, measure, description),
                     )
+                # Notify every active manager in the same transaction as the
+                # request, so the alert cannot be shown without its request.
+                db.execute(
+                    """INSERT INTO bar_restock_notifications(request_id,user_id,title,body)
+                       SELECT ?,id,?,? FROM users WHERE role='manager' AND active=1""",
+                    (request_id, f"Nova reposição solicitada #{request_id}",
+                     f"{g.user['name']} enviou uma nova solicitação de reposição para análise."),
+                )
             flash("Solicitação de reposição enviada ao gerente.", "success")
             return redirect(url_for("products.restock_request"), code=303)
         except ValueError as exc:
@@ -562,42 +617,187 @@ def restock_requests():
     if request.method == "POST":
         try:
             request_id = int(request.form["request_id"])
-            status = request.form.get("status", "VISTA")
+            status = str(request.form.get("status", "VISTA") or "VISTA").strip().upper()
             if status not in RESTOCK_STATUS_LABELS or status == "PENDENTE":
                 raise ValueError("Situação inválida.")
             current = db.execute("SELECT * FROM bar_restock_requests WHERE id=?", (request_id,)).fetchone()
             if not current:
                 raise ValueError("Solicitação não encontrada.")
-            current_status = current["workflow_status"] if "workflow_status" in current.keys() else current["status"]
+            current_status = str(
+                _row_get(current, "workflow_status", _row_get(current, "status", "PENDENTE"))
+                or "PENDENTE"
+            ).strip().upper()
             if status not in _restock_status_options(current_status):
                 raise ValueError("Essa transição de situação não é permitida.")
             notes = request.form.get("review_notes", "").strip()
             if status == "CANCELADA" and not notes:
                 raise ValueError("Informe o motivo do cancelamento.")
+            purchase = status == "COMPRA_EFETUADA"
+            supplier = request.form.get("supplier", "").strip()
+            payment_account = request.form.get("payment_account", "bank").strip()
+            purchase_amount_cents = cents(request.form.get("purchase_amount", "0")) if purchase else int(_row_get(current, "purchase_amount_cents", 0) or 0)
+            if purchase:
+                if not supplier:
+                    raise ValueError("Informe o fornecedor da compra.")
+                if purchase_amount_cents <= 0:
+                    raise ValueError("Informe o valor total pago da compra.")
+                if payment_account not in {"cash", "bank"}:
+                    raise ValueError("Selecione uma conta de pagamento válida.")
+                cash_session = get_session(db)
+                if not cash_session or cash_session["status"] != "open":
+                    raise ValueError("Abra o caixa de hoje antes de registrar a compra efetuada.")
+                if _row_get(current, "purchase_recorded_at") or db.execute(
+                    "SELECT id FROM cash_movements WHERE source=? AND source_id=? LIMIT 1",
+                    ("bar_restock_request", request_id),
+                ).fetchone():
+                    raise ValueError("A compra desta solicitação já foi registrada.")
+            receipt_data = _row_get(current, "receipt_data", "") or ""
+            receipt_filename = _row_get(current, "receipt_filename", "") or ""
+            receipt_mime = _row_get(current, "receipt_mime", "") or ""
+            if purchase:
+                upload = request.files.get("receipt")
+                if upload and upload.filename:
+                    raw = upload.read()
+                    if len(raw) > 5 * 1024 * 1024:
+                        raise ValueError("A nota/recibo deve ter no máximo 5 MB.")
+                    mime = (upload.mimetype or "").lower()
+                    if mime != "application/pdf" and not mime.startswith("image/"):
+                        raise ValueError("Anexe uma imagem ou um arquivo PDF.")
+                    receipt_data = base64.b64encode(raw).decode("ascii")
+                    receipt_filename = secure_filename(upload.filename) or "recibo"
+                    receipt_mime = mime
             legacy_status = "ATENDIDA" if status == "ATENDIDA" else ("CANCELADA" if status == "CANCELADA" else "VISTA")
-            updated = db.execute(
-                """UPDATE bar_restock_requests SET status=?,workflow_status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,review_notes=?
-                   WHERE id=?""",
-                (legacy_status, status, g.user["id"], notes, request_id),
-            )
-            if updated.rowcount != 1:
-                raise ValueError("Solicitação não encontrada.")
-            db.execute("INSERT INTO bar_restock_request_history(request_id,status,notes,changed_by) VALUES(?,?,?,?)",
-                       (request_id, status, notes, g.user["id"]))
-            db.execute("""INSERT INTO bar_restock_notifications(request_id,user_id,title,body)
-                       VALUES(?,?,?,?)""", (request_id, current["submitted_by"],
-                       f"Reposição #{request_id}: {RESTOCK_STATUS_LABELS[status]}",
-                       notes or f"A situação da sua solicitação foi atualizada para {RESTOCK_STATUS_LABELS[status]}."))
-            db.commit()
+            replenished_product_ids = []
+            audit_notes = notes or (f"Compra registrada: {supplier}, {purchase_amount_cents / 100:.2f}." if purchase else "")
+            submitted_by = _row_get(current, "submitted_by")
+            with db:
+                # Grave apenas as colunas disponíveis. Isso mantém as
+                # transições VISTA/EM_PROCESSO compatíveis enquanto uma
+                # instalação antiga termina a migração dos campos de compra.
+                columns = _row_columns(current)
+                set_parts = []
+                values = []
+                for column, value in (("status", legacy_status), ("workflow_status", status),
+                                      ("reviewed_by", g.user["id"]), ("review_notes", notes),
+                                      ("supplier", supplier), ("purchase_amount_cents", purchase_amount_cents),
+                                      ("payment_account", payment_account), ("receipt_data", receipt_data),
+                                      ("receipt_filename", receipt_filename), ("receipt_mime", receipt_mime)):
+                    if column in columns:
+                        set_parts.append(f"{column}=?")
+                        values.append(value)
+                for column in ("reviewed_at",):
+                    if column in columns:
+                        set_parts.append(f"{column}=CURRENT_TIMESTAMP")
+                if purchase:
+                    required = {"purchase_recorded_at", "purchase_recorded_by", "supplier", "purchase_amount_cents", "payment_account"}
+                    missing = sorted(required - columns)
+                    if missing:
+                        raise ValueError("A estrutura do banco ainda não foi atualizada para registrar a compra: " + ", ".join(missing))
+                    set_parts.extend(["purchase_recorded_at=CURRENT_TIMESTAMP", "purchase_recorded_by=?"])
+                    values.append(g.user["id"])
+                if not set_parts:
+                    raise ValueError("A solicitação não possui campos atualizáveis no banco.")
+                values.append(request_id)
+                updated = db.execute(f"UPDATE bar_restock_requests SET {','.join(set_parts)} WHERE id=?", tuple(values))
+                if updated.rowcount != 1:
+                    raise ValueError("Solicitação não encontrada.")
+                if purchase:
+                    item_rows = db.execute(
+                        """SELECT i.*,p.name product_name,p.units_per_case FROM bar_restock_request_items i
+                           JOIN products p ON p.id=i.product_id WHERE i.request_id=? ORDER BY i.id""",
+                        (request_id,),
+                    ).fetchall()
+                    total_units = 0
+                    for item in item_rows:
+                        if item["measure"] == "caixas" and not int(item["units_per_case"] or 0):
+                            raise ValueError(f"O produto {item['product_name']} não possui unidades por caixa cadastradas.")
+                        total_units += int(item["quantity"]) * (int(item["units_per_case"] or 0) if item["measure"] == "caixas" else 1)
+                    unit_cost = purchase_amount_cents // total_units if total_units else 0
+                    for item in item_rows:
+                        units = int(item["quantity"]) * (int(item["units_per_case"] or 0) if item["measure"] == "caixas" else 1)
+                        db.execute(
+                            "INSERT INTO restocks(product_id,quantity,unit_cost_cents,notes) VALUES(?,?,?,?)",
+                            (item["product_id"], units, unit_cost, f"Reposição via solicitação #{request_id} — {supplier}"),
+                        )
+                        db.execute("UPDATE products SET stock=stock+?,cost_cents=CASE WHEN ?>0 THEN ? ELSE cost_cents END WHERE id=?",
+                                   (units, unit_cost, unit_cost, item["product_id"]))
+                        replenished_product_ids.append(item["product_id"])
+                    create_movement(
+                        db, cash_session["id"], payment_account, "out", "purchase", purchase_amount_cents,
+                        f"Compra de reposição #{request_id} — {supplier}", g.user["id"],
+                        source="bar_restock_request", source_id=request_id,
+                    )
+            # Histórico e aviso são auxiliares. Mantê-los fora da transação
+            # principal evita que uma tabela auxiliar ausente (ou uma falha
+            # de FK em uma instalação parcialmente migrada) deixe a conexão
+            # PostgreSQL em estado ``aborted`` e faça parecer que a alteração
+            # de situação falhou. Cada gravação tem sua própria transação e
+            # pode falhar sem desfazer o status/compra já confirmados.
+            try:
+                with db:
+                    db.execute(
+                        "INSERT INTO bar_restock_request_history(request_id,status,notes,changed_by) VALUES(?,?,?,?)",
+                        (request_id, status, audit_notes, g.user["id"]),
+                    )
+            except Exception:
+                current_app.logger.exception(
+                    "Falha ao registrar histórico de reposição (request_id=%s, operação=INSERT history)",
+                    request_id,
+                )
+            if submitted_by:
+                try:
+                    with db:
+                        db.execute(
+                            """INSERT INTO bar_restock_notifications(request_id,user_id,title,body)
+                               VALUES(?,?,?,?)""",
+                            (
+                                request_id,
+                                submitted_by,
+                                f"Reposição #{request_id}: {RESTOCK_STATUS_LABELS[status]}",
+                                audit_notes or f"A situação da sua solicitação foi atualizada para {RESTOCK_STATUS_LABELS[status]}.",
+                            ),
+                        )
+                except Exception:
+                    current_app.logger.exception(
+                        "Falha ao registrar notificação de reposição (request_id=%s, operação=INSERT notification)",
+                        request_id,
+                    )
+            # This service sends e-mail and commits its alert state; only run it
+            # after the stock/cash transaction above has completed successfully.
+            if replenished_product_ids:
+                try:
+                    notify_low_stock(db, replenished_product_ids)
+                except Exception:
+                    # O fluxo da reposição já foi confirmado; uma falha no
+                    # alerta não deve transformar a resposta em erro interno.
+                    current_app.logger.exception("Falha ao emitir alerta de estoque após reposição #%s", request_id)
             flash("Solicitação atualizada.", "success")
         except (TypeError, ValueError) as exc:
-            db.rollback()
+            _safe_rollback(db, "atualização de reposição")
             flash(str(exc), "danger")
         except Exception as exc:
-            db.rollback()
-            current_app.logger.error(f"Erro ao atualizar solicitação de reposição: {exc}")
+            _safe_rollback(db, "atualização de reposição")
+            current_app.logger.exception(
+                "Erro ao atualizar solicitação de reposição "
+                "(request_id=%s, status=%s, tipo=%s, operação=UPDATE bar_restock_requests)",
+                request.form.get("request_id"), request.form.get("status"), type(exc).__name__,
+            )
             flash("Erro interno ao atualizar a solicitação.", "danger")
         return redirect(url_for("products.restock_requests"), code=303)
+
+    manager_notifications = db.execute(
+        """SELECT n.*,r.workflow_status FROM bar_restock_notifications n
+           JOIN bar_restock_requests r ON r.id=n.request_id
+           WHERE n.user_id=? ORDER BY n.id DESC LIMIT 20""",
+        (g.user["id"],),
+    ).fetchall()
+    unread_manager_notifications = sum(1 for notification in manager_notifications if notification["read_at"] is None)
+    if unread_manager_notifications:
+        db.execute(
+            "UPDATE bar_restock_notifications SET read_at=CURRENT_TIMESTAMP WHERE user_id=? AND read_at IS NULL",
+            (g.user["id"],),
+        )
+        db.commit()
 
     rows = db.execute(
         """SELECT r.*,u.name submitted_by_name,ru.name reviewed_by_name
@@ -623,7 +823,31 @@ def restock_requests():
             histories.setdefault(history["request_id"], []).append(history)
     return render_template("restock_requests.html", requests=rows, items_by_request=items_by_request,
                            histories=histories, status_labels=RESTOCK_STATUS_LABELS,
-                           status_options={row["id"]: _restock_status_options(row["workflow_status"] if "workflow_status" in row.keys() else row["status"]) for row in rows})
+                           manager_notifications=manager_notifications,
+                           unread_manager_notifications=unread_manager_notifications,
+                           status_options={
+                               row["id"]: _restock_status_options(
+                                   _row_get(row, "workflow_status", _row_get(row, "status", "PENDENTE"))
+                               )
+                               for row in rows
+                           })
+
+
+@bp.get("/stock/restock-requests/<int:request_id>/receipt")
+@roles_allowed("manager")
+def restock_receipt(request_id):
+    row = get_db().execute(
+        "SELECT receipt_data,receipt_mime,receipt_filename FROM bar_restock_requests WHERE id=?",
+        (request_id,),
+    ).fetchone()
+    if not row or not row["receipt_data"]:
+        abort(404)
+    try:
+        payload = base64.b64decode(row["receipt_data"])
+    except Exception:
+        abort(404)
+    return send_file(BytesIO(payload), mimetype=row["receipt_mime"] or "application/octet-stream",
+                     as_attachment=False, download_name=row["receipt_filename"] or "recibo")
 
 
 @bp.get("/stock/report.pdf")
