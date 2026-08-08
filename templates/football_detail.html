@@ -91,7 +91,7 @@ const nextSequentialParticipantOrder=()=>{const next=(usedParticipantOrders.size
 /* A posição é apenas a posição preferencial do jogador.  Ela não deve
    escolher a próxima vaga do sorteio (por exemplo, um atacante não deve
    fazer a sequência saltar de 5 para 17). */
-if(participantPlayer&&participantPosition){participantPlayer.addEventListener('change',()=>{participantPosition.value=playerPositions[participantPlayer.value]||'';if(participantOrder){participantOrder.value=nextSequentialParticipantOrder()||participantOrder.value;}});}
+if(participantPlayer&&participantPosition){participantPlayer.addEventListener('change',()=>{participantPosition.value=playerPositions[participantPlayer.value]||'';});}
 const lineupForm=document.querySelector('form input[name="action"][value="lineup"]')?.closest('form');
 const lineupPlayer=lineupForm?.querySelector('select[name="player_id"]');
 const lineupPosition=lineupForm?.querySelector('select[name="position"]');
