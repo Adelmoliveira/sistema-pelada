@@ -2763,6 +2763,102 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertIsNotNone(transfer["reversed_at"])
             self.assertEqual(db.execute("SELECT COUNT(*) total FROM cash_movements").fetchone()["total"], 4)
 
+    def test_goal_types_control_assists_and_own_goal_statistics(self):
+        with app.app_context():
+            db = get_db()
+            assist_player_id = db.execute(
+                "INSERT INTO players(name,war_name) VALUES(?,?)",
+                ("Assistente", "Garçom"),
+            ).lastrowid
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','EM_ANDAMENTO',?)",
+                ("2026-08-08", self.user_id),
+            ).lastrowid
+            match_id = db.execute(
+                "INSERT INTO football_matches(sumula_id,number,blue_score,white_score,status) VALUES(?,1,3,0,'ENCERRADA')",
+                (sumula_id,),
+            ).lastrowid
+            for player_id in (self.player_id, assist_player_id):
+                db.execute(
+                    "INSERT INTO football_participants(sumula_id,player_id,status) VALUES(?,?,'CONFIRMADO')",
+                    (sumula_id, player_id),
+                )
+            client_user_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("artilheiro", "Artilheiro", "hash", self.player_id),
+            ).lastrowid
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        detail_html = self.client.get(f"/futebol/sumulas/{sumula_id}").get_data(as_text=True)
+        self.assertNotIn("Gol normal", detail_html)
+        self.assertNotIn('name="minute"', detail_html)
+        self.assertNotIn('placeholder="Min."', detail_html)
+        self.assertIn("['NORMAL','Gol']", detail_html)
+        self.assertIn("['REBOTE','Rebote']", detail_html)
+        self.assertIn("['FALTA','Falta']", detail_html)
+        self.assertIn("['PENALTY','Penalty']", detail_html)
+        self.assertIn("['ROUBADA','Roubada']", detail_html)
+        self.assertIn("['CONTRA','Gol Contra']", detail_html)
+
+        common_goal = {
+            "action": "goal",
+            "match_id": str(match_id),
+            "author_player_id": str(self.player_id),
+            "assist_player_id": str(assist_player_id),
+            "benefited_team": "AZUL",
+            "minute": "1",
+        }
+        for goal_type in ("NORMAL", "REBOTE", "CONTRA"):
+            response = self.client.post(
+                f"/futebol/sumulas/{sumula_id}",
+                data={**common_goal, "goal_type": goal_type},
+            )
+            self.assertEqual(response.status_code, 302)
+
+        with app.app_context():
+            db = get_db()
+            goals = db.execute(
+                "SELECT goal_type,own_goal,assist_player_id FROM football_goals ORDER BY id"
+            ).fetchall()
+            self.assertEqual(
+                [(row["goal_type"], row["own_goal"], row["assist_player_id"]) for row in goals],
+                [("NORMAL", 0, assist_player_id), ("REBOTE", 0, None), ("CONTRA", 1, None)],
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM football_goals WHERE minute IS NOT NULL").fetchone()[0],
+                0,
+            )
+            db.execute(
+                "UPDATE football_sumulas SET situacao='FINALIZADA',finalized_at=CURRENT_TIMESTAMP WHERE id=?",
+                (sumula_id,),
+            )
+            db.commit()
+
+        statistics_html = self.client.get("/futebol/estatisticas").get_data(as_text=True)
+        self.assertRegex(
+            statistics_html,
+            r"Peladeiro</td><td>100\.0%</td><td>0</td><td>0</td><td>0</td><td>0</td><td>1</td><td>0</td>",
+        )
+        self.assertRegex(
+            statistics_html,
+            r"Garçom</td><td>100\.0%</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>1</td>",
+        )
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_user_id
+        client_html = self.client.get("/futebol/minha-pelada").get_data(as_text=True)
+        self.assertIn(
+            '<strong class="fs-3">1</strong><small class="d-block text-muted">Gols</small>',
+            client_html,
+        )
+        self.assertIn(
+            '<strong class="fs-3">0</strong><small class="d-block text-muted">Assistências</small>',
+            client_html,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

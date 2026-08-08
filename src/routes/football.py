@@ -24,7 +24,7 @@ TEAMS = {"AZUL": "Azul", "BRANCO": "Branco"}
 INCIDENT_TYPES = {"DISCIPLINAR": "Disciplinar", "LESAO": "Lesão", "ATRASO": "Atraso", "ABANDONO_PARTIDA": "Abandono de partida", "DISCUSSAO": "Discussão", "FALHA_ORGANIZACAO": "Falha de organização", "PROBLEMA_ESTRUTURAL": "Problema estrutural", "OUTRO": "Outro"}
 INCIDENT_LEVELS = {"INFORMATIVO": "Informativo", "ATENCAO": "Atenção", "GRAVE": "Grave"}
 CARD_TYPES = {"AMARELO": "Amarelo", "AZUL": "Azul", "VERMELHO": "Vermelho"}
-GOAL_TYPES = {"NORMAL": "Gol", "REBOTE": "Rebote", "FALTA": "Falta", "PENALTY": "Penalty", "ROUBADA": "Roubada", "CONTRA": "Gol contra"}
+GOAL_TYPES = {"NORMAL": "Gol", "REBOTE": "Rebote", "FALTA": "Falta", "PENALTY": "Penalty", "ROUBADA": "Roubada", "CONTRA": "Gol Contra"}
 TRANSFER_POSITIONS = {"DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque"}
 TRANSFER_STATUSES = {"PENDENTE": "Pendente", "APROVADA": "Deferido", "RECUSADA": "Indeferido"}
 # Avisos de partidas matemáticas começam na nova fase de registros de julho de
@@ -520,8 +520,8 @@ def statistics():
             if own > opponent: wins += 1
             elif own == opponent: draws += 1
             else: losses += 1
-        goals = int(db.execute("SELECT COALESCE(SUM(CASE WHEN fg.own_goal=1 THEN -1 ELSE 1 END),0) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
-        assists = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.assist_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
+        goals = int(db.execute("SELECT COALESCE(SUM(CASE WHEN fg.goal_type='CONTRA' OR fg.own_goal=1 THEN -1 ELSE 1 END),0) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
+        assists = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.assist_player_id=? AND fg.goal_type='NORMAL' AND fg.own_goal=0 AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'" + fs_filter, (player["id"], *fs_params)).fetchone()[0] or 0)
         historical_filter = " AND stat_date >= ? AND stat_date < ?" if start_date else ""
         historical_params = (start_date.isoformat(), end_date.isoformat()) if start_date else ()
         historical = db.execute("SELECT COALESCE(SUM(goals),0) goals,COALESCE(SUM(assists),0) assists FROM football_historical_stats WHERE player_id=?" + historical_filter, (player["id"], *historical_params)).fetchone()
@@ -628,8 +628,8 @@ def client_panel():
             if score[0] > score[1]: own["vitorias"] += 1
             elif score[0] == score[1]: own["empates"] += 1
             else: own["derrotas"] += 1
-        own["gols"] = int(db.execute("SELECT COALESCE(SUM(CASE WHEN fg.own_goal=1 THEN -1 ELSE 1 END),0) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player_id,)).fetchone()[0] or 0)
-        own["assistencias"] = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.assist_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player_id,)).fetchone()[0] or 0)
+        own["gols"] = int(db.execute("SELECT COALESCE(SUM(CASE WHEN fg.goal_type='CONTRA' OR fg.own_goal=1 THEN -1 ELSE 1 END),0) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.author_player_id=? AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player_id,)).fetchone()[0] or 0)
+        own["assistencias"] = int(db.execute("SELECT COUNT(*) FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id JOIN football_sumulas fs ON fs.id=fm.sumula_id WHERE fg.assist_player_id=? AND fg.goal_type='NORMAL' AND fg.own_goal=0 AND fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'", (player_id,)).fetchone()[0] or 0)
         historical = db.execute("SELECT COALESCE(SUM(goals),0) goals,COALESCE(SUM(assists),0) assists FROM football_historical_stats WHERE player_id=?", (player_id,)).fetchone()
         own["gols"] += int(historical["goals"] or 0); own["assistencias"] += int(historical["assists"] or 0)
     return render_template("football_client_panel.html", data=data, own=own, player_id=player_id)
@@ -1223,7 +1223,8 @@ def detail(sumula_id):
                 author_player_id = int(request.form["author_player_id"]) if request.form.get("author_player_id") else None
                 if author_player_id and not _participant_player(db, sumula_id, author_player_id):
                     raise ValueError("Registre gols somente para peladeiros participantes desta súmula.")
-                assist_player_id = int(request.form["assist_player_id"]) if request.form.get("assist_player_id") else None
+                goal_type = _normalize_goal_type(request.form.get("goal_type"), request.form.get("own_goal") == "1")
+                assist_player_id = int(request.form["assist_player_id"]) if goal_type == "NORMAL" and request.form.get("assist_player_id") else None
                 if assist_player_id and not _participant_player(db, sumula_id, assist_player_id):
                     raise ValueError("Registre assistências somente para peladeiros participantes desta súmula.")
                 match_id = int(request.form["match_id"])
@@ -1231,13 +1232,12 @@ def detail(sumula_id):
                 if benefited_team not in TEAMS or not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
                     raise ValueError("Partida ou time inválido para esta súmula.")
                 _ensure_goal_fits_score(db, match_id, benefited_team)
-                goal_type = _normalize_goal_type(request.form.get("goal_type"), request.form.get("own_goal") == "1")
                 own_goal = 1 if goal_type == "CONTRA" else 0
                 if own_goal:
                     if not author_player_id:
                         raise ValueError("Selecione o peladeiro que marcou o gol contra.")
                     assist_player_id = None
-                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,goal_type,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?,?)", (match_id, author_player_id, benefited_team, assist_player_id, int(request.form["minute"]) if request.form.get("minute") else None, goal_type, own_goal, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
+                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,goal_type,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?,?)", (match_id, author_player_id, benefited_team, assist_player_id, None, goal_type, own_goal, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
             elif action in ("update_goal", "move_goal", "delete_goal"):
                 goal_id = int(request.form["goal_id"])
                 goal = db.execute("SELECT fg.id,fg.match_id,fm.sumula_id FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id WHERE fg.id=? AND fm.sumula_id=?", (goal_id, sumula_id)).fetchone()
@@ -1256,16 +1256,16 @@ def detail(sumula_id):
                         _audit(db, sumula_id, "GOL_MOVIDO", f"{goal['match_id']}->{target_match_id}")
                     else:
                         author_player_id = int(request.form["author_player_id"]) if request.form.get("author_player_id") else None
-                        assist_player_id = int(request.form["assist_player_id"]) if request.form.get("assist_player_id") else None
+                        existing_goal = db.execute("SELECT COALESCE(goal_type,''), COALESCE(own_goal,0) FROM football_goals WHERE id=?", (goal_id,)).fetchone()
+                        goal_type = _normalize_goal_type(request.form.get("goal_type") or (existing_goal[0] if existing_goal else ""), request.form.get("own_goal") == "1" or bool(existing_goal[1] if existing_goal else 0))
+                        assist_player_id = int(request.form["assist_player_id"]) if goal_type == "NORMAL" and request.form.get("assist_player_id") else None
                         for player_id, label in ((author_player_id, "autor"), (assist_player_id, "assistência")):
                             if player_id and not _participant_player(db, sumula_id, player_id):
                                 raise ValueError(f"Selecione um participante válido para {label}.")
                         benefited_team = request.form.get("benefited_team", "")
                         if benefited_team not in TEAMS:
                             raise ValueError("Time inválido.")
-                        minute = int(request.form["minute"]) if request.form.get("minute") else None
-                        existing_goal = db.execute("SELECT COALESCE(goal_type,''), COALESCE(own_goal,0) FROM football_goals WHERE id=?", (goal_id,)).fetchone()
-                        goal_type = _normalize_goal_type(request.form.get("goal_type") or (existing_goal[0] if existing_goal else ""), request.form.get("own_goal") == "1" or bool(existing_goal[1] if existing_goal else 0))
+                        minute = None
                         own_goal = 1 if goal_type == "CONTRA" else 0
                         if own_goal:
                             if not author_player_id:

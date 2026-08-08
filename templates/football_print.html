@@ -32,7 +32,7 @@
     .period-label { font-weight: bold; margin-top: 3px; }
     .lineup-row { padding: 1px 0; }
     .goal-list { padding: 4px 5px; min-height: 46px; }
-    .goal-row { display: grid; grid-template-columns: 23px 1fr 1fr; border-top: 1px solid #e0e4e7; padding: 2px 0; }
+    .goal-row { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid #e0e4e7; padding: 2px 0; }
     .officials-page { page-break-before: always; }
     .officials { border: 1px solid #aab5bc; padding: 8px; margin: 10px 0; }
     .responsibles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
@@ -81,9 +81,9 @@
         <div class="goalkeeper"><strong>Goleiro:</strong> {% for l in item['lineups'] if l['team'] == team_code and l['position'] in ('GOLEIRO', 'GOL') %}{{ l['war_name'] or l['name'] }}{% else %}—{% endfor %}</div>
         {% set team_lineups = item['lineups']|selectattr('team', 'equalto', team_code)|list %}<div class="lineup-list"><strong>Jogadores em campo:</strong>{% if team_lineups %}{% for period in (1, 2) %}{% set period_lineups = team_lineups|selectattr('period', 'equalto', period)|list %}{% if period_lineups %}<div class="period-label">Tempo {{ period }}</div>{% for l in period_lineups %}<div class="lineup-row">{{ l['war_name'] or l['name'] }}{% if l['position'] %} · {{ positions.get(l['position'], l['position']) }}{% endif %}</div>{% endfor %}{% endif %}{% endfor %}{% else %}<span class="muted"> —</span>{% endif %}</div>
         <div class="goal-list">
-          <div class="goal-row"><strong>Min.</strong><strong>Gols</strong><strong>Assistência</strong></div>
+          <div class="goal-row"><strong>Gols</strong><strong>Assistência</strong></div>
           {% for goal in item['goals'] if goal['benefited_team'] == team_code %}
-          <div class="goal-row"><span>{{ goal['minute'] or '' }}</span><span>{{ goal['author_war'] or goal['author_name'] or 'Sem autor' }}</span><span>{{ goal['assist_war'] or goal['assist_name'] or '—' }}</span></div>
+          <div class="goal-row"><span>{{ goal['author_war'] or goal['author_name'] or 'Sem autor' }}</span><span>{{ goal['assist_war'] or goal['assist_name'] or '—' }}</span></div>
           {% else %}<div class="muted">Nenhum gol registrado.</div>{% endfor %}
         </div>
       </div>
