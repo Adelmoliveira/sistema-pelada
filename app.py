@@ -219,7 +219,7 @@ def load_user_and_protect_routes():
             return None
         return redirect(url_for("auth.setup"))
 
-    public_endpoints = {"auth.login", "auth.branding_logo", "auth.client_access", "auth.client_password_setup", "auth.forgot_password", "auth.reset_password", "sales.guest_event_sale"}
+    public_endpoints = {"auth.login", "auth.branding_logo", "auth.client_access", "auth.client_password_setup", "auth.forgot_password", "auth.reset_password", "auth.club_card", "auth.club_card_manifest", "sales.guest_event_sale"}
     if request.endpoint in public_endpoints or request.endpoint is None:
         return None
 

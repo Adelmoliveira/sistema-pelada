@@ -2,8 +2,28 @@
 {% block title %}Entrar · PELADEIROS GPCTA{% endblock %}
 {% block content %}
 <div class="row justify-content-center mt-lg-5"><div class="col-md-6 col-lg-4">
-  <div class="text-center mb-4"><img src="{{url_for('auth.branding_logo')}}" class="login-logo mb-3" alt="Logo GPCTA"><h1 class="h3">PELADEIROS GPCTA</h1><p class="text-muted">Entre para acessar o sistema</p></div>
+  <div class="text-center mb-4"><button type="button" class="club-card-logo-button mb-3" id="club-card-logo" aria-label="Abrir carteirinha GPCTA" title="Carteirinha GPCTA"><img src="{{url_for('auth.branding_logo')}}" class="login-logo" alt="Logo GPCTA"></button><h1 class="h3">PELADEIROS GPCTA</h1><p class="text-muted">Entre para acessar o sistema</p></div>
   <div class="card shadow-sm"><div class="card-body p-4"><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/><input type="hidden" name="next" value="{{request.form.get('next',request.args.get('next',''))}}"><label class="form-label">Usuário</label><input name="username" class="form-control mb-3" autocomplete="username" required autofocus><label class="form-label">Senha <small class="text-muted">(opcional para acessos sem senha)</small></label><input type="password" name="password" class="form-control mb-4" autocomplete="current-password"><button class="btn btn-success btn-lg w-100">Entrar</button></form><div class="text-center mt-3"><a href="{{url_for('auth.forgot_password')}}">Esqueci minha senha</a></div></div></div>
   <footer class="login-copyright text-center text-muted">Copyright © 2026 | Grupo de Peladas do CTA - GPCTA</footer>
 </div></div>
+<script>
+(() => {
+  const button=document.getElementById('club-card-logo');
+  const storageKey='gpcta-club-card-token';
+  if(!button)return;
+  button.addEventListener('click',async()=>{
+    const token=localStorage.getItem(storageKey);
+    if(!token){alert('Nenhuma carteirinha está ativada neste aparelho. Entre no sistema e ative em Minha conta.');return;}
+    const target=`/carteirinha/${encodeURIComponent(token)}`;
+    button.disabled=true;
+    try{
+      const response=await fetch(target,{method:'HEAD',cache:'no-store'});
+      if(response.ok){window.location.assign(target);return;}
+      localStorage.removeItem(storageKey);
+      alert('Esta carteirinha não está mais ativa. Entre no sistema para ativá-la novamente.');
+    }catch(_){alert('Não foi possível abrir a carteirinha. Verifique sua conexão e tente novamente.');}
+    finally{button.disabled=false;}
+  });
+})();
+</script>
 {% endblock %}

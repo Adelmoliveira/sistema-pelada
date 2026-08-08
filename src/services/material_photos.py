@@ -6,6 +6,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 MAX_UPLOAD_BYTES = 4 * 1024 * 1024
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
+FORMAT_MIMES = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}
 
 
 def _jpeg_data_url(image, max_size, quality):
@@ -38,3 +39,24 @@ def process_material_photo(upload):
             return photo, thumbnail
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
         raise ValueError("A foto enviada é inválida ou está corrompida.")
+
+
+def process_club_qr_image(upload):
+    """Validate and preserve the exact club-provided QR image bytes."""
+    if not upload or not upload.filename:
+        return None
+    raw = upload.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise ValueError("A imagem do QR Code deve ter no máximo 4 MB.")
+    try:
+        with Image.open(BytesIO(raw)) as opened:
+            image_format = opened.format
+            if image_format not in ALLOWED_FORMATS:
+                raise ValueError("Formato inválido. Envie o QR Code em JPG, PNG ou WebP.")
+            if opened.width * opened.height > 20_000_000:
+                raise ValueError("A resolução do QR Code é muito alta. Envie uma imagem menor.")
+            opened.verify()
+        encoded = base64.b64encode(raw).decode("ascii")
+        return f"data:{FORMAT_MIMES[image_format]};base64,{encoded}"
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
+        raise ValueError("A imagem do QR Code é inválida ou está corrompida.")

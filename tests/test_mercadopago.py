@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import hmac
 import json
@@ -55,6 +56,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         ]
         self.assertTrue(schedule_seeds)
         self.assertTrue(all("RETURNING WEEKDAY" in statement.upper() for statement in schedule_seeds))
+        self.assertTrue(any("ADD COLUMN IF NOT EXISTS CLUB_QR_DATA" in statement.upper() for statement in recorder.statements))
+        self.assertTrue(any("IDX_PLAYERS_CLUB_QR_TOKEN" in statement.upper() for statement in recorder.statements))
 
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -315,6 +318,90 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             player = get_db().execute("SELECT thumbnail_data FROM players WHERE id=?", (self.player_id,)).fetchone()
             self.assertTrue(player["thumbnail_data"].startswith("data:image/jpeg;base64,"))
+
+    def test_client_can_use_and_revoke_club_qr_card_without_login(self):
+        with app.app_context():
+            db = get_db()
+            client_user_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("qr-clube", "QR Clube", "hash", self.player_id),
+            ).lastrowid
+            db.execute("UPDATE players SET war_name='Craque QR' WHERE id=?", (self.player_id,))
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_user_id
+        image = BytesIO()
+        Image.new("RGB", (96, 96), "white").save(image, format="PNG")
+        expected_data = base64.b64encode(image.getvalue()).decode("ascii")
+        image.seek(0)
+        uploaded = self.client.post(
+            "/minha-conta/carteirinha",
+            data={"action": "upload", "club_qr": (image, "entrada-gpcta.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(uploaded.status_code, 302)
+
+        with app.app_context():
+            player = get_db().execute(
+                "SELECT club_qr_data,club_qr_token FROM players WHERE id=?",
+                (self.player_id,),
+            ).fetchone()
+            first_token = player["club_qr_token"]
+            self.assertGreaterEqual(len(first_token), 40)
+            self.assertEqual(player["club_qr_data"], f"data:image/png;base64,{expected_data}")
+
+        with self.client.session_transaction() as session:
+            session.clear()
+        public_card = self.client.get(f"/carteirinha/{first_token}")
+        self.assertEqual(public_card.status_code, 200)
+        self.assertIn("Craque QR", public_card.get_data(as_text=True))
+        self.assertIn("QR Code de entrada no GPCTA", public_card.get_data(as_text=True))
+        self.assertIn("no-store", public_card.headers["Cache-Control"])
+        self.assertEqual(public_card.headers["X-Robots-Tag"], "noindex, nofollow")
+        manifest = self.client.get(f"/carteirinha/{first_token}/manifest.webmanifest")
+        self.assertEqual(manifest.status_code, 200)
+        self.assertEqual(manifest.get_json()["start_url"], f"/carteirinha/{first_token}")
+        self.assertEqual(self.client.get("/carteirinha/token-invalido").status_code, 404)
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_user_id
+        account_html = self.client.get("/minha-conta").get_data(as_text=True)
+        self.assertIn('id="activate-club-card-device"', account_html)
+        self.assertIn(f'data-token="{first_token}"', account_html)
+        self.assertIn("gpcta-club-card-token", account_html)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_user_id
+        regenerated = self.client.post(
+            "/minha-conta/carteirinha",
+            data={"action": "regenerate"},
+        )
+        self.assertEqual(regenerated.status_code, 302)
+        with app.app_context():
+            second_token = get_db().execute(
+                "SELECT club_qr_token FROM players WHERE id=?", (self.player_id,)
+            ).fetchone()["club_qr_token"]
+        self.assertNotEqual(first_token, second_token)
+        with self.client.session_transaction() as session:
+            session.clear()
+        self.assertEqual(self.client.get(f"/carteirinha/{first_token}").status_code, 404)
+        self.assertEqual(self.client.get(f"/carteirinha/{second_token}").status_code, 200)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_user_id
+        removed = self.client.post("/minha-conta/carteirinha", data={"action": "remove"})
+        self.assertEqual(removed.status_code, 302)
+        with self.client.session_transaction() as session:
+            session.clear()
+        self.assertEqual(self.client.get(f"/carteirinha/{second_token}").status_code, 404)
+
+    def test_login_logo_opens_the_club_card_saved_on_the_device(self):
+        page = self.client.get("/login").get_data(as_text=True)
+        self.assertIn('id="club-card-logo"', page)
+        self.assertIn('aria-label="Abrir carteirinha GPCTA"', page)
+        self.assertIn("gpcta-club-card-token", page)
+        self.assertIn("fetch(target,{method:'HEAD',cache:'no-store'})", page)
+        self.assertNotIn("Toque para abrir sua carteirinha", page)
 
     def test_manager_can_update_branding_logo(self):
         """The branding settings table is keyed by text, not a numeric id."""
@@ -1488,7 +1575,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
 
     def test_login_shows_centered_logo_without_navigation_bar_and_copyright(self):
         page = self.client.get("/login").get_data(as_text=True)
-        self.assertIn('class="login-logo mb-3"', page)
+        self.assertIn('class="club-card-logo-button mb-3"', page)
+        self.assertIn('class="login-logo"', page)
         self.assertNotIn('class="navbar ', page)
         self.assertIn("PELADEIROS GPCTA", page)
         self.assertNotIn("BAR PELADEIROS GPCTA", page)
