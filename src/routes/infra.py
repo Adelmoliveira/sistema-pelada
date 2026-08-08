@@ -23,6 +23,7 @@ LOAD_AREAS = {
     "HIS": "Sala Histórica",
     "VES": "Vestiário",
     "BAN": "Banheiros",
+    "INT": "Interno sede",
 }
 LOAD_STATUS_LABELS = {
     "active": "Ativo",
