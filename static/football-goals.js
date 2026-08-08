@@ -1,48 +1,44 @@
 (function () {
-  function addGoalTypeField(form) {
-    if (form.querySelector('[name="own_goal"]')) return;
+  function configureGoalType(form) {
+    var goalType = form.querySelector('select[name="goal_type"]');
+    var assist = form.querySelector('select[name="assist_player_id"]');
+    if (!goalType || !assist) return;
+
     var action = form.querySelector('input[name="action"]');
-    if (!action || !['goal', 'update_goal'].includes(action.value)) return;
-
-    var isEdit = action.value === 'update_goal';
-    var wrapper = document.createElement('div');
-    wrapper.className = 'col-md-2 col-12';
-    var label = document.createElement('label');
-    label.className = 'form-label';
-    label.textContent = 'Tipo de gol';
-    var select = document.createElement('select');
-    select.className = 'form-select';
-    select.name = 'own_goal';
-    select.title = 'Escolha se o gol foi normal ou contra';
-    if (isEdit) {
-      var keep = new Option('Manter atual', '');
-      select.appendChild(keep);
-    }
-    select.appendChild(new Option('Gol normal', '0'));
-    select.appendChild(new Option('Gol contra', '1'));
-    wrapper.appendChild(label);
-    wrapper.appendChild(select);
-
-    var minute = form.querySelector('[name="minute"]');
-    var minuteWrapper = minute && (minute.closest('.col-md-2') || minute.parentElement);
-    if (minuteWrapper && minuteWrapper.parentElement) {
-      minuteWrapper.parentElement.insertBefore(wrapper, minuteWrapper);
-    } else {
-      form.appendChild(wrapper);
-    }
-
-    var assist = form.querySelector('[name="assist_player_id"]');
-    if (assist) {
-      select.addEventListener('change', function () {
-        var own = select.value === '1';
-        assist.disabled = own;
-        if (own) assist.value = '';
+    if (action && action.value === 'goal') {
+      var orderedFields = [
+        'match_id',
+        'benefited_team',
+        'author_player_id',
+        'assist_player_id',
+        'goal_type'
+      ];
+      var orderedColumns = orderedFields.map(function (fieldName) {
+        var field = form.querySelector('[name="' + fieldName + '"]');
+        var column = field && field.closest('[class*="col-"]');
+        if (column) column.className = 'col-md-2';
+        return column;
       });
-      select.dispatchEvent(new Event('change'));
+      var buttonColumn = form.querySelector('button[type="submit"], button:not([type])')?.closest('[class*="col-"]');
+      orderedColumns.concat(buttonColumn).forEach(function (column) {
+        if (column) form.appendChild(column);
+      });
     }
+
+    function refreshAssist() {
+      var allowsAssist = goalType.value === 'NORMAL';
+      assist.disabled = !allowsAssist;
+      assist.title = allowsAssist
+        ? 'Selecione quem deu a assistência'
+        : 'Assistência disponível somente para o tipo Gol';
+      if (!allowsAssist) assist.value = '';
+    }
+
+    goalType.addEventListener('change', refreshAssist);
+    refreshAssist();
   }
 
   document.addEventListener('DOMContentLoaded', function () {
-    document.querySelectorAll('form').forEach(addGoalTypeField);
+    document.querySelectorAll('form').forEach(configureGoalType);
   });
 })();
