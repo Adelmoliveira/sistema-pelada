@@ -24,6 +24,7 @@ TEAMS = {"AZUL": "Azul", "BRANCO": "Branco"}
 INCIDENT_TYPES = {"DISCIPLINAR": "Disciplinar", "LESAO": "Lesão", "ATRASO": "Atraso", "ABANDONO_PARTIDA": "Abandono de partida", "DISCUSSAO": "Discussão", "FALHA_ORGANIZACAO": "Falha de organização", "PROBLEMA_ESTRUTURAL": "Problema estrutural", "OUTRO": "Outro"}
 INCIDENT_LEVELS = {"INFORMATIVO": "Informativo", "ATENCAO": "Atenção", "GRAVE": "Grave"}
 CARD_TYPES = {"AMARELO": "Amarelo", "AZUL": "Azul", "VERMELHO": "Vermelho"}
+GOAL_TYPES = {"NORMAL": "Gol", "REBOTE": "Rebote", "FALTA": "Falta", "PENALTY": "Penalty", "ROUBADA": "Roubada", "CONTRA": "Gol contra"}
 TRANSFER_POSITIONS = {"DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque"}
 TRANSFER_STATUSES = {"PENDENTE": "Pendente", "APROVADA": "Deferido", "RECUSADA": "Indeferido"}
 # Avisos de partidas matemáticas começam na nova fase de registros de julho de
@@ -31,6 +32,15 @@ TRANSFER_STATUSES = {"PENDENTE": "Pendente", "APROVADA": "Deferido", "RECUSADA":
 # notificações ao serem finalizadas.
 MATEMATICO_PUSH_START_DATE = date(2026, 7, 1)
 WEEKDAY_LABELS = ("Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo")
+
+
+def _normalize_goal_type(raw, own_goal=False):
+    value = (raw or "").strip().upper()
+    if value in ("OWN_GOAL", "OWN", "GOL_CONTRA"):
+        value = "CONTRA"
+    if value not in GOAL_TYPES:
+        value = "CONTRA" if own_goal else "NORMAL"
+    return value
 
 
 def _safe_notification_html(raw):
@@ -1221,12 +1231,13 @@ def detail(sumula_id):
                 if benefited_team not in TEAMS or not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
                     raise ValueError("Partida ou time inválido para esta súmula.")
                 _ensure_goal_fits_score(db, match_id, benefited_team)
-                own_goal = 1 if request.form.get("own_goal") == "1" else 0
+                goal_type = _normalize_goal_type(request.form.get("goal_type"), request.form.get("own_goal") == "1")
+                own_goal = 1 if goal_type == "CONTRA" else 0
                 if own_goal:
                     if not author_player_id:
                         raise ValueError("Selecione o peladeiro que marcou o gol contra.")
                     assist_player_id = None
-                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?)", (match_id, author_player_id, benefited_team, assist_player_id, int(request.form["minute"]) if request.form.get("minute") else None, own_goal, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
+                db.execute("INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,minute,goal_type,own_goal,observation,created_by) VALUES(?,?,?,?,?,?,?,?,?)", (match_id, author_player_id, benefited_team, assist_player_id, int(request.form["minute"]) if request.form.get("minute") else None, goal_type, own_goal, request.form.get("observation", "").strip(), g.user["id"])); _audit(db, sumula_id, "GOL_REGISTRADO")
             elif action in ("update_goal", "move_goal", "delete_goal"):
                 goal_id = int(request.form["goal_id"])
                 goal = db.execute("SELECT fg.id,fg.match_id,fm.sumula_id FROM football_goals fg JOIN football_matches fm ON fm.id=fg.match_id WHERE fg.id=? AND fm.sumula_id=?", (goal_id, sumula_id)).fetchone()
@@ -1253,17 +1264,15 @@ def detail(sumula_id):
                         if benefited_team not in TEAMS:
                             raise ValueError("Time inválido.")
                         minute = int(request.form["minute"]) if request.form.get("minute") else None
-                        own_goal_raw = request.form.get("own_goal", "")
-                        if own_goal_raw in ("0", "1"):
-                            own_goal = int(own_goal_raw)
-                        else:
-                            own_goal = int(db.execute("SELECT COALESCE(own_goal,0) FROM football_goals WHERE id=?", (goal_id,)).fetchone()[0] or 0)
+                        existing_goal = db.execute("SELECT COALESCE(goal_type,''), COALESCE(own_goal,0) FROM football_goals WHERE id=?", (goal_id,)).fetchone()
+                        goal_type = _normalize_goal_type(request.form.get("goal_type") or (existing_goal[0] if existing_goal else ""), request.form.get("own_goal") == "1" or bool(existing_goal[1] if existing_goal else 0))
+                        own_goal = 1 if goal_type == "CONTRA" else 0
                         if own_goal:
                             if not author_player_id:
                                 raise ValueError("Selecione o peladeiro que marcou o gol contra.")
                             assist_player_id = None
                         _ensure_goal_fits_score(db, target_match_id, benefited_team, goal_id)
-                        db.execute("UPDATE football_goals SET match_id=?,author_player_id=?,benefited_team=?,assist_player_id=?,minute=?,own_goal=? WHERE id=?", (target_match_id, author_player_id, benefited_team, assist_player_id, minute, own_goal, goal_id))
+                        db.execute("UPDATE football_goals SET match_id=?,author_player_id=?,benefited_team=?,assist_player_id=?,minute=?,goal_type=?,own_goal=? WHERE id=?", (target_match_id, author_player_id, benefited_team, assist_player_id, minute, goal_type, own_goal, goal_id))
                         _audit(db, sumula_id, "GOL_EDITADO", str(goal_id))
             elif action == "incident":
                 description = request.form.get("description", "").strip()
@@ -1382,7 +1391,7 @@ def detail(sumula_id):
         observation = responsible["observation"] or ""
         if observation.startswith("REGRA_AUTOMATICA_"):
             auto_roles.append({"role": "Goleiro" if "_GOLEIRO_" in observation else "Juiz", "name": responsible["war_name"] or responsible["name"] or "Não informado"})
-    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, used_draw_orders=sorted(used_orders), situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=1, score_mismatches=score_mismatches)
+    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, used_draw_orders=sorted(used_orders), situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, goal_types=GOAL_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=1, score_mismatches=score_mismatches)
 
 
 @bp.get("/sumulas/<int:sumula_id>/imprimir")

@@ -2,7 +2,7 @@ import os
 import io
 import csv
 import unicodedata
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from openpyxl import load_workbook
@@ -69,6 +69,18 @@ def money(value):
     return f"R$ {value / 100:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def brdate(value):
+    # Datas de calendário (como a data da súmula) não representam um instante
+    # em UTC. Formatá-las através de ``local_datetime`` fazia meia-noite virar
+    # 21:00 do dia anterior no fuso de São Paulo. Preserve a data informada e
+    # não exiba um horário que não faz parte do valor cadastrado.
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y")
+    raw = str(value or "").strip()
+    if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d").strftime("%d/%m/%Y")
+        except ValueError:
+            pass
     try:
         return local_datetime(value).strftime("%d/%m/%Y %H:%M")
     except (ValueError, TypeError):
