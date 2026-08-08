@@ -17,7 +17,41 @@ if(addMatchForm){addMatchForm.querySelector('input[name="action"]').value='secon
 (()=>{const labelFor=(order,match)=>{const n=Number(order), local=match===2?n-22:n;if(local>=1&&local<=2)return `G${local}`;if(local>=3&&local<=10)return `D${local-2}`;if(local>=11&&local<=16)return `M${local-10}`;if(local>=17&&local<=22)return `A${local-16}`;return ''};document.querySelectorAll('.participant-match-pane').forEach((pane)=>{const match=pane.id.endsWith('-2')?2:1;pane.querySelectorAll('.list-group-item').forEach((item)=>{const input=item.querySelector('input[name="draw_order"]');const strong=item.querySelector('strong');const label=input&&strong?labelFor(input.value,match):'';if(label)strong.textContent=label;});});})();
 </script>
 {% endblock %}
-{% block scripts %}<script>
+{% block scripts %}<style>
+/* Keep participant controls in a stable right-hand column.  The order field,
+   save action and delete action should not move when names have different
+   lengths. */
+.participant-match-pane .list-group-item,
+.participant-order-row {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 185px 110px;
+  align-items: center;
+  gap: .5rem;
+}
+.participant-match-pane .list-group-item > span:first-child,
+.participant-order-row > span:first-child { min-width: 0; }
+.participant-match-pane .list-group-item > form:not(.delete-participant-form),
+.participant-order-row > form:not(.delete-participant-form) {
+  justify-self: end;
+  width: 185px;
+  display: flex;
+  justify-content: flex-end;
+  gap: .25rem;
+}
+.participant-match-pane .list-group-item > form.delete-participant-form,
+.participant-order-row > form.delete-participant-form {
+  justify-self: end;
+  width: 110px;
+}
+@media (max-width: 575.98px) {
+  .participant-match-pane .list-group-item,
+  .participant-order-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .participant-match-pane .list-group-item > form:not(.delete-participant-form),
+  .participant-order-row > form:not(.delete-participant-form) { grid-column: 2; width: auto; }
+  .participant-match-pane .list-group-item > form.delete-participant-form,
+  .participant-order-row > form.delete-participant-form { grid-column: 2; width: auto; }
+}
+</style><script>
 const footballPage=document.querySelector('main')||document.body;
 const footballHeading=footballPage.querySelector('h1');
 if(footballHeading){
@@ -53,10 +87,11 @@ const participantPlayer=participantForm?.querySelector('select[name="player_id"]
 const participantPosition=participantForm?.querySelector('select[name="preferred_position"]');
 const participantOrder=participantForm?.querySelector('input[name="draw_order"]');
 const usedParticipantOrders=new Set({{used_draw_orders|tojson}});
-const positionOrderRanges={GOLEIRO:[1,2,23,24],GOL:[1,2,23,24],DEFENSOR:[3,4,5,6,7,8,9,10,25,26,27,28,29,30,31,32],DEFESA:[3,4,5,6,7,8,9,10,25,26,27,28,29,30,31,32],MEIO_CAMPO:[11,12,13,14,15,16,33,34,35,36,37,38],MEIO:[11,12,13,14,15,16,33,34,35,36,37,38],ATACANTE:[17,18,19,20,21,22,39,40,41,42,43,44],ATAQUE:[17,18,19,20,21,22,39,40,41,42,43,44]};
-const firstFreeOrderForPosition=()=>{const position=(participantPosition?.value||'').toUpperCase();const candidates=positionOrderRanges[position]||[];return candidates.find(order=>!usedParticipantOrders.has(order))||'';};
-const syncParticipantOrder=()=>{if(participantOrder&&participantPosition?.value) participantOrder.value=firstFreeOrderForPosition()||participantOrder.value;};
-if(participantPlayer&&participantPosition){participantPlayer.addEventListener('change',()=>{participantPosition.value=playerPositions[participantPlayer.value]||'';syncParticipantOrder();});participantPosition.addEventListener('change',syncParticipantOrder);}
+const nextSequentialParticipantOrder=()=>{for(let order=1;order<=44;order+=1){if(!usedParticipantOrders.has(order)) return String(order);}return '';};
+/* A posição é apenas a posição preferencial do jogador.  Ela não deve
+   escolher a próxima vaga do sorteio (por exemplo, um atacante não deve
+   fazer a sequência saltar de 5 para 17). */
+if(participantPlayer&&participantPosition){participantPlayer.addEventListener('change',()=>{participantPosition.value=playerPositions[participantPlayer.value]||'';if(participantOrder){participantOrder.value=nextSequentialParticipantOrder()||participantOrder.value;}});}
 const lineupForm=document.querySelector('form input[name="action"][value="lineup"]')?.closest('form');
 const lineupPlayer=lineupForm?.querySelector('select[name="player_id"]');
 const lineupPosition=lineupForm?.querySelector('select[name="position"]');
@@ -65,6 +100,7 @@ if(lineupPlayer&&lineupPosition){const fillLineupPosition=()=>{const position=pl
 const incidentForm=document.querySelector('form input[name="action"][value="incident"]')?.closest('form');
 if(incidentForm){const card=incidentForm.querySelector('select[name="card"]');const level=incidentForm.querySelector('select[name="level"]');const description=incidentForm.querySelector('textarea[name="description"]');const refreshCardFields=()=>{const selected=!!card.value;level.closest('[class*="col-"]').style.display=selected?'none':'';description.closest('[class*="col-"]').style.display=selected?'none':'';description.required=!selected;};card.addEventListener('change',refreshCardFields);refreshCardFields();}
 document.querySelectorAll('form input[name="action"][value="update_participant_order"]').forEach((orderFormInput)=>{const orderForm=orderFormInput.closest('form');const row=orderForm?.closest('.list-group-item');const participantId=orderForm?.querySelector('input[name="participant_id"]')?.value;if(!orderForm||!row||!participantId||row.querySelector('.delete-participant-form'))return;const form=document.createElement('form');form.method='post';form.className='delete-participant-form d-inline';const csrf=document.querySelector('input[name="csrf_token"]')?.value||'';form.innerHTML=`<input type="hidden" name="csrf_token" value="${csrf}"><input type="hidden" name="action" value="delete_participant"><input type="hidden" name="participant_id" value="${participantId}"><button type="submit" class="btn btn-sm btn-outline-danger" title="Excluir participante">Excluir</button>`;form.addEventListener('submit',(event)=>{if(!window.confirm('Excluir este participante da súmula? O cadastro do peladeiro não será apagado.')){event.preventDefault();return;}const button=form.querySelector('button');button.disabled=true;button.textContent='Excluindo…';});orderForm.parentElement?.appendChild(form);});
+document.querySelectorAll('form input[name="action"][value="update_participant_order"]').forEach((input)=>input.closest('.list-group-item')?.classList.add('participant-order-row'));
 var participants=[];
 </script>
 {% if sumula['locked_at'] %}<script>document.querySelectorAll('.app-page .badge.text-bg-primary').forEach((badge)=>{badge.classList.remove('text-bg-primary');badge.classList.add('text-bg-danger');badge.textContent='Encerrada definitivamente';});</script>{% endif %}
