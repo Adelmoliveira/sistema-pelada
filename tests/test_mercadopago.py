@@ -2859,6 +2859,99 @@ class MercadoPagoFlowTest(unittest.TestCase):
             client_html,
         )
 
+    def test_third_match_accepts_participant_orders_45_to_66(self):
+        with app.app_context():
+            db = get_db()
+            occupied_player_ids = [self.player_id]
+            for number in range(2, 45):
+                occupied_player_ids.append(
+                    db.execute(
+                        "INSERT INTO players(name,war_name) VALUES(?,?)",
+                        (f"Jogador {number}", f"J{number}"),
+                    ).lastrowid
+                )
+            third_match_player_id = db.execute(
+                "INSERT INTO players(name,war_name) VALUES(?,?)",
+                ("Jogador da terceira", "Terceira"),
+            ).lastrowid
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','EM_ANDAMENTO',?)",
+                ("2026-08-15", self.user_id),
+            ).lastrowid
+            for match_number in (1, 2, 3):
+                db.execute(
+                    "INSERT INTO football_matches(sumula_id,number) VALUES(?,?)",
+                    (sumula_id, match_number),
+                )
+            for draw_order, player_id in enumerate(occupied_player_ids, start=1):
+                db.execute(
+                    "INSERT INTO football_participants(sumula_id,player_id,status,draw_order) VALUES(?,?,'CONFIRMADO',?)",
+                    (sumula_id, player_id, draw_order),
+                )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        page = self.client.get(f"/futebol/sumulas/{sumula_id}").get_data(as_text=True)
+        self.assertIn('max="66"', page)
+        self.assertIn('value="45" placeholder="Ordem do sorteio"', page)
+        self.assertIn("Partida 3", page)
+        self.assertIn("ordens 45 a 66", page)
+
+        added = self.client.post(
+            f"/futebol/sumulas/{sumula_id}",
+            data={
+                "action": "participant",
+                "player_id": str(third_match_player_id),
+                "status": "CONFIRMADO",
+                "preferred_position": "ATACANTE",
+            },
+        )
+        self.assertEqual(added.status_code, 302)
+
+        with app.app_context():
+            db = get_db()
+            participant = db.execute(
+                "SELECT id,draw_order FROM football_participants WHERE sumula_id=? AND player_id=?",
+                (sumula_id, third_match_player_id),
+            ).fetchone()
+            self.assertEqual(participant["draw_order"], 45)
+            participant_id = participant["id"]
+
+        moved = self.client.post(
+            f"/futebol/sumulas/{sumula_id}",
+            data={
+                "action": "update_participant_order",
+                "participant_id": str(participant_id),
+                "draw_order": "66",
+            },
+        )
+        self.assertEqual(moved.status_code, 302)
+        rejected = self.client.post(
+            f"/futebol/sumulas/{sumula_id}",
+            data={
+                "action": "update_participant_order",
+                "participant_id": str(participant_id),
+                "draw_order": "67",
+            },
+        )
+        self.assertEqual(rejected.status_code, 302)
+
+        with app.app_context():
+            draw_order = get_db().execute(
+                "SELECT draw_order FROM football_participants WHERE id=?",
+                (participant_id,),
+            ).fetchone()[0]
+            self.assertEqual(draw_order, 66)
+
+        detail_html = self.client.get(f"/futebol/sumulas/{sumula_id}").get_data(as_text=True)
+        self.assertIn("Terceira", detail_html)
+        self.assertIn('value="66" title="Ordem do sorteio"', detail_html)
+        print_html = self.client.get(f"/futebol/sumulas/{sumula_id}/imprimir").get_data(as_text=True)
+        self.assertIn("3ª PARTIDA (ordens 45 a 66)", print_html)
+        self.assertIn("Terceira", print_html)
+
 
 if __name__ == "__main__":
     unittest.main()
