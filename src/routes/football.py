@@ -57,6 +57,11 @@ def _participant_player(db, sumula_id, player_id):
     return db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND player_id=?", (sumula_id, player_id)).fetchone()
 
 
+def _fallback_slot_label(draw_order):
+    """Converte a ordem usada pela regra especial para o slot original."""
+    return {1: "D1", 10: "D8", 16: "M6", 22: "A6"}.get(int(draw_order), "")
+
+
 def _fallback_roles(db, sumula_id):
     """Calcula os papéis de emergência da segunda partida pela ordem do sorteio.
 
@@ -84,13 +89,13 @@ def _fallback_roles(db, sumula_id):
     roles = []
     if players.get(1):
         player = players[1]
-        roles.append({"player_id": player["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": 1, "name": player["war_name"] or player["name"]})
+        roles.append({"player_id": player["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": 1, "slot": _fallback_slot_label(1), "name": player["war_name"] or player["name"]})
     candidates = [players[order] for order in (10, 16, 22) if players.get(order)]
     if candidates:
         goalkeeper = candidates[0]
-        roles.append({"player_id": goalkeeper["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": goalkeeper["draw_order"], "name": goalkeeper["war_name"] or goalkeeper["name"]})
+        roles.append({"player_id": goalkeeper["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": goalkeeper["draw_order"], "slot": _fallback_slot_label(goalkeeper["draw_order"]), "name": goalkeeper["war_name"] or goalkeeper["name"]})
         for referee in candidates[1:]:
-            roles.append({"player_id": referee["player_id"], "match_id": match["id"], "role": "Juiz", "draw_order": referee["draw_order"], "name": referee["war_name"] or referee["name"]})
+            roles.append({"player_id": referee["player_id"], "match_id": match["id"], "role": "Juiz", "draw_order": referee["draw_order"], "slot": _fallback_slot_label(referee["draw_order"]), "name": referee["war_name"] or referee["name"]})
     return roles
 
 
