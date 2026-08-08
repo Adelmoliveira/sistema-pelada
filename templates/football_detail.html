@@ -103,6 +103,34 @@ document.querySelectorAll('form input[name="action"][value="update_participant_o
 document.querySelectorAll('form input[name="action"][value="update_participant_order"]').forEach((input)=>input.closest('.list-group-item')?.classList.add('participant-order-row'));
 var participants=[];
 </script>
+<script>
+/* Tipo do gol: mantém a informação explícita no cadastro e na edição. */
+const goalTypeOptions=[['NORMAL','Gol'],['REBOTE','Rebote'],['FALTA','Falta'],['PENALTY','Penalty'],['ROUBADA','Roubada'],['CONTRA','Gol contra']];
+const goalTypesById={
+{% for match in matches %}{% for goal in match['goals'] %}"{{goal['id']}}":"{{goal['goal_type'] or ('CONTRA' if goal['own_goal'] else 'NORMAL')}}",
+{% endfor %}{% endfor %}};
+document.querySelectorAll('select[name="assist_player_id"]').forEach((assist)=>{
+  const form=assist.closest('form');
+  if(!form||form.querySelector('select[name="goal_type"]')) return;
+  const select=document.createElement('select');
+  select.name='goal_type';
+  select.className=assist.className;
+  select.setAttribute('aria-label','Tipo de gol');
+  goalTypeOptions.forEach(([value,label])=>{const option=document.createElement('option');option.value=value;option.textContent=label;select.appendChild(option);});
+  const goalId=form.querySelector('input[name="goal_id"]')?.value;
+  select.value=goalTypesById[goalId]||'NORMAL';
+  const source=assist.closest('[class*="col-"]');
+  if(source){const wrapper=document.createElement('div');wrapper.className=source.className;wrapper.appendChild(select);source.parentElement?.insertBefore(wrapper,source);}else{assist.parentElement?.insertAdjacentElement('beforebegin',select);}
+});
+document.querySelectorAll('form input[name="goal_id"]').forEach((input)=>{
+  const type=goalTypesById[input.value]||'NORMAL';
+  if(type==='NORMAL') return;
+  const row=input.closest('.small');
+  const text=row?.querySelector(':scope > span');
+  const label=goalTypeOptions.find(([value])=>value===type)?.[1]||type;
+  if(text&&!text.textContent.includes(label)) text.append(` · ${label}`);
+});
+</script>
 {% if sumula['locked_at'] %}<script>document.querySelectorAll('.app-page .badge.text-bg-primary').forEach((badge)=>{badge.classList.remove('text-bg-primary');badge.classList.add('text-bg-danger');badge.textContent='Encerrada definitivamente';});</script>{% endif %}
 {% if sumula['locked_at'] %}<script>document.querySelectorAll('main form').forEach((form)=>form.remove());</script>{% elif sumula['situacao'] == 'FINALIZADA' %}<script>document.querySelectorAll('main form').forEach((form)=>{const action=form.querySelector('input[name="action"][value="status"]');const situation=form.querySelector('input[name="situacao"][value="EM_ANDAMENTO"]');if(action&&situation){form.addEventListener('submit',(event)=>{const justification=window.prompt('Informe a justificativa para reabrir a súmula:');if(!justification||justification.trim().length<5){event.preventDefault();window.alert('A justificativa deve ter pelo menos 5 caracteres.');return;}const input=document.createElement('input');input.type='hidden';input.name='justification';input.value=justification.trim();form.appendChild(input);});}});</script>{% endif %}
 {% endblock %}

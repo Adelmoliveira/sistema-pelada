@@ -665,6 +665,7 @@ CREATE TABLE IF NOT EXISTS football_goals (
     benefited_team TEXT NOT NULL CHECK(benefited_team IN ('AZUL','BRANCO')),
     assist_player_id INTEGER REFERENCES players(id),
     minute INTEGER,
+    goal_type TEXT NOT NULL DEFAULT 'NORMAL',
     own_goal INTEGER NOT NULL DEFAULT 0,
     observation TEXT DEFAULT '',
     created_by INTEGER REFERENCES users(id),
@@ -1485,6 +1486,9 @@ def init_sqlite(wrapper):
     goal_columns = {row[1] for row in conn.execute("PRAGMA table_info(football_goals)")}
     if "own_goal" not in goal_columns:
         conn.execute("ALTER TABLE football_goals ADD COLUMN own_goal INTEGER NOT NULL DEFAULT 0")
+    if "goal_type" not in goal_columns:
+        conn.execute("ALTER TABLE football_goals ADD COLUMN goal_type TEXT NOT NULL DEFAULT 'NORMAL'")
+        conn.execute("UPDATE football_goals SET goal_type='CONTRA' WHERE COALESCE(own_goal,0)=1")
     conn.commit()
 
     load_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entries)")}
@@ -1636,6 +1640,8 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE push_inbox ADD COLUMN IF NOT EXISTS body_html TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS historical_only INTEGER NOT NULL DEFAULT 0")
     wrapper.execute("ALTER TABLE football_goals ADD COLUMN IF NOT EXISTS own_goal INTEGER NOT NULL DEFAULT 0")
+    wrapper.execute("ALTER TABLE football_goals ADD COLUMN IF NOT EXISTS goal_type TEXT NOT NULL DEFAULT 'NORMAL'")
+    wrapper.execute("UPDATE football_goals SET goal_type='CONTRA' WHERE COALESCE(own_goal,0)=1 AND COALESCE(goal_type,'NORMAL')='NORMAL'")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_email TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
