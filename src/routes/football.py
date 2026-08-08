@@ -547,6 +547,7 @@ def statistics():
     totals = db.execute(f"""SELECT COUNT(DISTINCT fs.id) sumulas,
         COUNT(DISTINCT fm.id) partidas,
         COUNT(DISTINCT fg.id) gols,
+        COUNT(DISTINCT CASE WHEN fg.assist_player_id IS NOT NULL AND fg.goal_type='NORMAL' AND fg.own_goal=0 THEN fg.id END) assistencias,
         COUNT(DISTINCT CASE WHEN fg.goal_type='CONTRA' OR fg.own_goal=1 THEN fg.id END) gols_contra
         FROM football_sumulas fs
         LEFT JOIN football_matches fm ON fm.sumula_id=fs.id AND fm.status='ENCERRADA'

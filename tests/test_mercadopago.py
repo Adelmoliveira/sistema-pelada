@@ -2892,6 +2892,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
 
         statistics_html = self.client.get("/futebol/estatisticas").get_data(as_text=True)
         self.assertIn("Gols contra", statistics_html)
+        self.assertRegex(statistics_html, r"Assistências registradas</small><h2>1</h2>")
         self.assertIn('<h2 class="text-danger">−1</h2>', statistics_html)
         self.assertIn('<td class="text-danger fw-semibold">−1</td>', statistics_html)
         self.assertRegex(
