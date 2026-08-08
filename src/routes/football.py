@@ -44,6 +44,36 @@ def _normalize_goal_type(raw, own_goal=False):
     return value
 
 
+def _next_participant_order(used_orders, max_draw_order):
+    next_order = (max(used_orders) + 1) if used_orders else 1
+    return next_order if next_order <= max_draw_order else None
+
+
+def _responsibility_leaders(db, start, end):
+    rows = db.execute(
+        """SELECT fr.responsibility_type,p.name,p.war_name,
+                  COUNT(DISTINCT fr.sumula_id) total
+           FROM football_responsibles fr
+           JOIN football_sumulas fs ON fs.id=fr.sumula_id
+           JOIN players p ON p.id=fr.player_id
+           WHERE fr.responsibility_type IN ('SORTEIO','SUMULA','QUADRO','ARBITRO_VOLUNTARIO')
+             AND fs.situacao!='CANCELADA'
+             AND fs.match_date>=? AND fs.match_date<?
+           GROUP BY fr.responsibility_type,p.id,p.name,p.war_name""",
+        (start.isoformat(), end.isoformat()),
+    ).fetchall()
+    result = {}
+    for responsibility_type in ("SORTEIO", "SUMULA", "QUADRO", "ARBITRO_VOLUNTARIO"):
+        candidates = [row for row in rows if row["responsibility_type"] == responsibility_type]
+        maximum = max((int(row["total"] or 0) for row in candidates), default=0)
+        leaders = sorted(
+            (row["war_name"] or row["name"] for row in candidates if int(row["total"] or 0) == maximum),
+            key=lambda value: value.casefold(),
+        )
+        result[responsibility_type] = {"leaders": leaders, "count": maximum}
+    return result
+
+
 def _safe_notification_html(raw):
     raw = (raw or "")[:4000]
     raw = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw, flags=re.I | re.S)
@@ -413,8 +443,12 @@ def dashboard():
         "lowest": ({"label": month_names[int(lowest_month[0][-2:]) - 1], **lowest_month[1]} if lowest_month else None),
         "year": today.year,
     }
+    responsibility_rankings = {
+        "month": _responsibility_leaders(db, month_start, month_end),
+        "year": _responsibility_leaders(db, year_start, year_end),
+    }
     position_summary, eligible_total, positioned_total = _position_distribution(db)
-    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, team_wins=wins, attendance=attendance, management_view=True)
+    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, team_wins=wins, attendance=attendance, responsibility_rankings=responsibility_rankings, management_view=True)
 
 
 @bp.get("/gestao/posicoes")
@@ -1099,19 +1133,18 @@ def detail(sumula_id):
                         (sumula_id,),
                     ).fetchall()
                 }
-                # A ordem representa a sequência do sorteio/cadastro e não
-                # a posição preferencial. A posição só define o rótulo D/M/A/G
-                # exibido na lista. Assim, um atacante recém-cadastrado pode
-                # receber a próxima ordem livre (6, 7, ...), em vez de saltar
-                # automaticamente para a faixa dos atacantes (17+).
-                # A inclusão sempre recebe a próxima ordem livre. O campo do
-                # formulário é apenas informativo: versões antigas do
-                # JavaScript podiam recalculá-lo pela posição (por exemplo,
-                # atacante => 17), fazendo a sequência saltar. A posição
-                # preferencial não deve alterar a ordem do sorteio/cadastro.
-                draw_order = next((number for number in range(1, max_draw_order + 1) if number not in used_orders), None)
+                # A ordem pode começar no número escolhido pelo gestor (por
+                # exemplo, 3) e, quando omitida, segue após a maior ordem já
+                # cadastrada (4, 5, 6...). Lacunas anteriores não são
+                # preenchidas automaticamente.
+                requested_order = request.form.get("draw_order", "").strip()
+                draw_order = int(requested_order) if requested_order else _next_participant_order(used_orders, max_draw_order)
                 if draw_order is None:
                     raise ValueError(f"Não há mais ordens disponíveis nas partidas cadastradas (limite {max_draw_order}).")
+                if draw_order < 1 or draw_order > max_draw_order:
+                    raise ValueError(f"A ordem do sorteio deve estar entre 1 e {max_draw_order}.")
+                if draw_order in used_orders:
+                    raise ValueError("Esta ordem de sorteio já está ocupada.")
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, draw_order or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
             elif action == "historical_participant":
@@ -1391,7 +1424,7 @@ def detail(sumula_id):
         (int(item["row"]["number"]) for item in data[2]),
         default=1,
     )
-    next_draw_order = next((number for number in range(1, max_draw_order + 1) if number not in used_orders), "")
+    next_draw_order = _next_participant_order(used_orders, max_draw_order) or ""
     audit_total = int(db.execute("SELECT COUNT(*) FROM football_audit WHERE sumula_id=?", (sumula_id,)).fetchone()[0] or 0)
     audit_pages = max(1, (audit_total + 4) // 5)
     score_mismatches = _score_mismatches(db, data[2])

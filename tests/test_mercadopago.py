@@ -601,6 +601,59 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn(f"Menor participação: {current_label}", page)
         self.assertIn('id="football-attendance-chart"', page)
 
+    def test_football_dashboard_shows_monthly_and_annual_responsibility_leaders(self):
+        today = local_today()
+        current_dates = (today.replace(day=1), today.replace(day=2))
+        earlier_month = 1 if today.month != 1 else 2
+        earlier_date = date(today.year, earlier_month, 1)
+        with app.app_context():
+            db = get_db()
+            helper_player_id = db.execute(
+                "INSERT INTO players(name,war_name) VALUES(?,?)",
+                ("Ajudante", "Apoio"),
+            ).lastrowid
+            sumula_ids = []
+            for match_date in (*current_dates, earlier_date):
+                sumula_ids.append(
+                    db.execute(
+                        "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','FINALIZADA',?)",
+                        (match_date.isoformat(), self.user_id),
+                    ).lastrowid
+                )
+            responsibilities = (
+                (sumula_ids[0], self.player_id, "SORTEIO"),
+                (sumula_ids[0], helper_player_id, "SUMULA"),
+                (sumula_ids[0], helper_player_id, "QUADRO"),
+                (sumula_ids[0], self.player_id, "ARBITRO_VOLUNTARIO"),
+                (sumula_ids[1], self.player_id, "SORTEIO"),
+                (sumula_ids[1], self.player_id, "SUMULA"),
+                (sumula_ids[1], helper_player_id, "QUADRO"),
+                (sumula_ids[1], helper_player_id, "ARBITRO_VOLUNTARIO"),
+                (sumula_ids[2], helper_player_id, "SORTEIO"),
+                (sumula_ids[2], helper_player_id, "SUMULA"),
+                (sumula_ids[2], self.player_id, "QUADRO"),
+                (sumula_ids[2], helper_player_id, "ARBITRO_VOLUNTARIO"),
+            )
+            for sumula_id, player_id, responsibility_type in responsibilities:
+                db.execute(
+                    "INSERT INTO football_responsibles(sumula_id,player_id,responsibility_type) VALUES(?,?,?)",
+                    (sumula_id, player_id, responsibility_type),
+                )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/futebol").get_data(as_text=True)
+        self.assertIn("Destaques de apoio à gestão", page)
+        self.assertRegex(page, r'data-responsibility-period="month" data-responsibility-type="SORTEIO"><strong>Peladeiro</strong><br><span class="text-muted small">2 vezes</span>')
+        self.assertRegex(page, r'data-responsibility-period="month" data-responsibility-type="SUMULA"><strong>Apoio, Peladeiro</strong><br><span class="text-muted small">1 vez</span>')
+        self.assertRegex(page, r'data-responsibility-period="month" data-responsibility-type="QUADRO"><strong>Apoio</strong><br><span class="text-muted small">2 vezes</span>')
+        self.assertRegex(page, r'data-responsibility-period="month" data-responsibility-type="ARBITRO_VOLUNTARIO"><strong>Apoio, Peladeiro</strong><br><span class="text-muted small">1 vez</span>')
+        self.assertRegex(page, r'data-responsibility-period="year" data-responsibility-type="SORTEIO"><strong>Peladeiro</strong><br><span class="text-muted small">2 vezes</span>')
+        self.assertRegex(page, r'data-responsibility-period="year" data-responsibility-type="SUMULA"><strong>Apoio</strong><br><span class="text-muted small">2 vezes</span>')
+        self.assertRegex(page, r'data-responsibility-period="year" data-responsibility-type="QUADRO"><strong>Apoio</strong><br><span class="text-muted small">2 vezes</span>')
+        self.assertRegex(page, r'data-responsibility-period="year" data-responsibility-type="ARBITRO_VOLUNTARIO"><strong>Apoio</strong><br><span class="text-muted small">2 vezes</span>')
+
     def test_player_names_sort_ignoring_case_and_accents(self):
         names = ["Zeca", "áureo", "Ana", "Álvaro", "bruno"]
         self.assertEqual(
@@ -2951,6 +3004,59 @@ class MercadoPagoFlowTest(unittest.TestCase):
         print_html = self.client.get(f"/futebol/sumulas/{sumula_id}/imprimir").get_data(as_text=True)
         self.assertIn("3ª PARTIDA (ordens 45 a 66)", print_html)
         self.assertIn("Terceira", print_html)
+
+    def test_participant_order_can_start_at_three_and_then_stays_sequential(self):
+        with app.app_context():
+            db = get_db()
+            second_player_id = db.execute(
+                "INSERT INTO players(name,war_name) VALUES(?,?)",
+                ("Segundo da sequência", "Sequência 2"),
+            ).lastrowid
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','EM_ANDAMENTO',?)",
+                ("2026-08-22", self.user_id),
+            ).lastrowid
+            db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,1)", (sumula_id,))
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        first = self.client.post(
+            f"/futebol/sumulas/{sumula_id}",
+            data={
+                "action": "participant",
+                "player_id": str(self.player_id),
+                "status": "CONFIRMADO",
+                "preferred_position": "DEFENSOR",
+                "draw_order": "3",
+            },
+        )
+        self.assertEqual(first.status_code, 302)
+        page = self.client.get(f"/futebol/sumulas/{sumula_id}").get_data(as_text=True)
+        self.assertIn('value="4" placeholder="Ordem do sorteio"', page)
+
+        second = self.client.post(
+            f"/futebol/sumulas/{sumula_id}",
+            data={
+                "action": "participant",
+                "player_id": str(second_player_id),
+                "status": "CONFIRMADO",
+                "preferred_position": "MEIO_CAMPO",
+                "draw_order": "",
+            },
+        )
+        self.assertEqual(second.status_code, 302)
+
+        with app.app_context():
+            rows = get_db().execute(
+                "SELECT player_id,draw_order FROM football_participants WHERE sumula_id=? ORDER BY draw_order",
+                (sumula_id,),
+            ).fetchall()
+            self.assertEqual(
+                [(row["player_id"], row["draw_order"]) for row in rows],
+                [(self.player_id, 3), (second_player_id, 4)],
+            )
 
 
 if __name__ == "__main__":
