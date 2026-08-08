@@ -52,18 +52,23 @@
     </div>
   </header>
 
-  {% set active_matches = namespace(numbers=[]) %}{% for match_item in data[2] %}{% if match_item['row']['status'] != 'PLANEJADA' or match_item['lineups'] or match_item['goals'] or match_item['row']['blue_score'] or match_item['row']['white_score'] %}{% set _ = active_matches.numbers.append(match_item['row']['number']) %}{% endif %}{% endfor %}
+  {% set active_matches = namespace(numbers=[]) %}
+  {% for match_item in data[2] %}
+    {% set match_number = match_item['row']['number'] %}
+    {% set participant_range = namespace(found=false) %}
+    {% for participant in data[1] %}
+      {% if participant['draw_order'] and participant['draw_order'] > ((match_number - 1) * 22) and participant['draw_order'] <= (match_number * 22) %}{% set participant_range.found = true %}{% endif %}
+    {% endfor %}
+    {% if match_item['row']['status'] != 'PLANEJADA' or match_item['lineups'] or match_item['goals'] or match_item['row']['blue_score'] or match_item['row']['white_score'] or participant_range.found %}{% set _ = active_matches.numbers.append(match_number) %}{% endif %}
+  {% endfor %}
   <section class="box">
     <h3>Participantes ({{ data[1]|length }})</h3>
     <div class="participants">
       {% for match_number in (1, 2, 3) if match_number in active_matches.numbers %}
       <div class="part-column">
-        <div class="part-title">{{ match_number }}ª PARTIDA{% if match_number == 1 %} (ordens 1 a 22){% elif match_number == 2 %} (ordens 23 a 44){% endif %}</div>
+        <div class="part-title">{{ match_number }}ª PARTIDA (ordens {{ ((match_number - 1) * 22) + 1 }} a {{ match_number * 22 }})</div>
         {% set ns = namespace(count=0) %}
-        {% for p in data[1] if ((match_number == 1 and p['draw_order'] and p['draw_order'] >= 1 and p['draw_order'] <= 2) or (match_number == 2 and p['draw_order'] and p['draw_order'] >= 23 and p['draw_order'] <= 24)) %}{% set order = p['draw_order'] if match_number == 1 else p['draw_order'] - 22 %}<div class="part-row"><span class="slot">G{{ order }}</span><span>{{ p['war_name'] or p['name'] }}</span></div>{% set ns.count = ns.count + 1 %}{% endfor %}
-        {% for p in data[1] if ((match_number == 1 and p['draw_order'] and p['draw_order'] >= 3 and p['draw_order'] <= 10) or (match_number == 2 and p['draw_order'] and p['draw_order'] >= 25 and p['draw_order'] <= 32)) %}{% set order = p['draw_order'] if match_number == 1 else p['draw_order'] - 22 %}<div class="part-row"><span class="slot">D{{ order - 2 }}</span><span>{{ p['war_name'] or p['name'] }}</span></div>{% set ns.count = ns.count + 1 %}{% endfor %}
-        {% for p in data[1] if ((match_number == 1 and p['draw_order'] and p['draw_order'] >= 11 and p['draw_order'] <= 16) or (match_number == 2 and p['draw_order'] and p['draw_order'] >= 33 and p['draw_order'] <= 38)) %}{% set order = p['draw_order'] if match_number == 1 else p['draw_order'] - 22 %}<div class="part-row"><span class="slot">M{{ order - 10 }}</span><span>{{ p['war_name'] or p['name'] }}</span></div>{% set ns.count = ns.count + 1 %}{% endfor %}
-        {% for p in data[1] if ((match_number == 1 and p['draw_order'] and p['draw_order'] >= 17 and p['draw_order'] <= 22) or (match_number == 2 and p['draw_order'] and p['draw_order'] >= 39 and p['draw_order'] <= 44)) %}{% set order = p['draw_order'] if match_number == 1 else p['draw_order'] - 22 %}<div class="part-row"><span class="slot">A{{ order - 16 }}</span><span>{{ p['war_name'] or p['name'] }}</span></div>{% set ns.count = ns.count + 1 %}{% endfor %}
+        {% set start_order = ((match_number - 1) * 22) + 1 %}{% set end_order = match_number * 22 %}{% for p in data[1] if p['draw_order'] and p['draw_order'] >= start_order and p['draw_order'] <= end_order %}{% set order = p['draw_order'] - ((match_number - 1) * 22) %}<div class="part-row"><span class="slot">{% if order <= 2 %}G{{ order }}{% elif order <= 10 %}D{{ order - 2 }}{% elif order <= 16 %}M{{ order - 10 }}{% else %}A{{ order - 16 }}{% endif %}</span><span>{{ p['war_name'] or p['name'] }}</span></div>{% set ns.count = ns.count + 1 %}{% endfor %}
         {% if ns.count == 0 %}<div class="part-row muted"><span>—</span><span>Sem participantes</span></div>{% endif %}
       </div>
       {% endfor %}

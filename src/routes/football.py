@@ -32,6 +32,7 @@ TRANSFER_STATUSES = {"PENDENTE": "Pendente", "APROVADA": "Deferido", "RECUSADA":
 # notificações ao serem finalizadas.
 MATEMATICO_PUSH_START_DATE = date(2026, 7, 1)
 WEEKDAY_LABELS = ("Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo")
+PARTICIPANTS_PER_MATCH = 22
 
 
 def _normalize_goal_type(raw, own_goal=False):
@@ -1073,6 +1074,10 @@ def detail(sumula_id):
         math_results = None
         try:
             sumula = data[0]
+            max_draw_order = PARTICIPANTS_PER_MATCH * max(
+                (int(item["row"]["number"]) for item in data[2]),
+                default=1,
+            )
             if sumula["locked_at"]:
                 raise ValueError("A súmula foi encerrada definitivamente e não aceita novas alterações.")
             if sumula["situacao"] in ("FINALIZADA", "CANCELADA") and action not in ("status", "lock"):
@@ -1104,9 +1109,9 @@ def detail(sumula_id):
                 # JavaScript podiam recalculá-lo pela posição (por exemplo,
                 # atacante => 17), fazendo a sequência saltar. A posição
                 # preferencial não deve alterar a ordem do sorteio/cadastro.
-                draw_order = next((number for number in range(1, 45) if number not in used_orders), None)
+                draw_order = next((number for number in range(1, max_draw_order + 1) if number not in used_orders), None)
                 if draw_order is None:
-                    raise ValueError("Não há mais ordens disponíveis para esta súmula.")
+                    raise ValueError(f"Não há mais ordens disponíveis nas partidas cadastradas (limite {max_draw_order}).")
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, draw_order or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
             elif action == "historical_participant":
@@ -1135,8 +1140,8 @@ def detail(sumula_id):
                 draw_order = request.form.get("historical_draw_order", "").strip()
                 if draw_order:
                     draw_order = int(draw_order)
-                    if draw_order < 1 or draw_order > 44:
-                        raise ValueError("A ordem do sorteio deve estar entre 1 e 44.")
+                    if draw_order < 1 or draw_order > max_draw_order:
+                        raise ValueError(f"A ordem do sorteio deve estar entre 1 e {max_draw_order}.")
                     if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND draw_order=?", (sumula_id, draw_order)).fetchone():
                         raise ValueError("Esta ordem de sorteio já está ocupada.")
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), "", draw_order or None, "Cadastro histórico"))
@@ -1183,8 +1188,8 @@ def detail(sumula_id):
             elif action == "update_participant_order":
                 participant_id = int(request.form["participant_id"])
                 draw_order = int(request.form.get("draw_order", "0"))
-                if draw_order < 1 or draw_order > 44:
-                    raise ValueError("A ordem do sorteio deve estar entre 1 e 44.")
+                if draw_order < 1 or draw_order > max_draw_order:
+                    raise ValueError(f"A ordem do sorteio deve estar entre 1 e {max_draw_order}.")
                 if db.execute("SELECT 1 FROM football_participants WHERE sumula_id=? AND draw_order=? AND id!=?", (sumula_id, draw_order, participant_id)).fetchone():
                     raise ValueError("Esta ordem de sorteio já está ocupada.")
                 db.execute("UPDATE football_participants SET draw_order=? WHERE id=? AND sumula_id=?", (draw_order, participant_id, sumula_id))
@@ -1382,7 +1387,11 @@ def detail(sumula_id):
     players = db.execute("SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
     player_positions = {str(player["id"]): _lineup_position(player["football_position"]) for player in players}
     used_orders = {int(row["draw_order"]) for row in db.execute("SELECT draw_order FROM football_participants WHERE sumula_id=? AND draw_order IS NOT NULL", (sumula_id,)).fetchall()}
-    next_draw_order = next((number for number in range(1, 45) if number not in used_orders), 44)
+    max_draw_order = PARTICIPANTS_PER_MATCH * max(
+        (int(item["row"]["number"]) for item in data[2]),
+        default=1,
+    )
+    next_draw_order = next((number for number in range(1, max_draw_order + 1) if number not in used_orders), "")
     audit_total = int(db.execute("SELECT COUNT(*) FROM football_audit WHERE sumula_id=?", (sumula_id,)).fetchone()[0] or 0)
     audit_pages = max(1, (audit_total + 4) // 5)
     score_mismatches = _score_mismatches(db, data[2])
@@ -1391,7 +1400,7 @@ def detail(sumula_id):
         observation = responsible["observation"] or ""
         if observation.startswith("REGRA_AUTOMATICA_"):
             auto_roles.append({"role": "Goleiro" if "_GOLEIRO_" in observation else "Juiz", "name": responsible["war_name"] or responsible["name"] or "Não informado"})
-    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, used_draw_orders=sorted(used_orders), situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, goal_types=GOAL_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=1, score_mismatches=score_mismatches)
+    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, max_draw_order=max_draw_order, used_draw_orders=sorted(used_orders), situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, goal_types=GOAL_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=1, score_mismatches=score_mismatches)
 
 
 @bp.get("/sumulas/<int:sumula_id>/imprimir")
