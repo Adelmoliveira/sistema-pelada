@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS players (
     thumbnail_data TEXT DEFAULT '',
     football_position TEXT DEFAULT '',
     football_join_date TEXT DEFAULT '',
+    club_qr_data TEXT DEFAULT '',
+    club_qr_token TEXT DEFAULT '',
+    club_qr_updated_at TEXT,
     historical_only INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -1235,6 +1238,13 @@ def init_sqlite(wrapper):
         conn.execute("ALTER TABLE players ADD COLUMN football_position TEXT DEFAULT ''")
     if "football_join_date" not in columns:
         conn.execute("ALTER TABLE players ADD COLUMN football_join_date TEXT DEFAULT ''")
+    if "club_qr_data" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN club_qr_data TEXT DEFAULT ''")
+    if "club_qr_token" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN club_qr_token TEXT DEFAULT ''")
+    if "club_qr_updated_at" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN club_qr_updated_at TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_players_club_qr_token ON players(club_qr_token) WHERE club_qr_token<>''")
     conn.commit()
 
     conn.execute("""CREATE TABLE IF NOT EXISTS password_reset_tokens (
@@ -1632,6 +1642,10 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS football_position TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS football_join_date TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS club_qr_data TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS club_qr_token TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS club_qr_updated_at TEXT")
+    wrapper.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_players_club_qr_token ON players(club_qr_token) WHERE club_qr_token<>''")
     wrapper.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS gender TEXT NOT NULL DEFAULT 'male'")
     wrapper.execute("ALTER TABLE reminder_settings ADD COLUMN IF NOT EXISTS push_enabled INTEGER NOT NULL DEFAULT 1")
     wrapper.execute("ALTER TABLE push_inbox ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT ''")

@@ -5,11 +5,11 @@ import base64
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from urllib.parse import urlsplit
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app, jsonify, Response, send_from_directory
+from flask import Blueprint, render_template, request, redirect, url_for, flash, session, g, current_app, jsonify, Response, send_from_directory, abort, make_response
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 from src.db import get_db
-from src.services.material_photos import process_material_photo
+from src.services.material_photos import process_material_photo, process_club_qr_image
 from src.utils import local_today, service_medals
 
 bp = Blueprint("auth", __name__)
@@ -489,7 +489,101 @@ def my_account():
         tenure_years=_completed_years(player["football_join_date"]),
         service_medals=service_medals(player["football_join_date"]),
         push_enabled=push_enabled,
+        club_card_url=(url_for("auth.club_card", token=player["club_qr_token"], _external=True)
+                       if player["club_qr_data"] and player["club_qr_token"] else ""),
     )
+
+
+@bp.post("/minha-conta/carteirinha")
+@roles_allowed("client")
+def update_club_card():
+    db = get_db()
+    player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchone()
+    if not player:
+        flash("Seu usuário ainda não está vinculado a um peladeiro.", "danger")
+        return redirect(url_for("auth.my_account"))
+    try:
+        action = request.form.get("action", "upload")
+        if action == "upload":
+            qr_data = process_club_qr_image(request.files.get("club_qr"))
+            if not qr_data:
+                raise ValueError("Selecione a imagem do QR Code fornecido pelo clube.")
+            token = player["club_qr_token"] or secrets.token_urlsafe(32)
+            db.execute(
+                "UPDATE players SET club_qr_data=?,club_qr_token=?,club_qr_updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (qr_data, token, player["id"]),
+            )
+            message = "QR Code do clube salvo. Sua carteirinha já pode ser aberta sem login."
+        elif action == "regenerate":
+            if not player["club_qr_data"]:
+                raise ValueError("Cadastre o QR Code antes de gerar um novo link.")
+            db.execute(
+                "UPDATE players SET club_qr_token=?,club_qr_updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (secrets.token_urlsafe(32), player["id"]),
+            )
+            message = "Novo link gerado. O link anterior deixou de funcionar."
+        elif action == "remove":
+            db.execute(
+                "UPDATE players SET club_qr_data='',club_qr_token='',club_qr_updated_at=NULL WHERE id=?",
+                (player["id"],),
+            )
+            message = "QR Code e link da carteirinha removidos."
+        else:
+            raise ValueError("Ação inválida para a carteirinha.")
+        db.commit()
+        flash(message, "success")
+    except ValueError as exc:
+        db.rollback()
+        flash(str(exc), "danger")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.exception("Erro ao atualizar carteirinha do clube: %s", exc)
+        flash("Não foi possível atualizar a carteirinha agora.", "danger")
+    return redirect(url_for("auth.my_account") + "#club-card")
+
+
+def _club_card_player(token):
+    if not token or len(token) < 32 or len(token) > 100:
+        return None
+    return get_db().execute(
+        """SELECT id,name,war_name,thumbnail_data,club_qr_data,club_qr_token,club_qr_updated_at
+           FROM players WHERE active=1 AND club_qr_token=? AND club_qr_data<>''""",
+        (token,),
+    ).fetchone()
+
+
+@bp.get("/carteirinha/<token>")
+def club_card(token):
+    player = _club_card_player(token)
+    if not player:
+        abort(404)
+    response = make_response(render_template("club_card.html", player=player, token=token))
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
+
+
+@bp.get("/carteirinha/<token>/manifest.webmanifest")
+def club_card_manifest(token):
+    player = _club_card_player(token)
+    if not player:
+        abort(404)
+    response = jsonify({
+        "name": f"Carteirinha GPCTA · {player['war_name'] or player['name']}",
+        "short_name": "Carteirinha GPCTA",
+        "start_url": url_for("auth.club_card", token=token),
+        "scope": "/carteirinha/",
+        "display": "standalone",
+        "background_color": "#f2f6f9",
+        "theme_color": "#063b61",
+        "icons": [
+            {"src": url_for("static", filename="icons/pwa-192.png"), "sizes": "192x192", "type": "image/png"},
+            {"src": url_for("static", filename="icons/pwa-512.png"), "sizes": "512x512", "type": "image/png"},
+        ],
+    })
+    response.headers["Cache-Control"] = "no-store, private"
+    return response
 
 
 @bp.post("/minha-conta/logo")

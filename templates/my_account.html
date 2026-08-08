@@ -43,6 +43,23 @@
       <button class="btn btn-success w-100">Salvar dados e foto</button>
     </form>
   </div></div>
+  <div class="card shadow-sm mt-4" id="club-card"><div class="card-body p-4">
+    <h2 class="h5">Carteirinha de acesso ao GPCTA</h2>
+    <p class="text-muted small">Cadastre a imagem fixa do QR Code fornecido pelo clube. O sistema apenas apresenta a imagem original e não gera um novo código.</p>
+    {% if player.club_qr_data %}
+      <div class="row g-4 align-items-center"><div class="col-md-5 text-center"><img src="{{player.club_qr_data}}" alt="QR Code de acesso ao GPCTA" class="img-fluid border rounded bg-white p-2" style="width:min(100%,280px);image-rendering:auto"></div><div class="col-md-7">
+        <div class="alert alert-success py-2"><strong>Carteirinha ativa</strong><br><span class="small">Este link abre sem login. Guarde-o como uma credencial pessoal.</span></div>
+        <a class="btn btn-primary w-100 mb-2" href="{{club_card_url}}" target="_blank" rel="noopener noreferrer">Abrir carteirinha sem login</a>
+        <div class="d-flex flex-wrap gap-2 mb-2"><button class="btn btn-success" id="activate-club-card-device" type="button" data-token="{{player.club_qr_token}}">Ativar neste aparelho</button><button class="btn btn-outline-secondary" id="deactivate-club-card-device" type="button">Desativar neste aparelho</button></div><div class="small mb-3" id="club-card-device-status" aria-live="polite"></div>
+        <label class="form-label small" for="club-card-url">Link exclusivo</label><div class="input-group mb-3"><input id="club-card-url" class="form-control" value="{{club_card_url}}" readonly><button class="btn btn-outline-secondary" id="copy-club-card-url" type="button">Copiar</button></div>
+        <p class="small text-muted">No celular, abra a carteirinha e use “Adicionar à Tela de Início”. Se o link for compartilhado ou o aparelho for perdido, gere outro link.</p>
+        <form method="post" action="{{url_for('auth.update_club_card')}}" enctype="multipart/form-data" class="mb-2"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="action" value="upload"><label class="form-label">Substituir imagem</label><input type="file" name="club_qr" class="form-control" accept="image/jpeg,image/png,image/webp" required><button class="btn btn-outline-primary mt-2">Salvar nova imagem</button></form>
+        <div class="d-flex flex-wrap gap-2"><form method="post" action="{{url_for('auth.update_club_card')}}" onsubmit="return confirm('Gerar outro link? O anterior deixará de funcionar.')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="action" value="regenerate"><button class="btn btn-outline-warning">Trocar link</button></form><form method="post" action="{{url_for('auth.update_club_card')}}" onsubmit="return confirm('Remover o QR Code e desativar a carteirinha?')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="action" value="remove"><button class="btn btn-outline-danger">Remover carteirinha</button></form></div>
+      </div></div>
+    {% else %}
+      <form method="post" action="{{url_for('auth.update_club_card')}}" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="action" value="upload"><label class="form-label">Imagem do QR Code fornecido pelo clube</label><input type="file" name="club_qr" class="form-control" accept="image/jpeg,image/png,image/webp" required><div class="form-text">JPG, PNG ou WebP, até 4 MB. Confirme antes se o QR Code do clube é fixo.</div><button class="btn btn-primary mt-3">Criar minha carteirinha</button></form>
+    {% endif %}
+  </div></div>
   <div class="card shadow-sm mt-4"><div class="card-body p-4">
     <h2 class="h5">Alterar senha</h2><p class="text-muted">Use uma senha com pelo menos 8 caracteres.</p>
     <form method="post" action="{{url_for('auth.change_my_password')}}">
@@ -75,5 +92,11 @@
 </script>
 <script>
 (() => { const button = document.getElementById('enable-push'); const status = document.getElementById('push-status'); if (!button) return; button.addEventListener('click', async () => { const enabled = button.dataset.enabled === '1'; button.disabled = true; status.textContent = enabled ? 'Desativando…' : 'Ativando…'; try { if (enabled) { await window.disablePushNotifications(); button.dataset.enabled = '0'; button.className = 'btn btn-outline-primary'; button.textContent = 'Ativar notificações'; status.textContent = 'Notificações desativadas neste dispositivo.'; } else { await window.enablePushNotifications(); button.dataset.enabled = '1'; button.className = 'btn btn-outline-danger'; button.textContent = 'Desativar notificações'; status.textContent = 'Notificações ativadas neste dispositivo.'; } } catch (error) { status.textContent = error.message || 'Não foi possível alterar as notificações.'; } finally { button.disabled = false; } }); })();
+</script>
+<script>
+(() => { const button=document.getElementById('copy-club-card-url'),input=document.getElementById('club-card-url'); if(!button||!input)return; button.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(input.value);button.textContent='Copiado';setTimeout(()=>button.textContent='Copiar',1800)}catch(_){input.select();document.execCommand('copy')}}); })();
+</script>
+<script>
+(() => { const activate=document.getElementById('activate-club-card-device'),deactivate=document.getElementById('deactivate-club-card-device'),status=document.getElementById('club-card-device-status'),storageKey='gpcta-club-card-token'; if(!activate||!deactivate||!status)return; const render=()=>{const active=localStorage.getItem(storageKey)===activate.dataset.token;status.className=`small mb-3 ${active?'text-success':'text-muted'}`;status.textContent=active?'Carteirinha ativada neste aparelho.':'Carteirinha ainda não ativada neste aparelho.'}; activate.addEventListener('click',()=>{localStorage.setItem(storageKey,activate.dataset.token);render()});deactivate.addEventListener('click',()=>{localStorage.removeItem(storageKey);render()});render(); })();
 </script>
 {% endblock %}
