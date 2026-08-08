@@ -1077,22 +1077,6 @@ def detail(sumula_id):
                 if not preferred_position:
                     player_position = db.execute("SELECT football_position FROM players WHERE id=?", (player_id,)).fetchone()
                     preferred_position = _lineup_position(player_position["football_position"]) if player_position else ""
-                # A ordem automática segue a posição e a partida: G1/G2,
-                # D1-D8, M1-M6 e A1-A6 na primeira partida (1-22), depois
-                # os mesmos blocos na segunda (23-44). Ordens digitadas
-                # manualmente continuam sendo respeitadas quando pertencem
-                # ao bloco da posição escolhida.
-                role_ranges = {
-                    "GOLEIRO": tuple(range(1, 3)) + tuple(range(23, 25)),
-                    "GOL": tuple(range(1, 3)) + tuple(range(23, 25)),
-                    "DEFENSOR": tuple(range(3, 11)) + tuple(range(25, 33)),
-                    "DEFESA": tuple(range(3, 11)) + tuple(range(25, 33)),
-                    "MEIO_CAMPO": tuple(range(11, 17)) + tuple(range(33, 39)),
-                    "MEIO": tuple(range(11, 17)) + tuple(range(33, 39)),
-                    "ATACANTE": tuple(range(17, 23)) + tuple(range(39, 45)),
-                    "ATAQUE": tuple(range(17, 23)) + tuple(range(39, 45)),
-                }
-                allowed_orders = role_ranges.get(preferred_position, tuple(range(1, 45)))
                 used_orders = {
                     int(row["draw_order"])
                     for row in db.execute(
@@ -1100,24 +1084,19 @@ def detail(sumula_id):
                         (sumula_id,),
                     ).fetchall()
                 }
-                draw_order = request.form.get("draw_order", "").strip()
-                if draw_order:
-                    draw_order = int(draw_order)
-                    if draw_order < 1 or draw_order > 44:
-                        raise ValueError("A ordem do sorteio deve estar entre 1 e 44.")
-                    # O valor exibido no formulário pode ser a próxima ordem
-                    # geral. Quando ela não pertence à posição escolhida,
-                    # substituímos pela primeira vaga do bloco correto.
-                    if draw_order not in allowed_orders:
-                        draw_order = next((number for number in allowed_orders if number not in used_orders), None)
-                    if draw_order is None:
-                        raise ValueError("Não há mais ordens disponíveis para esta posição.")
-                    if draw_order in used_orders:
-                        raise ValueError("Esta ordem de sorteio já está ocupada.")
-                else:
-                    draw_order = next((number for number in allowed_orders if number not in used_orders), None)
-                    if draw_order is None:
-                        raise ValueError("Não há mais ordens disponíveis para esta posição.")
+                # A ordem representa a sequência do sorteio/cadastro e não
+                # a posição preferencial. A posição só define o rótulo D/M/A/G
+                # exibido na lista. Assim, um atacante recém-cadastrado pode
+                # receber a próxima ordem livre (6, 7, ...), em vez de saltar
+                # automaticamente para a faixa dos atacantes (17+).
+                # A inclusão sempre recebe a próxima ordem livre. O campo do
+                # formulário é apenas informativo: versões antigas do
+                # JavaScript podiam recalculá-lo pela posição (por exemplo,
+                # atacante => 17), fazendo a sequência saltar. A posição
+                # preferencial não deve alterar a ordem do sorteio/cadastro.
+                draw_order = next((number for number in range(1, 45) if number not in used_orders), None)
+                if draw_order is None:
+                    raise ValueError("Não há mais ordens disponíveis para esta súmula.")
                 db.execute("INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order,observation) VALUES(?,?,?,?,?,?)", (sumula_id, player_id, request.form.get("status", "CONFIRMADO"), preferred_position, draw_order or None, request.form.get("observation", "").strip()))
                 _audit(db, sumula_id, "PARTICIPANTE_ADICIONADO", str(player_id))
             elif action == "historical_participant":
