@@ -3035,6 +3035,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(first.status_code, 302)
         page = self.client.get(f"/futebol/sumulas/{sumula_id}").get_data(as_text=True)
         self.assertIn('value="4" placeholder="Ordem do sorteio"', page)
+        self.assertNotIn("participantOrder.value=", page)
 
         second = self.client.post(
             f"/futebol/sumulas/{sumula_id}",
