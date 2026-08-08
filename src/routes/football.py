@@ -58,15 +58,20 @@ def _participant_player(db, sumula_id, player_id):
 
 
 def _fallback_slot_label(draw_order):
-    """Converte a ordem usada pela regra especial para o slot original."""
-    return {1: "D1", 10: "D8", 16: "M6", 22: "A6"}.get(int(draw_order), "")
+    """Converte a ordem geral do sorteio para o slot original da súmula."""
+    return {3: "D1", 10: "D8", 16: "M6", 22: "A6"}.get(int(draw_order), "")
+
+
+def _fallback_display_order(draw_order):
+    """Retorna a ordem dentro do grupo (D/M/A) exibida na regra."""
+    return {3: 1, 10: 8, 16: 6, 22: 6}.get(int(draw_order), int(draw_order))
 
 
 def _fallback_roles(db, sumula_id):
     """Calcula os papéis de emergência da segunda partida pela ordem do sorteio.
 
     A ordem da súmula é agrupada por função: goleiros, defesa, meio e ataque
-    em cada partida. Assim, D8/M6/A6 correspondem às ordens 10/16/22.
+    em cada partida. Assim, D1/D8/M6/A6 correspondem às ordens 3/10/16/22.
     """
     match = db.execute("SELECT id FROM football_matches WHERE sumula_id=? AND number=2", (sumula_id,)).fetchone()
     if not match or db.execute(
@@ -82,20 +87,20 @@ def _fallback_roles(db, sumula_id):
         for row in db.execute(
             """SELECT fp.player_id,fp.draw_order,p.name,p.war_name
                FROM football_participants fp JOIN players p ON p.id=fp.player_id
-               WHERE fp.sumula_id=? AND fp.status='CONFIRMADO' AND fp.draw_order IN (1,10,16,22)""",
+               WHERE fp.sumula_id=? AND fp.status='CONFIRMADO' AND fp.draw_order IN (3,10,16,22)""",
             (sumula_id,),
         ).fetchall()
     }
     roles = []
-    if players.get(1):
-        player = players[1]
-        roles.append({"player_id": player["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": 1, "slot": _fallback_slot_label(1), "name": player["war_name"] or player["name"]})
+    if players.get(3):
+        player = players[3]
+        roles.append({"player_id": player["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": 3, "display_order": _fallback_display_order(3), "slot": _fallback_slot_label(3), "name": player["war_name"] or player["name"]})
     candidates = [players[order] for order in (10, 16, 22) if players.get(order)]
     if candidates:
         goalkeeper = candidates[0]
-        roles.append({"player_id": goalkeeper["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": goalkeeper["draw_order"], "slot": _fallback_slot_label(goalkeeper["draw_order"]), "name": goalkeeper["war_name"] or goalkeeper["name"]})
+        roles.append({"player_id": goalkeeper["player_id"], "match_id": match["id"], "role": "Goleiro", "draw_order": goalkeeper["draw_order"], "display_order": _fallback_display_order(goalkeeper["draw_order"]), "slot": _fallback_slot_label(goalkeeper["draw_order"]), "name": goalkeeper["war_name"] or goalkeeper["name"]})
         for referee in candidates[1:]:
-            roles.append({"player_id": referee["player_id"], "match_id": match["id"], "role": "Juiz", "draw_order": referee["draw_order"], "slot": _fallback_slot_label(referee["draw_order"]), "name": referee["war_name"] or referee["name"]})
+            roles.append({"player_id": referee["player_id"], "match_id": match["id"], "role": "Juiz", "draw_order": referee["draw_order"], "display_order": _fallback_display_order(referee["draw_order"]), "slot": _fallback_slot_label(referee["draw_order"]), "name": referee["war_name"] or referee["name"]})
     return roles
 
 
@@ -945,22 +950,31 @@ def sumulas():
     db = get_db()
     conditions, params = [], []
     start, end, situation = request.args.get("start", ""), request.args.get("end", ""), request.args.get("situacao", "")
-    month = request.args.get("month", "")
-    selected_year = request.args.get("year", "") or str(local_today().year)
+    today = local_today()
+    raw_month = request.args.get("month")
+    # Sem um mês informado, a lista abre sempre no mês corrente. O valor 0
+    # representa explicitamente a opção "Todos".
+    month = str(today.month) if raw_month is None else request.args.get("month", "")
+    selected_year = request.args.get("year", "") or str(today.year)
     try:
         month_number = int(month) if month else 0
         if month_number not in range(1, 13):
-            month = ""
+            month = "0" if raw_month is not None else str(today.month)
             month_number = 0
     except (TypeError, ValueError):
-        month = ""
-        month_number = 0
+        month = str(today.month)
+        month_number = today.month
+    if raw_month is None:
+        month = f"{today.month:02d}"
+        month_number = today.month
+    elif month_number == 0:
+        month = "0"
     try:
         year_number = int(selected_year)
         if year_number < 2000 or year_number > 2100:
             raise ValueError
     except (TypeError, ValueError):
-        year_number = local_today().year
+        year_number = today.year
         selected_year = str(year_number)
     if start:
         conditions.append("fs.match_date>=?"); params.append(start)
@@ -982,6 +996,12 @@ def sumulas():
     if conditions: sql += " WHERE " + " AND ".join(conditions)
     sql += " GROUP BY fs.id ORDER BY fs.match_date DESC,fs.id DESC"
     rows = db.execute(sql, tuple(params)).fetchall()
+    max_year_row = db.execute("SELECT MAX(substr(CAST(match_date AS TEXT),1,4)) AS max_year FROM football_sumulas").fetchone()
+    try:
+        max_year = int(max_year_row["max_year"]) if max_year_row and max_year_row["max_year"] else today.year
+    except (TypeError, ValueError):
+        max_year = today.year
+    years = range(2026, max(today.year, max_year) + 1) if max(today.year, max_year) >= 2026 else (today.year,)
     months = ((1, "Janeiro"), (2, "Fevereiro"), (3, "Março"), (4, "Abril"), (5, "Maio"), (6, "Junho"), (7, "Julho"), (8, "Agosto"), (9, "Setembro"), (10, "Outubro"), (11, "Novembro"), (12, "Dezembro"))
     return render_template(
         "football_sumulas.html",
@@ -993,6 +1013,7 @@ def sumulas():
         month=month,
         month_number=month_number,
         selected_year=selected_year,
+        years=years,
         months=months,
     )
 
@@ -1180,6 +1201,26 @@ def detail(sumula_id):
                 db.execute("UPDATE football_participants SET draw_order=? WHERE id=? AND sumula_id=?", (draw_order, participant_id, sumula_id))
                 db.execute("DELETE FROM football_responsibles WHERE sumula_id=? AND SUBSTR(observation,1,17)='REGRA_AUTOMATICA_'", (sumula_id,))
                 _audit(db, sumula_id, "ORDEM_PARTICIPANTE_ATUALIZADA", f"{participant_id}:{draw_order}")
+            elif action == "delete_participant":
+                participant_id = int(request.form.get("participant_id", "0"))
+                participant = db.execute(
+                    "SELECT fp.id, p.war_name, p.name FROM football_participants fp "
+                    "JOIN players p ON p.id=fp.player_id "
+                    "WHERE fp.id=? AND fp.sumula_id=?",
+                    (participant_id, sumula_id),
+                ).fetchone()
+                if not participant:
+                    raise ValueError("Participante não encontrado nesta súmula.")
+                db.execute(
+                    "DELETE FROM football_participants WHERE id=? AND sumula_id=?",
+                    (participant_id, sumula_id),
+                )
+                _audit(
+                    db,
+                    sumula_id,
+                    "PARTICIPANTE_EXCLUIDO",
+                    participant["war_name"] or participant["name"],
+                )
             elif action == "score":
                 match_id = int(request.form["match_id"]); blue, white = max(0, int(request.form.get("blue_score", 0))), max(0, int(request.form.get("white_score", 0)))
                 if not db.execute("SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?", (match_id, sumula_id)).fetchone():
@@ -1362,7 +1403,7 @@ def detail(sumula_id):
         observation = responsible["observation"] or ""
         if observation.startswith("REGRA_AUTOMATICA_"):
             auto_roles.append({"role": "Goleiro" if "_GOLEIRO_" in observation else "Juiz", "name": responsible["war_name"] or responsible["name"] or "Não informado"})
-    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=1, score_mismatches=score_mismatches)
+    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, used_draw_orders=sorted(used_orders), situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=1, score_mismatches=score_mismatches)
 
 
 @bp.get("/sumulas/<int:sumula_id>/imprimir")
