@@ -2891,13 +2891,16 @@ class MercadoPagoFlowTest(unittest.TestCase):
             db.commit()
 
         statistics_html = self.client.get("/futebol/estatisticas").get_data(as_text=True)
+        self.assertIn("Gols contra", statistics_html)
+        self.assertIn('<h2 class="text-danger">−1</h2>', statistics_html)
+        self.assertIn('<td class="text-danger fw-semibold">−1</td>', statistics_html)
         self.assertRegex(
             statistics_html,
-            r"Peladeiro</td><td>100\.0%</td><td>0</td><td>0</td><td>0</td><td>0</td><td>1</td><td>0</td>",
+            r"Peladeiro</td><td>100\.0%</td><td>0</td><td>0</td><td>0</td><td>0</td><td>1</td><td class=\"text-danger fw-semibold\">−1</td><td>0</td>",
         )
         self.assertRegex(
             statistics_html,
-            r"Garçom</td><td>100\.0%</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>1</td>",
+            r"Garçom</td><td>100\.0%</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td class=\"text-muted\">0</td><td>1</td>",
         )
 
         with self.client.session_transaction() as session:
@@ -2911,6 +2914,51 @@ class MercadoPagoFlowTest(unittest.TestCase):
             '<strong class="fs-3">0</strong><small class="d-block text-muted">Assistências</small>',
             client_html,
         )
+
+    def test_football_statistics_paginates_ranking_and_recent_results_independently(self):
+        with app.app_context():
+            db = get_db()
+            for number in range(1, 17):
+                player_id = db.execute(
+                    "INSERT INTO players(name,war_name) VALUES(?,?)",
+                    (f"Jogador paginado {number:02d}", f"Ranking {number:02d}"),
+                ).lastrowid
+                db.execute(
+                    "INSERT INTO football_historical_stats(player_id,stat_date,goals,created_by) VALUES(?,'2026-08-08',1,?)",
+                    (player_id, self.user_id),
+                )
+            for day in range(1, 13):
+                sumula_id = db.execute(
+                    "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','FINALIZADA',?)",
+                    (f"2026-08-{day:02d}", self.user_id),
+                ).lastrowid
+                db.execute(
+                    "INSERT INTO football_matches(sumula_id,number,blue_score,white_score,status) VALUES(?,1,2,1,'ENCERRADA')",
+                    (sumula_id,),
+                )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        first_page = self.client.get("/futebol/estatisticas?year=2026&month=8").get_data(as_text=True)
+        self.assertEqual(first_page.count('data-ranking-row="'), 15)
+        self.assertEqual(first_page.count('data-result-date="'), 10)
+        self.assertIn('data-ranking-page="1"', first_page)
+        self.assertIn('data-results-page="1"', first_page)
+        self.assertIn('data-result-date="2026-08-12"', first_page)
+        self.assertNotIn('data-result-date="2026-08-02"', first_page)
+
+        second_page = self.client.get(
+            "/futebol/estatisticas?year=2026&month=8&ranking_page=2&results_page=2"
+        ).get_data(as_text=True)
+        self.assertEqual(second_page.count('data-ranking-row="'), 1)
+        self.assertEqual(second_page.count('data-result-date="'), 2)
+        self.assertIn('data-ranking-page="2"', second_page)
+        self.assertIn('data-results-page="2"', second_page)
+        self.assertIn('data-result-date="2026-08-02"', second_page)
+        self.assertIn('data-result-date="2026-08-01"', second_page)
+        self.assertNotIn('data-result-date="2026-08-03"', second_page)
 
     def test_third_match_accepts_participant_orders_45_to_66(self):
         with app.app_context():
