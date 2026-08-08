@@ -58,6 +58,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertTrue(all("RETURNING WEEKDAY" in statement.upper() for statement in schedule_seeds))
         self.assertTrue(any("ADD COLUMN IF NOT EXISTS CLUB_QR_DATA" in statement.upper() for statement in recorder.statements))
         self.assertTrue(any("IDX_PLAYERS_CLUB_QR_TOKEN" in statement.upper() for statement in recorder.statements))
+        self.assertTrue(any(
+            "LOAD_ENTRIES_AREA_CODE_CHECK" in statement.upper() and "'INT'" in statement.upper()
+            for statement in recorder.statements
+        ))
 
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -357,6 +361,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(public_card.status_code, 200)
         self.assertIn("Craque QR", public_card.get_data(as_text=True))
         self.assertIn("QR Code de entrada no GPCTA", public_card.get_data(as_text=True))
+        self.assertIn("QR Code fornecido pelo DCTA", public_card.get_data(as_text=True))
+        self.assertNotIn("QR Code fornecido pelo clube", public_card.get_data(as_text=True))
         self.assertIn("no-store", public_card.headers["Cache-Control"])
         self.assertEqual(public_card.headers["X-Robots-Tag"], "noindex, nofollow")
         manifest = self.client.get(f"/carteirinha/{first_token}/manifest.webmanifest")
@@ -1364,6 +1370,31 @@ class MercadoPagoFlowTest(unittest.TestCase):
             db = get_db()
             self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entries").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entry_photos").fetchone()[0], 0)
+
+    def test_load_entry_accepts_internal_headquarters_area(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            material_id = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES(?,?)",
+                ("Material interno", "FCG-INT"),
+            ).lastrowid
+            db.commit()
+
+        form = self.client.get("/infra/load-relation/new")
+        self.assertIn("INT - Interno sede", form.get_data(as_text=True))
+        created = self.client.post(
+            "/infra/load-relation/new",
+            data={"material_id": str(material_id), "area_code": "INT", "status": "active"},
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            entry = get_db().execute(
+                "SELECT bmp,area_code FROM load_entries WHERE material_id=?", (material_id,)
+            ).fetchone()
+            self.assertEqual(entry["area_code"], "INT")
+            self.assertTrue(entry["bmp"].endswith(" | INT"))
 
     def test_qr_load_check_requires_and_atomically_stores_photo_evidence(self):
         with self.client.session_transaction() as session:

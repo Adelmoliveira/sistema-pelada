@@ -352,7 +352,7 @@ CREATE TABLE IF NOT EXISTS load_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     material_id INTEGER NOT NULL REFERENCES materials(id),
     bmp TEXT NOT NULL UNIQUE,
-    area_code TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN')),
+    area_code TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','INT')),
     serial_number TEXT DEFAULT '',
     location TEXT DEFAULT '',
     responsible TEXT DEFAULT '',
@@ -394,7 +394,7 @@ CREATE TABLE IF NOT EXISTS maintenance_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT NOT NULL UNIQUE,
     title TEXT NOT NULL,
-    area_code TEXT NOT NULL CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','EXT')),
+    area_code TEXT NOT NULL CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','INT','EXT')),
     location TEXT DEFAULT '',
     category TEXT NOT NULL CHECK(category IN ('electrical','plumbing','civil','painting','equipment','cleaning','other')),
     priority TEXT NOT NULL CHECK(priority IN ('low','medium','high','urgent')),
@@ -1126,12 +1126,12 @@ def migrate_product_categories(connection):
 
 
 def migrate_maintenance_areas(connection):
-    """Allow the external area in databases created before that option existed."""
+    """Keep the maintenance area constraint aligned with the available options."""
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='maintenance_requests'"
     ).fetchone()
     sql = (row[0] or "") if row else ""
-    if row and "'EXT'" in sql and "'cancelled'" in sql:
+    if row and "'EXT'" in sql and "'INT'" in sql and "'cancelled'" in sql:
         return
     connection.commit()
     connection.execute("PRAGMA foreign_keys = OFF")
@@ -1143,7 +1143,7 @@ def migrate_maintenance_areas(connection):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             code TEXT NOT NULL UNIQUE,
             title TEXT NOT NULL,
-            area_code TEXT NOT NULL CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','EXT')),
+            area_code TEXT NOT NULL CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','INT','EXT')),
             location TEXT DEFAULT '',
             category TEXT NOT NULL CHECK(category IN ('electrical','plumbing','civil','painting','equipment','cleaning','other')),
             priority TEXT NOT NULL CHECK(priority IN ('low','medium','high','urgent')),
@@ -1523,7 +1523,7 @@ def init_sqlite(wrapper):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             material_id INTEGER NOT NULL REFERENCES materials(id),
             bmp TEXT NOT NULL UNIQUE,
-            area_code TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN')),
+            area_code TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','INT')),
             serial_number TEXT DEFAULT '', location TEXT DEFAULT '', responsible TEXT DEFAULT '', notes TEXT DEFAULT '',
             status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','maintenance','discharged','lost','borrowed')),
             discharged_at TEXT, discharged_by INTEGER REFERENCES users(id),
@@ -1556,7 +1556,7 @@ def init_sqlite(wrapper):
         conn.execute("PRAGMA foreign_keys=ON")
         load_columns = {row[1] for row in conn.execute("PRAGMA table_info(load_entries)")}
     load_migrations = {
-        "area_code": "TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN'))",
+        "area_code": "TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','INT'))",
         "status": "TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','maintenance','discharged','lost','borrowed'))",
         "discharged_at": "TEXT",
         "discharged_by": "INTEGER REFERENCES users(id)",
@@ -1590,6 +1590,37 @@ def init_sqlite(wrapper):
         moved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_load_movements_entry ON load_entry_movements(load_entry_id,moved_at)")
+    load_schema = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='load_entries'"
+    ).fetchone()
+    load_schema_sql = (load_schema[0] if load_schema else "") or ""
+    if "'INT'" not in load_schema_sql:
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("PRAGMA legacy_alter_table=ON")
+        conn.execute("ALTER TABLE load_entries RENAME TO load_entries_area_legacy")
+        conn.execute("""CREATE TABLE load_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            material_id INTEGER NOT NULL REFERENCES materials(id),
+            bmp TEXT NOT NULL UNIQUE,
+            area_code TEXT NOT NULL DEFAULT 'BAR' CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','INT')),
+            serial_number TEXT DEFAULT '', location TEXT DEFAULT '', responsible TEXT DEFAULT '', notes TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','maintenance','discharged','lost','borrowed')),
+            discharged_at TEXT, discharged_by INTEGER REFERENCES users(id),
+            last_checked_at TEXT, last_checked_by INTEGER REFERENCES users(id), next_check_due_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
+        conn.execute("""INSERT INTO load_entries
+            (id,material_id,bmp,area_code,serial_number,location,responsible,notes,status,discharged_at,discharged_by,
+             last_checked_at,last_checked_by,next_check_due_at,created_at,updated_at)
+            SELECT id,material_id,bmp,area_code,serial_number,location,responsible,notes,status,discharged_at,discharged_by,
+                   last_checked_at,last_checked_by,next_check_due_at,created_at,updated_at
+            FROM load_entries_area_legacy""")
+        conn.execute("DROP TABLE load_entries_area_legacy")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_load_entries_material ON load_entries(material_id)")
+        conn.commit()
+        conn.execute("PRAGMA legacy_alter_table=OFF")
+        conn.execute("PRAGMA foreign_keys=ON")
     conn.commit()
 
 def init_postgres(wrapper):
@@ -1772,6 +1803,9 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE load_entries DROP CONSTRAINT IF EXISTS load_entries_status_check")
     wrapper.execute("""ALTER TABLE load_entries ADD CONSTRAINT load_entries_status_check
         CHECK(status IN ('active','maintenance','discharged','lost','borrowed'))""")
+    wrapper.execute("ALTER TABLE load_entries DROP CONSTRAINT IF EXISTS load_entries_area_code_check")
+    wrapper.execute("""ALTER TABLE load_entries ADD CONSTRAINT load_entries_area_code_check
+        CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','INT'))""")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS load_entry_movements (
         id SERIAL PRIMARY KEY,
         load_entry_id INTEGER NOT NULL REFERENCES load_entries(id) ON DELETE CASCADE,
@@ -1833,7 +1867,7 @@ def init_postgres(wrapper):
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""")
     wrapper.execute("ALTER TABLE maintenance_requests DROP CONSTRAINT IF EXISTS maintenance_requests_area_code_check")
-    wrapper.execute("ALTER TABLE maintenance_requests ADD CONSTRAINT maintenance_requests_area_code_check CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','EXT'))")
+    wrapper.execute("ALTER TABLE maintenance_requests ADD CONSTRAINT maintenance_requests_area_code_check CHECK(area_code IN ('BAR','COZ','SAL','HIS','VES','BAN','INT','EXT'))")
     wrapper.execute("ALTER TABLE maintenance_requests DROP CONSTRAINT IF EXISTS maintenance_requests_status_check")
     wrapper.execute("ALTER TABLE maintenance_requests ADD CONSTRAINT maintenance_requests_status_check CHECK(status IN ('open','analysis','in_progress','waiting_material','completed','cancelled'))")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS maintenance_request_history (

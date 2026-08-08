@@ -16,7 +16,7 @@
   <main class="card">
     <header class="header"><img src="{{url_for('auth.branding_logo')}}" alt="GPCTA"><small>Carteirinha de acesso</small><strong>PELADEIROS GPCTA</strong></header>
     <section class="content">
-      <div class="identity"><div class="avatar">{% if player.thumbnail_data %}<img src="{{player.thumbnail_data}}" alt="Foto de {{player.war_name or player.name}}">{% else %}{{(player.war_name or player.name)[:1]|upper}}{% endif %}</div><span><strong>{{player.war_name or player.name}}</strong><small>QR Code fornecido pelo clube</small></span></div>
+      <div class="identity"><div class="avatar">{% if player.thumbnail_data %}<img src="{{player.thumbnail_data}}" alt="Foto de {{player.war_name or player.name}}">{% else %}{{(player.war_name or player.name)[:1]|upper}}{% endif %}</div><span><strong>{{player.war_name or player.name}}</strong><small>QR Code fornecido pelo DCTA</small></span></div>
       <img class="qr" src="{{player.club_qr_data}}" alt="QR Code de entrada no GPCTA">
       <p class="hint">Apresente este código diretamente ao leitor da portaria.</p>
       <div class="security">Este QR Code é uma credencial pessoal. Não compartilhe este link. Em caso de perda do celular, troque o link em Minha conta.</div>
