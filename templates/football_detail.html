@@ -87,7 +87,7 @@ const participantPlayer=participantForm?.querySelector('select[name="player_id"]
 const participantPosition=participantForm?.querySelector('select[name="preferred_position"]');
 const participantOrder=participantForm?.querySelector('input[name="draw_order"]');
 const usedParticipantOrders=new Set({{used_draw_orders|tojson}});
-const nextSequentialParticipantOrder=()=>{for(let order=1;order<={{max_draw_order}};order+=1){if(!usedParticipantOrders.has(order)) return String(order);}return '';};
+const nextSequentialParticipantOrder=()=>{const next=(usedParticipantOrders.size?Math.max(...usedParticipantOrders):0)+1;return next<={{max_draw_order}}?String(next):'';};
 /* A posição é apenas a posição preferencial do jogador.  Ela não deve
    escolher a próxima vaga do sorteio (por exemplo, um atacante não deve
    fazer a sequência saltar de 5 para 17). */
