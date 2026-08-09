@@ -363,6 +363,9 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("QR Code de entrada no GPCTA", public_card.get_data(as_text=True))
         self.assertIn("QR Code fornecido pelo DCTA", public_card.get_data(as_text=True))
         self.assertNotIn("QR Code fornecido pelo clube", public_card.get_data(as_text=True))
+        self.assertIn('class="card-logo-button"', public_card.get_data(as_text=True))
+        self.assertIn('aria-label="Voltar à tela de login"', public_card.get_data(as_text=True))
+        self.assertIn('action="/logout"', public_card.get_data(as_text=True))
         self.assertIn("no-store", public_card.headers["Cache-Control"])
         self.assertEqual(public_card.headers["X-Robots-Tag"], "noindex, nofollow")
         manifest = self.client.get(f"/carteirinha/{first_token}/manifest.webmanifest")
@@ -372,9 +375,14 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with self.client.session_transaction() as session:
             session["user_id"] = client_user_id
         account_html = self.client.get("/minha-conta").get_data(as_text=True)
-        self.assertIn('id="activate-club-card-device"', account_html)
+        self.assertIn('id="toggle-club-card-device"', account_html)
         self.assertIn(f'data-token="{first_token}"', account_html)
         self.assertIn("gpcta-club-card-token", account_html)
+        self.assertIn("Ativar neste dispositivo", account_html)
+        self.assertIn("Desativar neste dispositivo", account_html)
+        self.assertIn("window.addEventListener('pageshow',render)", account_html)
+        self.assertNotIn('id="activate-club-card-device"', account_html)
+        self.assertNotIn('id="deactivate-club-card-device"', account_html)
 
         with self.client.session_transaction() as session:
             session["user_id"] = client_user_id
@@ -835,6 +843,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('<input type="month" name="start_month"', finance_page)
         self.assertIn(f'value="{local_today().strftime("%Y-%m")}"', finance_page)
         self.assertIn('action="/logout"', page)
+        self.assertIn('class="logout-button"', page)
+        self.assertIn('aria-label="Sair do sistema"', page)
         self.assertIn('id="pwa-install"', page)
         self.assertIn("Aniversariantes do mês", page)
         self.assertIn('href="/aniversariantes"', page)
