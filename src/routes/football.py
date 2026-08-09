@@ -1,5 +1,6 @@
 from datetime import date
 from html import escape, unescape
+from io import BytesIO
 import base64
 import re
 
@@ -13,6 +14,9 @@ from src.services.football_tenure_pdf import build_football_tenure_pdf
 from src.services.email_reminders import send_gmail_html
 from src.services.push_notifications import send_player_push, send_player_push_once
 from src.services.material_photos import process_material_photo
+from src.services.football_sumula_spreadsheet import (
+    build_template, import_into_sumula, parse_import, parse_participant_text,
+)
 
 bp = Blueprint("football", __name__, url_prefix="/futebol")
 
@@ -1302,6 +1306,112 @@ def new_sumula():
             db.rollback()
             flash("Não foi possível criar a súmula.", "danger")
     return render_template("football_form.html", sumula=None, today=local_today().isoformat())
+
+
+def _spreadsheet_players(db):
+    return db.execute(
+        """SELECT id,name,war_name,football_position
+           FROM players
+           WHERE (active=1 AND gender!='female' AND membership_type!='veteran'
+             AND COALESCE(football_position,'')!='APOSENTADO') OR historical_only=1
+           ORDER BY LOWER(COALESCE(NULLIF(war_name,''),name)),LOWER(name)"""
+    ).fetchall()
+
+
+@bp.get("/sumulas/modelo-importacao.xlsx")
+@roles_allowed("manager", "football_manager")
+def sumula_import_template():
+    workbook = build_template(_spreadsheet_players(get_db()))
+    return send_file(
+        workbook,
+        as_attachment=True,
+        download_name="modelo-importacao-sumula-gpcta.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        max_age=0,
+    )
+
+
+@bp.post("/sumulas/<int:sumula_id>/importar-planilha")
+@roles_allowed("manager", "football_manager")
+def import_sumula_spreadsheet(sumula_id):
+    db = get_db()
+    sumula = db.execute("SELECT id,situacao,locked_at FROM football_sumulas WHERE id=?", (sumula_id,)).fetchone()
+    if not sumula:
+        flash("Súmula não encontrada.", "danger")
+        return redirect(url_for("football.sumulas"))
+    if sumula["locked_at"] or sumula["situacao"] != "RASCUNHO":
+        flash("A planilha só pode ser importada em uma súmula no estado Rascunho.", "danger")
+        return redirect(url_for("football.detail", sumula_id=sumula_id))
+    uploaded = request.files.get("sumula_spreadsheet")
+    if not uploaded or not uploaded.filename:
+        flash("Selecione o arquivo Excel preenchido.", "danger")
+        return redirect(url_for("football.detail", sumula_id=sumula_id))
+    if not uploaded.filename.lower().endswith(".xlsx"):
+        flash("Use o modelo no formato Excel .xlsx.", "danger")
+        return redirect(url_for("football.detail", sumula_id=sumula_id))
+    try:
+        data = parse_import(BytesIO(uploaded.read()), _spreadsheet_players(db))
+        with db:
+            totals = import_into_sumula(db, sumula_id, data, g.user["id"])
+            _audit(
+                db,
+                sumula_id,
+                "PLANILHA_IMPORTADA",
+                f"{totals['participants']} participantes · {totals['matches']} partidas",
+            )
+        flash(
+            f"Planilha importada como rascunho: {totals['participants']} participantes, "
+            f"distribuídos em {totals['matches']} partida(s). Confira os nomes e posições.",
+            "success",
+        )
+    except ValueError as exc:
+        db.rollback()
+        messages = str(exc).splitlines()
+        flash(f"A planilha não foi importada. Encontramos {len(messages)} pendência(s):", "danger")
+        for message in messages:
+            flash(message, "warning")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.exception("Erro ao importar planilha da súmula %s: %s", sumula_id, exc)
+        flash("Não foi possível importar a planilha. Nenhuma informação foi gravada.", "danger")
+    return redirect(url_for("football.detail", sumula_id=sumula_id))
+
+
+@bp.post("/sumulas/<int:sumula_id>/importar-participantes-texto")
+@roles_allowed("manager", "football_manager")
+def import_sumula_participant_text(sumula_id):
+    db = get_db()
+    sumula = db.execute("SELECT id,situacao,locked_at FROM football_sumulas WHERE id=?", (sumula_id,)).fetchone()
+    if not sumula:
+        flash("Súmula não encontrada.", "danger")
+        return redirect(url_for("football.sumulas"))
+    if sumula["locked_at"] or sumula["situacao"] != "RASCUNHO":
+        flash("Os participantes só podem ser importados em uma súmula no estado Rascunho.", "danger")
+        return redirect(url_for("football.detail", sumula_id=sumula_id))
+    try:
+        data = parse_participant_text(request.form.get("participant_text", ""), _spreadsheet_players(db))
+        with db:
+            totals = import_into_sumula(db, sumula_id, data, g.user["id"])
+            _audit(
+                db, sumula_id, "PARTICIPANTES_IMPORTADOS_TEXTO",
+                f"{totals['participants']} participantes · {totals['matches']} partidas",
+            )
+        flash(
+            f"{totals['participants']} participantes importados em {totals['matches']} partida(s). "
+            "Confira os nomes e posições antes de continuar.",
+            "success",
+        )
+    except ValueError as exc:
+        db.rollback()
+        messages = str(exc).splitlines()
+        flash(f"Nenhum participante foi importado. Encontramos {len(messages)} pendência(s):", "danger")
+        for message in messages:
+            flash(message, "warning")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.exception("Erro ao importar participantes por texto na súmula %s: %s", sumula_id, exc)
+        flash("Não foi possível importar os participantes. Nenhuma informação foi gravada.", "danger")
+    return redirect(url_for("football.detail", sumula_id=sumula_id))
 
 
 @bp.route("/sumulas/<int:sumula_id>", methods=["GET", "POST"])

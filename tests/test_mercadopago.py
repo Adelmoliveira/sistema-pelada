@@ -14,6 +14,7 @@ from types import ModuleType
 from unittest.mock import patch
 
 from PIL import Image
+from openpyxl import load_workbook
 
 from app import app
 from src.db import get_db, init_postgres
@@ -3501,6 +3502,99 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 [(row["player_id"], row["draw_order"]) for row in rows],
                 [(self.player_id, 3), (second_player_id, 4)],
             )
+
+    def test_simple_participant_text_import_creates_matches_and_draw_orders(self):
+        with app.app_context():
+            db = get_db()
+            player_ids = {}
+            for name in ("EDVAL", "DIEGO", "NEWTON", "WALTER", "REGIO", "BARBOZA", "LUCCA"):
+                player_ids[name] = db.execute(
+                    "INSERT INTO players(name,war_name) VALUES(?,?)", (name.title(), name)
+                ).lastrowid
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','RASCUNHO',?)",
+                ("2026-08-29", self.user_id),
+            ).lastrowid
+            db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,1)", (sumula_id,))
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        detail = self.client.get(f"/futebol/sumulas/{sumula_id}")
+        detail_html = detail.get_data(as_text=True)
+        self.assertIn("Importar participantes", detail_html)
+        self.assertIn("Relação dos participantes", detail_html)
+        self.assertIn("Baixar Excel simples", detail_html)
+        template = self.client.get("/futebol/sumulas/modelo-importacao.xlsx")
+        self.assertEqual(template.status_code, 200)
+        workbook = load_workbook(BytesIO(template.data))
+        self.assertEqual(workbook.sheetnames, ["Instruções", "Participantes", "Peladeiros"])
+        self.assertEqual(
+            tuple(cell.value for cell in workbook["Participantes"][1]),
+            ("Partida", "Posição", "ID do peladeiro", "Nome do peladeiro", "Status", "Observação"),
+        )
+        participant_text = """1ª PARTIDA
+G1: EDVAL
+D1: DIEGO
+M1: NEWTON
+A1: WALTER
+2ª PARTIDA
+D1: REGIO
+3ª PARTIDA
+M1: BARBOZA
+A5: LUCCA"""
+        imported = self.client.post(
+            f"/futebol/sumulas/{sumula_id}/importar-participantes-texto",
+            data={"participant_text": participant_text},
+            follow_redirects=True,
+        )
+        html = imported.get_data(as_text=True)
+        self.assertEqual(imported.status_code, 200)
+        self.assertIn("7 participantes importados em 3 partida(s)", html)
+        with app.app_context():
+            db = get_db()
+            rows = db.execute(
+                """SELECT p.war_name,fp.draw_order,fp.preferred_position
+                   FROM football_participants fp JOIN players p ON p.id=fp.player_id
+                   WHERE fp.sumula_id=? ORDER BY fp.draw_order""",
+                (sumula_id,),
+            ).fetchall()
+            self.assertEqual(
+                [(row["war_name"], row["draw_order"], row["preferred_position"]) for row in rows],
+                [
+                    ("EDVAL", 1, "GOLEIRO"), ("DIEGO", 3, "DEFENSOR"),
+                    ("NEWTON", 11, "MEIO_CAMPO"), ("WALTER", 17, "ATACANTE"),
+                    ("REGIO", 25, "DEFENSOR"), ("BARBOZA", 55, "MEIO_CAMPO"),
+                    ("LUCCA", 65, "ATACANTE"),
+                ],
+            )
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM football_matches WHERE sumula_id=?", (sumula_id,)).fetchone()[0], 3)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM football_lineups").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM football_goals").fetchone()[0], 0)
+
+    def test_invalid_participant_text_import_writes_nothing(self):
+        with app.app_context():
+            db = get_db()
+            second_id = db.execute("INSERT INTO players(name,war_name) VALUES(?,?)", ("Segundo", "Segundo")).lastrowid
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','RASCUNHO',?)",
+                ("2026-09-05", self.user_id),
+            ).lastrowid
+            db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,1)", (sumula_id,))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        rejected = self.client.post(
+            f"/futebol/sumulas/{sumula_id}/importar-participantes-texto",
+            data={"participant_text": "1ª PARTIDA\nD1: Peladeiro\nD1: Segundo"},
+            follow_redirects=True,
+        )
+        self.assertIn("posição D1 repetida na partida 1", rejected.get_data(as_text=True))
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM football_participants WHERE sumula_id=?", (sumula_id,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM football_goals").fetchone()[0], 0)
 
 
 if __name__ == "__main__":
