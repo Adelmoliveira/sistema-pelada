@@ -15,7 +15,8 @@ from src.services.email_reminders import send_gmail_html
 from src.services.push_notifications import send_player_push, send_player_push_once
 from src.services.material_photos import process_material_photo
 from src.services.football_sumula_spreadsheet import (
-    build_template, import_into_sumula, parse_import, parse_participant_text,
+    build_template, import_into_sumula, import_results_into_sumula, parse_import,
+    parse_participant_text, parse_result_text,
 )
 
 bp = Blueprint("football", __name__, url_prefix="/futebol")
@@ -1411,6 +1412,58 @@ def import_sumula_participant_text(sumula_id):
         db.rollback()
         current_app.logger.exception("Erro ao importar participantes por texto na súmula %s: %s", sumula_id, exc)
         flash("Não foi possível importar os participantes. Nenhuma informação foi gravada.", "danger")
+    return redirect(url_for("football.detail", sumula_id=sumula_id))
+
+
+@bp.post("/sumulas/<int:sumula_id>/importar-resultados-texto")
+@roles_allowed("manager", "football_manager")
+def import_sumula_result_text(sumula_id):
+    db = get_db()
+    sumula = db.execute("SELECT id,situacao,locked_at FROM football_sumulas WHERE id=?", (sumula_id,)).fetchone()
+    if not sumula:
+        flash("Súmula não encontrada.", "danger")
+        return redirect(url_for("football.sumulas"))
+    if sumula["locked_at"] or sumula["situacao"] != "RASCUNHO":
+        flash("Os resultados só podem ser importados em uma súmula no estado Rascunho.", "danger")
+        return redirect(url_for("football.detail", sumula_id=sumula_id))
+    participant_ids = [
+        row["player_id"]
+        for row in db.execute("SELECT player_id FROM football_participants WHERE sumula_id=?", (sumula_id,)).fetchall()
+    ]
+    match_numbers = [
+        row["number"]
+        for row in db.execute("SELECT number FROM football_matches WHERE sumula_id=?", (sumula_id,)).fetchall()
+    ]
+    if not participant_ids:
+        flash("Importe ou adicione os participantes antes dos resultados.", "danger")
+        return redirect(url_for("football.detail", sumula_id=sumula_id))
+    try:
+        data = parse_result_text(
+            request.form.get("result_text", ""), _spreadsheet_players(db),
+            participant_ids, match_numbers,
+        )
+        with db:
+            totals = import_results_into_sumula(db, sumula_id, data, g.user["id"])
+            _audit(
+                db, sumula_id, "RESULTADOS_IMPORTADOS_TEXTO",
+                f"{totals['matches']} partidas · {totals['goals']} gols · "
+                f"{totals['referees']} juízes · {totals['cards']} cartões",
+            )
+        flash(
+            f"Resultados importados: {totals['matches']} partida(s), {totals['goals']} gol(s), "
+            f"{totals['referees']} juiz(es) e {totals['cards']} cartão(ões). Confira antes de finalizar.",
+            "success",
+        )
+    except ValueError as exc:
+        db.rollback()
+        messages = str(exc).splitlines()
+        flash(f"Nenhum resultado foi importado. Encontramos {len(messages)} pendência(s):", "danger")
+        for message in messages:
+            flash(message, "warning")
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.exception("Erro ao importar resultados por texto na súmula %s: %s", sumula_id, exc)
+        flash("Não foi possível importar os resultados. Nenhuma informação foi gravada.", "danger")
     return redirect(url_for("football.detail", sumula_id=sumula_id))
 
 

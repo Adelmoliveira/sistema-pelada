@@ -1,6 +1,7 @@
 """Importação simples de participantes de súmulas históricas."""
 
 from io import BytesIO
+from difflib import SequenceMatcher
 import re
 import unicodedata
 
@@ -87,12 +88,49 @@ def _player_resolver(players, errors):
         if len(matches) == 1:
             return next(iter(matches))
         if not matches:
-            errors.append(f"Participantes, linha {row}: peladeiro “{_text(name)}” não encontrado.")
+            suggestion = _closest_player_name(name, players)
+            suffix = f" Você quis dizer “{suggestion}”?" if suggestion else ""
+            errors.append(f"Participantes, linha {row}: peladeiro “{_text(name)}” não encontrado.{suffix}")
         else:
             errors.append(f"Participantes, linha {row}: nome “{_text(name)}” é ambíguo; informe o ID.")
         return None
 
     return resolve
+
+
+def _closest_player_name(name, players):
+    wanted = _key(name)
+    candidates = []
+    for player in players:
+        display = player["war_name"] or player["name"]
+        for candidate in (player["war_name"], player["name"]):
+            if candidate:
+                candidates.append((SequenceMatcher(None, wanted, _key(candidate)).ratio(), display))
+    if not candidates:
+        return None
+    score, display = max(candidates, key=lambda item: item[0])
+    return display if score >= 0.78 else None
+
+
+def _resolve_result_player(name, players, participants, line_number, context, errors, must_participate=True):
+    wanted = _key(name)
+    matches = {}
+    for player in players:
+        if wanted in {_key(player["war_name"]), _key(player["name"])}:
+            matches[int(player["id"])] = player
+    if not matches:
+        suggestion = _closest_player_name(name, players)
+        suffix = f" Você quis dizer “{suggestion}”?" if suggestion else ""
+        errors.append(f"Resultados, linha {line_number}: {context} “{_text(name)}” não encontrado.{suffix}")
+        return None
+    if len(matches) > 1:
+        errors.append(f"Resultados, linha {line_number}: {context} “{_text(name)}” é ambíguo.")
+        return None
+    player_id = next(iter(matches))
+    if must_participate and player_id not in participants:
+        errors.append(f"Resultados, linha {line_number}: {context} “{_text(name)}” não está nos participantes da súmula.")
+        return None
+    return player_id
 
 
 def _validate_participants(raw_rows, players, errors):
@@ -229,6 +267,166 @@ def parse_participant_text(raw_text, players):
         slot, name = participant.groups()
         rows.append((line_number, (current_match, slot, None, name, "CONFIRMADO", "Importado por texto")))
     return _validate_participants(rows, players, errors)
+
+
+def parse_result_text(raw_text, players, participant_ids, available_matches):
+    """Lê placares, gols/assistências, juízes e cartões de um bloco de texto."""
+    errors, matches, goals, referees, cards = [], {}, [], [], []
+    current_match = None
+    current_team = None
+    section = None
+    participant_ids = {int(player_id) for player_id in participant_ids}
+    available_matches = {int(number) for number in available_matches}
+
+    def add_goal(content, line_number):
+        if not current_match or not current_team:
+            errors.append(f"Resultados, linha {line_number}: informe a partida e o time antes do gol.")
+            return
+        normalized = _key(content)
+        goal_match = re.fullmatch(
+            r"(?:\d+\s*O?\s*)?GOL(?:\s+DE)?\s*:?\s*(.+?)(?:\s*\(ASSISTENCIA\s*:\s*(.+?)\))?",
+            normalized,
+        )
+        if not goal_match:
+            errors.append(f"Resultados, linha {line_number}: gol em formato inválido.")
+            return
+        author_name, assist_name = goal_match.groups()
+        author_id = _resolve_result_player(
+            author_name, players, participant_ids, line_number, "autor", errors,
+        )
+        assist_id = None
+        if assist_name:
+            assist_id = _resolve_result_player(
+                assist_name, players, participant_ids, line_number, "assistência", errors,
+            )
+        goals.append({
+            "match": current_match, "team": current_team, "author_id": author_id,
+            "assist_id": assist_id, "line": line_number,
+        })
+
+    for line_number, raw_line in enumerate((raw_text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        normalized = _key(line)
+        heading = re.fullmatch(
+            r"(\d+)\s*A?\s*PARTIDA\s*\(\s*AZUL\s+(\d+)\s*X\s*(\d+)\s+BRANCO\s*\)",
+            normalized,
+        )
+        if heading:
+            number, blue, white = map(int, heading.groups())
+            if number not in available_matches:
+                errors.append(f"Resultados, linha {line_number}: a partida {number} não existe na súmula.")
+            if number in matches:
+                errors.append(f"Resultados, linha {line_number}: placar da partida {number} repetido.")
+            matches[number] = {"number": number, "blue": blue, "white": white}
+            current_match, current_team, section = number, None, None
+            continue
+        if normalized in ("GOLS E ASSISTENCIAS:", "GOLS E ASSISTENCIAS"):
+            section, current_team = "goals", None
+            continue
+        team_line = re.fullmatch(r"TIME\s+(AZUL|BRANCO)\s*:\s*(.*)", normalized)
+        if team_line:
+            current_team = team_line.group(1)
+            section = "goals"
+            if team_line.group(2):
+                add_goal(team_line.group(2), line_number)
+            continue
+        if normalized in ("JUIZES:", "JUIZES"):
+            section, current_team = "referees", None
+            continue
+        card_heading = re.fullmatch(r"CARTAO\s+(AMARELO|AZUL|VERMELHO)\s*:?", normalized)
+        if card_heading:
+            section, current_team = f"card:{card_heading.group(1)}", None
+            continue
+
+        if section == "goals":
+            add_goal(line, line_number)
+        elif section == "referees":
+            player_id = _resolve_result_player(
+                line, players, participant_ids, line_number, "juiz", errors, must_participate=False,
+            )
+            referees.append({"match": current_match, "player_id": player_id, "line": line_number})
+        elif section and section.startswith("card:"):
+            player_id = _resolve_result_player(
+                line, players, participant_ids, line_number, "peladeiro do cartão", errors,
+            )
+            cards.append({
+                "match": current_match, "player_id": player_id,
+                "card": section.split(":", 1)[1], "line": line_number,
+            })
+        else:
+            errors.append(f"Resultados, linha {line_number}: conteúdo fora de uma seção reconhecida.")
+
+    if not matches:
+        errors.append("Informe ao menos uma partida com placar, por exemplo: 1ª PARTIDA (AZUL 1 x 1 BRANCO).")
+    goal_counts = {}
+    for goal in goals:
+        key = (goal["match"], goal["team"])
+        goal_counts[key] = goal_counts.get(key, 0) + 1
+    for number, match in matches.items():
+        for team, score_key in (("AZUL", "blue"), ("BRANCO", "white")):
+            registered = goal_counts.get((number, team), 0)
+            if registered != match[score_key]:
+                errors.append(
+                    f"Partida {number}: o placar do time {team.title()} é {match[score_key]}, "
+                    f"mas foram informados {registered} gol(s)."
+                )
+    for item, label in ((goals, "gol"), (referees, "juiz"), (cards, "cartão")):
+        for row in item:
+            if row["match"] not in matches:
+                errors.append(f"Resultados, linha {row['line']}: {label} sem placar da partida correspondente.")
+    if errors:
+        raise ValueError("\n".join(errors[:30]) + ("\nHá outros erros; corrija os primeiros e tente novamente." if len(errors) > 30 else ""))
+    return {"matches": list(matches.values()), "goals": goals, "referees": referees, "cards": cards}
+
+
+def import_results_into_sumula(db, sumula_id, data, user_id):
+    match_rows = db.execute("SELECT id,number,blue_score,white_score,status FROM football_matches WHERE sumula_id=?", (sumula_id,)).fetchall()
+    match_by_number = {int(row["number"]): row for row in match_rows}
+    match_ids = tuple(int(row["id"]) for row in match_rows)
+    placeholders = ",".join("?" for _ in match_ids)
+    existing_goals = int(db.execute(f"SELECT COUNT(*) FROM football_goals WHERE match_id IN ({placeholders})", match_ids).fetchone()[0] or 0)
+    existing_cards = int(db.execute("SELECT COUNT(*) FROM football_incidents WHERE sumula_id=? AND card!=''", (sumula_id,)).fetchone()[0] or 0)
+    existing_referees = int(db.execute("SELECT COUNT(*) FROM football_responsibles WHERE sumula_id=? AND responsibility_type='ARBITRO_VOLUNTARIO'", (sumula_id,)).fetchone()[0] or 0)
+    changed_scores = any(
+        row["status"] != "PLANEJADA" or int(row["blue_score"] or 0) or int(row["white_score"] or 0)
+        for row in match_rows
+    )
+    if existing_goals or existing_cards or existing_referees or changed_scores:
+        raise ValueError("Os resultados só podem ser importados antes de lançar placares, gols, juízes ou cartões manualmente.")
+
+    for match in data["matches"]:
+        match_id = int(match_by_number[match["number"]]["id"])
+        db.execute(
+            "UPDATE football_matches SET blue_score=?,white_score=?,status='ENCERRADA' WHERE id=?",
+            (match["blue"], match["white"], match_id),
+        )
+    for goal in data["goals"]:
+        db.execute(
+            """INSERT INTO football_goals(
+                match_id,author_player_id,benefited_team,assist_player_id,minute,
+                goal_type,own_goal,observation,created_by
+            ) VALUES(?,?,?,?,NULL,'NORMAL',0,'Importado por texto',?)""",
+            (int(match_by_number[goal["match"]]["id"]), goal["author_id"], goal["team"], goal["assist_id"], user_id),
+        )
+    for referee in data["referees"]:
+        db.execute(
+            "INSERT INTO football_responsibles(sumula_id,match_id,player_id,responsibility_type,observation) VALUES(?,?,?,'ARBITRO_VOLUNTARIO','Importado por texto')",
+            (sumula_id, int(match_by_number[referee["match"]]["id"]), referee["player_id"]),
+        )
+    for card in data["cards"]:
+        card_label = card["card"].title()
+        db.execute(
+            """INSERT INTO football_incidents(
+                sumula_id,match_id,type,level,player_id,card,description,created_by
+            ) VALUES(?,?,'DISCIPLINAR','INFORMATIVO',?,?,?,?)""",
+            (sumula_id, int(match_by_number[card["match"]]["id"]), card["player_id"], card["card"], f"Cartão {card_label}", user_id),
+        )
+    return {
+        "matches": len(data["matches"]), "goals": len(data["goals"]),
+        "referees": len(data["referees"]), "cards": len(data["cards"]),
+    }
 
 
 def import_into_sumula(db, sumula_id, data, user_id):
