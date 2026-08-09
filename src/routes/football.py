@@ -649,6 +649,14 @@ def statistics():
         results_page = max(1, int(request.args.get("results_page", "1")))
     except (TypeError, ValueError):
         results_page = 1
+    match_ranking_page = {}
+    for match_number in (1, 2):
+        try:
+            match_ranking_page[match_number] = max(
+                1, int(request.args.get(f"match{match_number}_page", "1"))
+            )
+        except (TypeError, ValueError):
+            match_ranking_page[match_number] = 1
     try:
         year_int = int(year) if year else None
         month_int = int(month) if month else None
@@ -724,11 +732,23 @@ def statistics():
         report = build_football_stats_pdf(player_stats, totals, filters, local_today())
         return send_file(report, mimetype="application/pdf", as_attachment=False, download_name="estatisticas-futebol.pdf")
     rankings_by_match = _rankings_by_match_number(db, stat_players, fs_filter, fs_params)
+    match_ranking_total = {}
+    match_ranking_pages = {}
+    for match_number in (1, 2):
+        match_ranking_total[match_number] = len(rankings_by_match[match_number])
+        match_ranking_pages[match_number] = max(
+            1, (match_ranking_total[match_number] + 9) // 10
+        )
+        match_ranking_page[match_number] = min(
+            match_ranking_page[match_number], match_ranking_pages[match_number]
+        )
+        offset = (match_ranking_page[match_number] - 1) * 10
+        rankings_by_match[match_number] = rankings_by_match[match_number][offset:offset + 10]
     ranking_total = len(player_stats)
     ranking_pages = max(1, (ranking_total + 14) // 15)
     ranking_page = min(ranking_page, ranking_pages)
     player_stats = player_stats[(ranking_page - 1) * 15:ranking_page * 15]
-    return render_template("football_statistics.html", totals=totals, player_stats=player_stats, rankings_by_match=rankings_by_match, team_results=team_results, players=players, filters=filters, ranking_page=ranking_page, ranking_pages=ranking_pages, ranking_total=ranking_total, results_page=results_page, results_pages=results_pages, team_results_total=team_results_total)
+    return render_template("football_statistics.html", totals=totals, player_stats=player_stats, rankings_by_match=rankings_by_match, match_ranking_page=match_ranking_page, match_ranking_pages=match_ranking_pages, match_ranking_total=match_ranking_total, team_results=team_results, players=players, filters=filters, ranking_page=ranking_page, ranking_pages=ranking_pages, ranking_total=ranking_total, results_page=results_page, results_pages=results_pages, team_results_total=team_results_total)
 
 
 @bp.get("/frequencia")

@@ -3200,6 +3200,60 @@ class MercadoPagoFlowTest(unittest.TestCase):
             html,
         )
 
+    def test_football_statistics_paginates_each_match_ranking_independently(self):
+        with app.app_context():
+            db = get_db()
+            player_ids = []
+            for number in range(1, 13):
+                player_ids.append(
+                    db.execute(
+                        "INSERT INTO players(name,war_name) VALUES(?,?)",
+                        (f"Jogador por partida {number:02d}", f"Partida {number:02d}"),
+                    ).lastrowid
+                )
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES('2026-08-08','SABADO','FINALIZADA',?)",
+                (self.user_id,),
+            ).lastrowid
+            for match_number in (1, 2):
+                match_id = db.execute(
+                    "INSERT INTO football_matches(sumula_id,number,blue_score,white_score,status) VALUES(?,?,2,1,'ENCERRADA')",
+                    (sumula_id, match_number),
+                ).lastrowid
+                for player_id in player_ids:
+                    db.execute(
+                        "INSERT INTO football_lineups(match_id,player_id,team,position) VALUES(?,?,'AZUL','ATACANTE')",
+                        (match_id, player_id),
+                    )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        first_page = self.client.get(
+            "/futebol/estatisticas?year=2026&month=8"
+        ).get_data(as_text=True)
+        self.assertEqual(first_page.count('data-match-ranking-row="1-'), 10)
+        self.assertEqual(first_page.count('data-match-ranking-row="2-'), 10)
+        self.assertIn('data-match-ranking-page="1-1"', first_page)
+        self.assertIn('data-match-ranking-page="2-1"', first_page)
+
+        independent_page = self.client.get(
+            "/futebol/estatisticas?year=2026&month=8&match1_page=2"
+        ).get_data(as_text=True)
+        self.assertEqual(independent_page.count('data-match-ranking-row="1-'), 2)
+        self.assertEqual(independent_page.count('data-match-ranking-row="2-'), 10)
+        self.assertIn('data-match-ranking-page="1-2"', independent_page)
+        self.assertIn('data-match-ranking-page="2-1"', independent_page)
+
+        both_second_pages = self.client.get(
+            "/futebol/estatisticas?year=2026&month=8&match1_page=2&match2_page=2"
+        ).get_data(as_text=True)
+        self.assertEqual(both_second_pages.count('data-match-ranking-row="1-'), 2)
+        self.assertEqual(both_second_pages.count('data-match-ranking-row="2-'), 2)
+        self.assertIn('data-match-ranking-page="1-2"', both_second_pages)
+        self.assertIn('data-match-ranking-page="2-2"', both_second_pages)
+
     def test_transfer_window_lists_only_players_eligible_for_a_new_position(self):
         with app.app_context():
             db = get_db()
