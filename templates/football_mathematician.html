@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}É matemático!!!!{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4"><div><h1 class="mb-1">É matemático!!!!</h1><p class="text-muted mb-0">O equilíbrio das partidas da nossa pelada.</p></div><span class="badge text-bg-primary fs-6">{{total}} partida(s) analisada(s)</span></div>
+<div class="alert alert-info"><strong>Regra:</strong> partida matemática tem diferença de até 2 gols no placar. Acima de 2 gols de diferença, deu zebra.</div>
+<div class="row g-3 mb-4">
+  <div class="col-md-6"><div class="card shadow-sm h-100 border-success"><div class="card-body"><small class="text-muted">Partidas matemáticas</small><div class="d-flex justify-content-between align-items-end gap-3"><strong class="display-4 text-success">{{mathematical_percentage}}%</strong><span class="fs-5">{{mathematical}} de {{total}}</span></div></div></div></div>
+  <div class="col-md-6"><div class="card shadow-sm h-100 border-danger"><div class="card-body"><small class="text-muted">Zebras</small><div class="d-flex justify-content-between align-items-end gap-3"><strong class="display-4 text-danger">{{zebra_percentage}}%</strong><span class="fs-5">{{zebras}} de {{total}}</span></div></div></div></div>
+</div>
+{% if total %}<div class="progress mb-4" style="height:28px" aria-label="Percentuais de partidas matemáticas e zebras"><div class="progress-bar bg-success" style="width:{{mathematical_percentage}}%">{{mathematical_percentage}}%</div><div class="progress-bar bg-danger" style="width:{{zebra_percentage}}%">{{zebra_percentage}}%</div></div>{% endif %}
+<div class="card shadow-sm"><div class="card-header"><strong>Partidas recentes</strong></div><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Data</th><th>Partida</th><th>Placar</th><th>Diferença</th><th>Resultado</th></tr></thead><tbody>{% for row in recent %}<tr data-mathematician-result="{{row.match_date}}-{{row.number}}"><td>{{row.match_date|brdate}}</td><td>Partida {{row.number}}</td><td><span class="text-primary">Azul {{row.blue_score}}</span> × Branco {{row.white_score}}</td><td>{{row.difference}} gol(s)</td><td><span class="badge text-bg-{{'success' if row.mathematical else 'danger'}}">{{'Matemática' if row.mathematical else 'Zebra'}}</span></td></tr>{% else %}<tr><td colspan="5" class="text-center text-muted p-4">Ainda não há partidas finalizadas para calcular.</td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}

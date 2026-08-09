@@ -3132,6 +3132,165 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('data-result-date="2026-08-01"', second_page)
         self.assertNotIn('data-result-date="2026-08-03"', second_page)
 
+    def test_football_statistics_ranks_players_by_first_and_second_match(self):
+        with app.app_context():
+            db = get_db()
+            rival_id = db.execute(
+                "INSERT INTO players(name,war_name) VALUES(?,?)", ("Rival da partida", "Rival")
+            ).lastrowid
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES('2026-08-08','SABADO','FINALIZADA',?)",
+                (self.user_id,),
+            ).lastrowid
+            match_1 = db.execute(
+                "INSERT INTO football_matches(sumula_id,number,blue_score,white_score,status) VALUES(?,1,1,2,'ENCERRADA')",
+                (sumula_id,),
+            ).lastrowid
+            match_2 = db.execute(
+                "INSERT INTO football_matches(sumula_id,number,blue_score,white_score,status) VALUES(?,2,3,1,'ENCERRADA')",
+                (sumula_id,),
+            ).lastrowid
+            for match_id in (match_1, match_2):
+                db.execute(
+                    "INSERT INTO football_lineups(match_id,player_id,team,position) VALUES(?,?,'AZUL','ATACANTE')",
+                    (match_id, self.player_id),
+                )
+                db.execute(
+                    "INSERT INTO football_lineups(match_id,player_id,team,position) VALUES(?,?,'BRANCO','DEFENSOR')",
+                    (match_id, rival_id),
+                )
+            db.execute(
+                "INSERT INTO football_goals(match_id,author_player_id,benefited_team,assist_player_id,goal_type,own_goal) VALUES(?,?,'AZUL',?,'NORMAL',0)",
+                (match_1, self.player_id, rival_id),
+            )
+            db.execute(
+                "INSERT INTO football_goals(match_id,author_player_id,benefited_team,goal_type,own_goal) VALUES(?,?,'BRANCO','CONTRA',1)",
+                (match_1, self.player_id),
+            )
+            db.execute(
+                "INSERT INTO football_goals(match_id,author_player_id,benefited_team,goal_type,own_goal) VALUES(?,?,'AZUL','NORMAL',0)",
+                (match_2, self.player_id),
+            )
+            db.execute(
+                "INSERT INTO football_goals(match_id,author_player_id,benefited_team,goal_type,own_goal) VALUES(?,?,'AZUL','CONTRA',1)",
+                (match_2, rival_id),
+            )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        html = self.client.get("/futebol/estatisticas?year=2026&month=8").get_data(as_text=True)
+        self.assertIn("Ranking por partida", html)
+        self.assertIn('data-match-ranking="1"', html)
+        self.assertIn('data-match-ranking="2"', html)
+        self.assertIn(
+            f'<tr data-match-ranking-row="1-{self.player_id}"><td>Peladeiro</td><td>1</td><td>1</td><td class="">0</td><td class="text-danger fw-semibold">−1</td><td>0</td></tr>',
+            html,
+        )
+        self.assertIn(
+            f'<tr data-match-ranking-row="1-{rival_id}"><td>Rival</td><td>1</td><td>0</td><td class="">0</td><td class="text-muted">0</td><td>1</td></tr>',
+            html,
+        )
+        self.assertIn(
+            f'<tr data-match-ranking-row="2-{self.player_id}"><td>Peladeiro</td><td>1</td><td>0</td><td class="">1</td><td class="text-muted">0</td><td>0</td></tr>',
+            html,
+        )
+        self.assertIn(
+            f'<tr data-match-ranking-row="2-{rival_id}"><td>Rival</td><td>1</td><td>1</td><td class="text-danger fw-semibold">-1</td><td class="text-danger fw-semibold">−1</td><td>0</td></tr>',
+            html,
+        )
+
+    def test_transfer_window_lists_only_players_eligible_for_a_new_position(self):
+        with app.app_context():
+            db = get_db()
+            eligible_id = db.execute(
+                "INSERT INTO players(name,war_name,football_position,football_join_date) VALUES(?,?,?,?)",
+                ("Apto transferência", "Apto", "DEFESA", "2025-01-01"),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO players(name,war_name,football_position,football_join_date) VALUES(?,?,?,?)",
+                ("Sem tempo mínimo", "Recente", "DEFESA", local_today().isoformat()),
+            )
+            db.execute(
+                "INSERT INTO players(name,war_name,football_position,football_join_date) VALUES(?,?,?,?)",
+                ("Sem frequência", "Ausente", "DEFESA", "2025-01-01"),
+            )
+            db.execute(
+                "INSERT INTO players(name,football_position) VALUES(?,?)",
+                ("Defensor de apoio", "DEFESA"),
+            )
+            for index in range(3):
+                db.execute(
+                    "INSERT INTO players(name,football_position) VALUES(?,?)",
+                    (f"Meio de apoio {index}", "MEIO"),
+                )
+                db.execute(
+                    "INSERT INTO players(name,football_position) VALUES(?,?)",
+                    (f"Atacante de apoio {index}", "ATAQUE"),
+                )
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','FINALIZADA',?)",
+                (local_today().isoformat(), self.user_id),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO football_participants(sumula_id,player_id,status) VALUES(?,?,'CONFIRMADO')",
+                (sumula_id, eligible_id),
+            )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        html = self.client.get("/futebol/transferencia").get_data(as_text=True)
+        self.assertIn("Peladeiros aptos à transferência", html)
+        self.assertIn(f'data-eligible-transfer-player="{eligible_id}"', html)
+        self.assertIn("Apto", html)
+        self.assertIn("Disponível para solicitar", html)
+        self.assertIn("Meio", html)
+        self.assertIn("Ataque", html)
+        self.assertNotIn("Recente", html)
+        self.assertNotIn("Ausente", html)
+
+    def test_client_mathematician_menu_shows_mathematical_and_zebra_percentages(self):
+        with app.app_context():
+            db = get_db()
+            client_user_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("matematico", "Cliente matemático", "hash", self.player_id),
+            ).lastrowid
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES('2026-08-08','SABADO','FINALIZADA',?)",
+                (self.user_id,),
+            ).lastrowid
+            for number, blue_score, white_score in ((1, 3, 2), (2, 4, 2), (3, 5, 2)):
+                db.execute(
+                    "INSERT INTO football_matches(sumula_id,number,blue_score,white_score,status) VALUES(?,?,?,?,'ENCERRADA')",
+                    (sumula_id, number, blue_score, white_score),
+                )
+            ignored_sumula = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES('2026-08-09','SABADO','RASCUNHO',?)",
+                (self.user_id,),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO football_matches(sumula_id,number,blue_score,white_score,status) VALUES(?,1,9,0,'ENCERRADA')",
+                (ignored_sumula,),
+            )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_user_id
+        response = self.client.get("/futebol/e-matematico")
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("É matemático!!!!", html)
+        self.assertIn('href="/futebol/e-matematico"', html)
+        self.assertIn("66.7%", html)
+        self.assertIn("33.3%", html)
+        self.assertIn("2 de 3", html)
+        self.assertIn("1 de 3", html)
+        self.assertEqual(html.count('data-mathematician-result="'), 3)
+        self.assertIn("Matemática", html)
+        self.assertIn("Zebra", html)
+
     def test_third_match_accepts_participant_orders_45_to_66(self):
         with app.app_context():
             db = get_db()

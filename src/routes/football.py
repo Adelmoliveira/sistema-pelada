@@ -35,6 +35,76 @@ WEEKDAY_LABELS = ("Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "
 PARTICIPANTS_PER_MATCH = 22
 
 
+def _rankings_by_match_number(db, players, fs_filter="", fs_params=()):
+    player_by_id = {int(player["id"]): player for player in players}
+    stats = {1: {}, 2: {}}
+
+    def player_stats(match_number, player_id):
+        if player_id is None or int(player_id) not in player_by_id:
+            return None
+        player_id = int(player_id)
+        return stats[match_number].setdefault(player_id, {
+            "id": player_id,
+            "name": player_by_id[player_id]["name"],
+            "war_name": player_by_id[player_id]["war_name"],
+            "jogos": 0,
+            "derrotas": 0,
+            "gols": 0,
+            "gols_contra": 0,
+            "assistencias": 0,
+        })
+
+    lineup_rows = db.execute("""SELECT DISTINCT fl.player_id,fl.match_id,fl.team,
+            fm.number,fm.blue_score,fm.white_score
+        FROM football_lineups fl
+        JOIN football_matches fm ON fm.id=fl.match_id AND fm.status='ENCERRADA'
+        JOIN football_sumulas fs ON fs.id=fm.sumula_id AND fs.situacao='FINALIZADA'
+        WHERE fm.number IN (1,2)""" + fs_filter, tuple(fs_params)).fetchall()
+    for game in lineup_rows:
+        match_number = int(game["number"])
+        row = player_stats(match_number, game["player_id"])
+        if not row:
+            continue
+        row["jogos"] += 1
+        own_score, opponent_score = (
+            (int(game["blue_score"] or 0), int(game["white_score"] or 0))
+            if game["team"] == "AZUL"
+            else (int(game["white_score"] or 0), int(game["blue_score"] or 0))
+        )
+        if own_score < opponent_score:
+            row["derrotas"] += 1
+
+    goal_rows = db.execute("""SELECT fg.author_player_id,fg.assist_player_id,
+            fg.goal_type,fg.own_goal,fm.number
+        FROM football_goals fg
+        JOIN football_matches fm ON fm.id=fg.match_id AND fm.status='ENCERRADA'
+        JOIN football_sumulas fs ON fs.id=fm.sumula_id AND fs.situacao='FINALIZADA'
+        WHERE fm.number IN (1,2)""" + fs_filter, tuple(fs_params)).fetchall()
+    for goal in goal_rows:
+        match_number = int(goal["number"])
+        own_goal = goal["goal_type"] == "CONTRA" or int(goal["own_goal"] or 0) == 1
+        author = player_stats(match_number, goal["author_player_id"])
+        if author:
+            author["gols"] += -1 if own_goal else 1
+            if own_goal:
+                author["gols_contra"] += 1
+        if not own_goal and goal["goal_type"] == "NORMAL":
+            assistant = player_stats(match_number, goal["assist_player_id"])
+            if assistant:
+                assistant["assistencias"] += 1
+
+    rankings = {}
+    for match_number in (1, 2):
+        rankings[match_number] = sorted(
+            stats[match_number].values(),
+            key=lambda item: (
+                -item["gols"], -item["assistencias"], -item["jogos"],
+                item["derrotas"], (item["war_name"] or item["name"]).lower(),
+            ),
+        )
+    return rankings
+
+
 def _normalize_goal_type(raw, own_goal=False):
     value = (raw or "").strip().upper()
     if value in ("OWN_GOAL", "OWN", "GOL_CONTRA"):
@@ -226,11 +296,15 @@ def _transfer_window(today=None, db=None):
     return {"is_open": is_open, "year": today.year if is_open else next_year, "next_date": date(next_year, 2, 1), "manual_override": False}
 
 
-def _transfer_metrics(db, player):
-    total = int(db.execute("SELECT COUNT(*) FROM football_sumulas WHERE situacao='FINALIZADA'", ()).fetchone()[0] or 0)
-    attended = int(db.execute("""SELECT COUNT(DISTINCT fp.sumula_id) FROM football_participants fp
-        JOIN football_sumulas fs ON fs.id=fp.sumula_id
-        WHERE fp.player_id=? AND fp.status='CONFIRMADO' AND fs.situacao='FINALIZADA'""", (player["id"],)).fetchone()[0] or 0)
+def _transfer_metrics(db, player, total=None, attendance_by_player=None):
+    if total is None:
+        total = int(db.execute("SELECT COUNT(*) FROM football_sumulas WHERE situacao='FINALIZADA'", ()).fetchone()[0] or 0)
+    if attendance_by_player is None:
+        attended = int(db.execute("""SELECT COUNT(DISTINCT fp.sumula_id) FROM football_participants fp
+            JOIN football_sumulas fs ON fs.id=fp.sumula_id
+            WHERE fp.player_id=? AND fp.status='CONFIRMADO' AND fs.situacao='FINALIZADA'""", (player["id"],)).fetchone()[0] or 0)
+    else:
+        attended = int(attendance_by_player.get(int(player["id"]), 0))
     joined = (player["football_join_date"] or "").strip()
     tenure_months = None
     try:
@@ -254,9 +328,9 @@ def _transfer_metrics(db, player):
             "frequency": frequency, "frequency_missing_points": max(0, round(40 - frequency, 1)), "attended": attended, "total_sumulas": total}
 
 
-def _transfer_analysis(db, player, requested_position):
-    metrics = _transfer_metrics(db, player)
-    counts = {key: int(db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND football_position=?", (key,)).fetchone()[0] or 0) for key in TRANSFER_POSITIONS}
+def _transfer_analysis(db, player, requested_position, metrics=None, counts=None):
+    metrics = metrics or _transfer_metrics(db, player)
+    counts = counts or {key: int(db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND football_position=?", (key,)).fetchone()[0] or 0) for key in TRANSFER_POSITIONS}
     current = (player["football_position"] or "").strip().upper()
     projected = dict(counts)
     if current in projected:
@@ -298,6 +372,58 @@ def _transfer_analysis(db, player, requested_position):
         recommendation_reason = "Atende às regras mínimas de tempo de pelada (4 meses ou mais), frequência (40% ou mais) e equilíbrio 40/30/30 (defesa/meio/ataque)."
     return {"metrics": metrics, "impact": impact, "recommendation": recommendation, "recommendation_reason": recommendation_reason,
             "criteria": criteria, "max_deviation": round(max_deviation, 1)}
+
+
+def _eligible_transfer_players(db, window_year, counts):
+    requests = {
+        int(row["player_id"]): row["status"]
+        for row in db.execute(
+            "SELECT player_id,status FROM football_transfer_requests WHERE window_year=?",
+            (window_year,),
+        ).fetchall()
+    }
+    candidates = db.execute("""SELECT id,name,war_name,football_position,football_join_date
+        FROM players
+        WHERE active=1 AND gender!='female' AND membership_type!='veteran'
+          AND football_position IN ('DEFESA','MEIO','ATAQUE')
+        ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)""").fetchall()
+    total_sumulas = int(db.execute(
+        "SELECT COUNT(*) FROM football_sumulas WHERE situacao='FINALIZADA'"
+    ).fetchone()[0] or 0)
+    attendance_by_player = {
+        int(row["player_id"]): int(row["attended"] or 0)
+        for row in db.execute("""SELECT fp.player_id,COUNT(DISTINCT fp.sumula_id) attended
+            FROM football_participants fp
+            JOIN football_sumulas fs ON fs.id=fp.sumula_id
+            WHERE fp.status='CONFIRMADO' AND fs.situacao='FINALIZADA'
+            GROUP BY fp.player_id""").fetchall()
+    }
+    eligible = []
+    for player in candidates:
+        current_position = (player["football_position"] or "").strip().upper()
+        metrics = _transfer_metrics(
+            db, player, total=total_sumulas, attendance_by_player=attendance_by_player
+        )
+        destinations = []
+        for requested_position in TRANSFER_POSITIONS:
+            if requested_position == current_position:
+                continue
+            analysis = _transfer_analysis(
+                db, player, requested_position, metrics=metrics, counts=counts
+            )
+            if analysis["criteria"]["eligible"]:
+                destinations.append(requested_position)
+        if destinations:
+            eligible.append({
+                "id": player["id"],
+                "name": player["name"],
+                "war_name": player["war_name"],
+                "current_position": current_position,
+                "metrics": metrics,
+                "destinations": destinations,
+                "request_status": requests.get(int(player["id"])),
+            })
+    return eligible
 
 
 def _notify_transfer(current_app, recipient, subject, text, status="PENDENTE"):
@@ -559,7 +685,11 @@ def statistics():
     player_params = []
     if player_int:
         player_where += " AND id=?"; player_params.append(player_int)
-    for player in db.execute(f"SELECT id,name,war_name FROM players {player_where} ORDER BY LOWER(name)", tuple(player_params)).fetchall():
+    stat_players = db.execute(
+        f"SELECT id,name,war_name FROM players {player_where} ORDER BY LOWER(name)",
+        tuple(player_params),
+    ).fetchall()
+    for player in stat_players:
         participacoes = int(db.execute(f"SELECT COUNT(DISTINCT fp.sumula_id) FROM football_participants fp JOIN football_sumulas fs ON fs.id=fp.sumula_id WHERE fp.player_id=? AND fp.status='CONFIRMADO' AND fs.situacao='FINALIZADA'{fs_filter}", (player["id"], *fs_params)).fetchone()[0] or 0)
         games = db.execute("""SELECT DISTINCT fl.match_id,fl.team,fm.blue_score,fm.white_score FROM football_lineups fl
             JOIN football_matches fm ON fm.id=fl.match_id AND fm.status='ENCERRADA'
@@ -593,11 +723,12 @@ def statistics():
     if request.args.get("pdf") == "1":
         report = build_football_stats_pdf(player_stats, totals, filters, local_today())
         return send_file(report, mimetype="application/pdf", as_attachment=False, download_name="estatisticas-futebol.pdf")
+    rankings_by_match = _rankings_by_match_number(db, stat_players, fs_filter, fs_params)
     ranking_total = len(player_stats)
     ranking_pages = max(1, (ranking_total + 14) // 15)
     ranking_page = min(ranking_page, ranking_pages)
     player_stats = player_stats[(ranking_page - 1) * 15:ranking_page * 15]
-    return render_template("football_statistics.html", totals=totals, player_stats=player_stats, team_results=team_results, players=players, filters=filters, ranking_page=ranking_page, ranking_pages=ranking_pages, ranking_total=ranking_total, results_page=results_page, results_pages=results_pages, team_results_total=team_results_total)
+    return render_template("football_statistics.html", totals=totals, player_stats=player_stats, rankings_by_match=rankings_by_match, team_results=team_results, players=players, filters=filters, ranking_page=ranking_page, ranking_pages=ranking_pages, ranking_total=ranking_total, results_page=results_page, results_pages=results_pages, team_results_total=team_results_total)
 
 
 @bp.get("/frequencia")
@@ -693,6 +824,42 @@ def client_panel():
         historical = db.execute("SELECT COALESCE(SUM(goals),0) goals,COALESCE(SUM(assists),0) assists FROM football_historical_stats WHERE player_id=?", (player_id,)).fetchone()
         own["gols"] += int(historical["goals"] or 0); own["assistencias"] += int(historical["assists"] or 0)
     return render_template("football_client_panel.html", data=data, own=own, player_id=player_id)
+
+
+@bp.get("/e-matematico")
+@roles_allowed("client")
+def mathematician():
+    db = get_db()
+    totals = db.execute("""SELECT COUNT(*) total,
+            COALESCE(SUM(CASE WHEN ABS(COALESCE(fm.blue_score,0)-COALESCE(fm.white_score,0))<=2 THEN 1 ELSE 0 END),0) mathematical
+        FROM football_matches fm
+        JOIN football_sumulas fs ON fs.id=fm.sumula_id
+        WHERE fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'""").fetchone()
+    total = int(totals["total"] or 0)
+    mathematical = int(totals["mathematical"] or 0)
+    zebras = max(0, total - mathematical)
+    mathematical_percentage = round(mathematical / total * 100, 1) if total else 0
+    zebra_percentage = round(zebras / total * 100, 1) if total else 0
+    recent_rows = db.execute("""SELECT fm.number,fm.blue_score,fm.white_score,fs.match_date
+        FROM football_matches fm
+        JOIN football_sumulas fs ON fs.id=fm.sumula_id
+        WHERE fm.status='ENCERRADA' AND fs.situacao='FINALIZADA'
+        ORDER BY fs.match_date DESC,fm.number DESC,fm.id DESC LIMIT 10""").fetchall()
+    recent = []
+    for row in recent_rows:
+        item = dict(row)
+        item["difference"] = abs(int(row["blue_score"] or 0) - int(row["white_score"] or 0))
+        item["mathematical"] = item["difference"] <= 2
+        recent.append(item)
+    return render_template(
+        "football_mathematician.html",
+        total=total,
+        mathematical=mathematical,
+        zebras=zebras,
+        mathematical_percentage=mathematical_percentage,
+        zebra_percentage=zebra_percentage,
+        recent=recent,
+    )
 
 
 @bp.route("/transferencia", methods=["GET", "POST"])
@@ -801,7 +968,8 @@ def transfer_window():
                 player_analysis.append(analysis)
     rows = _transfer_rows(db, window["year"]) if is_manager else []
     position_counts = {key: int(db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND football_position=?", (key,)).fetchone()[0] or 0) for key in TRANSFER_POSITIONS}
-    return render_template("football_transfer.html", window=window, is_manager=is_manager, player=player, own_request=own_request, own_history=own_history, player_analysis=player_analysis, rows=rows, transfer_positions=TRANSFER_POSITIONS, transfer_statuses=TRANSFER_STATUSES, position_counts=position_counts)
+    eligible_players = _eligible_transfer_players(db, window["year"], position_counts) if is_manager else []
+    return render_template("football_transfer.html", window=window, is_manager=is_manager, player=player, own_request=own_request, own_history=own_history, player_analysis=player_analysis, rows=rows, eligible_players=eligible_players, transfer_positions=TRANSFER_POSITIONS, transfer_statuses=TRANSFER_STATUSES, position_counts=position_counts)
 
 
 @bp.route("/notificacoes", methods=["GET", "POST"])
