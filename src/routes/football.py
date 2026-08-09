@@ -1590,6 +1590,67 @@ def detail(sumula_id):
                         (match_id, player_id, *lineup_values, period),
                     )
                     _audit(db, sumula_id, "ESCALACAO_ADICIONADA", f"{player_id} · Tempo {period}")
+            elif action == "bulk_lineup":
+                match_id = int(request.form.get("match_id", "0"))
+                period = int(request.form.get("period", "0"))
+                if period not in (1, 2):
+                    raise ValueError("O tempo da partida é inválido.")
+                if not db.execute(
+                    "SELECT 1 FROM football_matches WHERE id=? AND sumula_id=?",
+                    (match_id, sumula_id),
+                ).fetchone():
+                    raise ValueError("Partida inválida para esta súmula.")
+
+                participants_by_id = {
+                    int(row["player_id"]): row
+                    for row in db.execute(
+                        "SELECT fp.player_id,fp.draw_order,fp.preferred_position,p.football_position "
+                        "FROM football_participants fp JOIN players p ON p.id=fp.player_id "
+                        "WHERE fp.sumula_id=?",
+                        (sumula_id,),
+                    ).fetchall()
+                }
+                assignments = []
+                for key, team in request.form.items():
+                    if not key.startswith("assignment_") or not team:
+                        continue
+                    try:
+                        player_id = int(key.removeprefix("assignment_"))
+                    except ValueError as exc:
+                        raise ValueError("Peladeiro inválido na escalação.") from exc
+                    participant = participants_by_id.get(player_id)
+                    if not participant:
+                        raise ValueError("Escale somente peladeiros participantes desta súmula.")
+                    if team not in TEAMS:
+                        raise ValueError("Time inválido na escalação.")
+                    position = _lineup_position(
+                        request.form.get(f"position_{player_id}")
+                        or participant["preferred_position"]
+                        or participant["football_position"]
+                    )
+                    if position not in ("GOLEIRO", "DEFENSOR", "MEIO_CAMPO", "ATACANTE"):
+                        raise ValueError("Defina uma posição válida para todos os peladeiros escalados.")
+                    assignments.append((player_id, team, position, participant["draw_order"]))
+
+                # A tela representa a escalação completa da partida e do
+                # tempo selecionados. Assim, marcar "Não escalado" remove a
+                # escalação anterior do peladeiro neste recorte.
+                db.execute(
+                    "DELETE FROM football_lineups WHERE match_id=? AND period=?",
+                    (match_id, period),
+                )
+                for player_id, team, position, draw_order in assignments:
+                    db.execute(
+                        "INSERT INTO football_lineups(match_id,player_id,team,position,draw_order,period) "
+                        "VALUES(?,?,?,?,?,?)",
+                        (match_id, player_id, team, position, draw_order, period),
+                    )
+                blue_count = sum(1 for assignment in assignments if assignment[1] == "AZUL")
+                white_count = sum(1 for assignment in assignments if assignment[1] == "BRANCO")
+                _audit(
+                    db, sumula_id, "ESCALACAO_EM_LOTE",
+                    f"Partida {match_id} · Tempo {period} · Azul {blue_count} · Branco {white_count}",
+                )
             elif action == "remove_lineup":
                 lineup_id = int(request.form["lineup_id"])
                 db.execute("DELETE FROM football_lineups WHERE id=? AND match_id IN (SELECT id FROM football_matches WHERE sumula_id=?)", (lineup_id, sumula_id))
@@ -1792,9 +1853,18 @@ def detail(sumula_id):
             flash("Súmula atualizada.", "success")
         except (ValueError, KeyError) as exc:
             db.rollback(); flash(str(exc), "danger")
-        return redirect(url_for("football.detail", sumula_id=sumula_id))
+        target = url_for("football.detail", sumula_id=sumula_id)
+        if request.form.get("action") == "bulk_lineup":
+            target += "#lineup-management"
+        return redirect(target)
     players = db.execute("SELECT id,name,war_name,football_position FROM players WHERE active=1 AND gender!='female' AND membership_type!='veteran' AND COALESCE(football_position,'')!='APOSENTADO' ORDER BY LOWER(COALESCE(war_name,name)),LOWER(name)").fetchall()
     player_positions = {str(player["id"]): _lineup_position(player["football_position"]) for player in players}
+    participant_positions = {
+        str(participant["player_id"]): _lineup_position(
+            participant["preferred_position"] or participant["football_position"]
+        )
+        for participant in data[1]
+    }
     used_orders = {int(row["draw_order"]) for row in db.execute("SELECT draw_order FROM football_participants WHERE sumula_id=? AND draw_order IS NOT NULL", (sumula_id,)).fetchall()}
     max_draw_order = PARTICIPANTS_PER_MATCH * max(
         (int(item["row"]["number"]) for item in data[2]),
@@ -1809,7 +1879,7 @@ def detail(sumula_id):
         observation = responsible["observation"] or ""
         if observation.startswith("REGRA_AUTOMATICA_"):
             auto_roles.append({"role": "Goleiro" if "_GOLEIRO_" in observation else "Juiz", "name": responsible["war_name"] or responsible["name"] or "Não informado"})
-    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, max_draw_order=max_draw_order, used_draw_orders=sorted(used_orders), situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, goal_types=GOAL_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=1, score_mismatches=score_mismatches)
+    return render_template("football_detail.html", data=data, players=players, player_positions=player_positions, participant_positions=participant_positions, fallback_roles=_fallback_roles(db, sumula_id), auto_roles=auto_roles, next_draw_order=next_draw_order, max_draw_order=max_draw_order, used_draw_orders=sorted(used_orders), situations=SITUATIONS, participant_statuses=PARTICIPANT_STATUSES, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, incident_levels=INCIDENT_LEVELS, card_types=CARD_TYPES, goal_types=GOAL_TYPES, audit_page=min(audit_page, audit_pages), audit_pages=1, score_mismatches=score_mismatches)
 
 
 @bp.get("/sumulas/<int:sumula_id>/imprimir")
