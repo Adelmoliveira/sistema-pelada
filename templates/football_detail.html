@@ -18,6 +18,80 @@ if(addMatchForm){addMatchForm.querySelector('input[name="action"]').value='secon
 <script>
 (()=>{const labelFor=(order,match)=>{const n=Number(order), local=match===2?n-22:match===3?n-44:n;if(local>=1&&local<=2)return `G${local}`;if(local>=3&&local<=10)return `D${local-2}`;if(local>=11&&local<=16)return `M${local-10}`;if(local>=17&&local<=22)return `A${local-16}`;return ''};document.querySelectorAll('.participant-match-pane').forEach((pane)=>{const match=pane.id.endsWith('-3')?3:pane.id.endsWith('-2')?2:1;pane.querySelectorAll('.list-group-item').forEach((item)=>{const input=item.querySelector('input[name="draw_order"]');const strong=item.querySelector('strong');const label=input&&strong?labelFor(input.value,match):'';if(label)strong.textContent=label;});});})();
 </script>
+<div class="modal fade" id="bulk-lineup-modal" tabindex="-1" aria-labelledby="bulk-lineup-title" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable modal-fullscreen-sm-down">
+    <div class="modal-content">
+      <form method="post" id="bulk-lineup-form">
+        <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+        <input type="hidden" name="action" value="bulk_lineup">
+        <div class="modal-header">
+          <div>
+            <h2 class="modal-title fs-5" id="bulk-lineup-title">Montar escalação</h2>
+            <div class="small text-muted">Escolha um time ou deixe o peladeiro não escalado.</div>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-2 mb-3 sticky-top bg-body py-2 bulk-lineup-toolbar">
+            <div class="col-sm-4">
+              <label class="form-label small mb-1" for="bulk-lineup-match">Partida</label>
+              <select class="form-select" id="bulk-lineup-match" name="match_id" required>
+                {% for item in matches %}<option value="{{item['row']['id']}}">{{item['row']['number']}}ª partida</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-sm-3">
+              <label class="form-label small mb-1" for="bulk-lineup-period">Tempo</label>
+              <select class="form-select" id="bulk-lineup-period" name="period" required>
+                <option value="1">Tempo 1</option><option value="2">Tempo 2</option>
+              </select>
+            </div>
+            <div class="col-sm-5">
+              <label class="form-label small mb-1" for="bulk-lineup-search">Buscar peladeiro</label>
+              <input class="form-control" id="bulk-lineup-search" type="search" placeholder="Digite o nome">
+            </div>
+            <div class="col-12 d-flex flex-wrap gap-2" aria-live="polite">
+              <span class="badge rounded-pill text-bg-primary px-3 py-2">Azul: <span id="bulk-blue-count">0</span></span>
+              <span class="badge rounded-pill border text-dark bg-white px-3 py-2">Branco: <span id="bulk-white-count">0</span></span>
+              <span class="badge rounded-pill text-bg-secondary px-3 py-2">Não escalados: <span id="bulk-none-count">{{participants|length}}</span></span>
+            </div>
+          </div>
+          <div class="bulk-lineup-list">
+            {% for p in participants %}
+            <div class="bulk-lineup-player border rounded-3 p-3 mb-2" data-player-id="{{p['player_id']}}" data-player-name="{{(p['war_name'] or p['name'])|lower}}">
+              <div class="row g-2 align-items-center">
+                <div class="col-lg-4">
+                  <strong>{{p['war_name'] or p['name']}}</strong>
+                  <small class="text-muted d-block">{% if p['draw_order'] %}Ordem {{p['draw_order']}} · {% endif %}{{positions.get(p['preferred_position'] or p['football_position'], p['preferred_position'] or p['football_position'] or 'Posição não definida')}}</small>
+                </div>
+                <div class="col-lg-5">
+                  <div class="btn-group w-100" role="group" aria-label="Time de {{p['war_name'] or p['name']}}">
+                    <input class="btn-check" type="radio" name="assignment_{{p['player_id']}}" id="lineup-none-{{p['player_id']}}" value="" checked>
+                    <label class="btn btn-outline-secondary" for="lineup-none-{{p['player_id']}}">Não escalado</label>
+                    <input class="btn-check" type="radio" name="assignment_{{p['player_id']}}" id="lineup-blue-{{p['player_id']}}" value="AZUL">
+                    <label class="btn btn-outline-primary" for="lineup-blue-{{p['player_id']}}">Azul</label>
+                    <input class="btn-check" type="radio" name="assignment_{{p['player_id']}}" id="lineup-white-{{p['player_id']}}" value="BRANCO">
+                    <label class="btn btn-outline-dark" for="lineup-white-{{p['player_id']}}">Branco</label>
+                  </div>
+                </div>
+                <div class="col-lg-3">
+                  <label class="visually-hidden" for="lineup-position-{{p['player_id']}}">Posição</label>
+                  <select class="form-select" id="lineup-position-{{p['player_id']}}" name="position_{{p['player_id']}}">
+                    <option value="GOLEIRO">Goleiro</option><option value="DEFENSOR">Defensor</option><option value="MEIO_CAMPO">Meio-campo</option><option value="ATACANTE">Atacante</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            {% else %}<div class="alert alert-info mb-0">Adicione participantes antes de montar a escalação.</div>{% endfor %}
+          </div>
+        </div>
+        <div class="modal-footer justify-content-between">
+          <span class="small text-muted">Ao salvar, esta será a escalação completa do tempo selecionado.</span>
+          <div class="d-flex gap-2"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button><button type="submit" class="btn btn-primary" {% if not participants or sumula['locked_at'] or sumula['situacao'] in ('FINALIZADA','CANCELADA') %}disabled{% endif %}>Salvar escalação</button></div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 {% endblock %}
 {% block scripts %}<style>
 /* Keep participant controls in a stable right-hand column.  The order field,
@@ -52,6 +126,14 @@ if(addMatchForm){addMatchForm.querySelector('input[name="action"]').value='secon
   .participant-order-row > form:not(.delete-participant-form) { grid-column: 2; width: auto; }
   .participant-match-pane .list-group-item > form.delete-participant-form,
   .participant-order-row > form.delete-participant-form { grid-column: 2; width: auto; }
+}
+.bulk-lineup-toolbar { z-index: 2; border-bottom: 1px solid var(--bs-border-color); }
+.bulk-lineup-player { transition: border-color .15s ease, background-color .15s ease; }
+.bulk-lineup-player:has(input[value="AZUL"]:checked) { border-color: var(--bs-primary) !important; background: rgba(var(--bs-primary-rgb), .05); }
+.bulk-lineup-player:has(input[value="BRANCO"]:checked) { border-color: var(--bs-dark) !important; background: var(--bs-tertiary-bg); }
+@media (max-width: 575.98px) {
+  .bulk-lineup-player .btn { padding-left: .45rem; padding-right: .45rem; font-size: .84rem; }
+  .bulk-lineup-toolbar { position: static !important; }
 }
 </style><script>
 const footballPage=document.querySelector('main')||document.body;
@@ -99,6 +181,53 @@ const lineupPlayer=lineupForm?.querySelector('select[name="player_id"]');
 const lineupPosition=lineupForm?.querySelector('select[name="position"]');
 if(lineupForm&&!lineupForm.querySelector('select[name="period"]')){const wrapper=document.createElement('div');wrapper.className='col-md-2';wrapper.innerHTML='<select class="form-select" name="period" aria-label="Tempo da partida"><option value="" selected>Selecionar tempo (opcional)</option><option value="1">Tempo 1</option><option value="2">Tempo 2</option></select>';lineupPosition?.closest('[class*="col-"]')?.after(wrapper);}
 if(lineupPlayer&&lineupPosition){const fillLineupPosition=()=>{const position=playerPositions[lineupPlayer.value];if(position) lineupPosition.value=position;};lineupPlayer.addEventListener('change',fillLineupPosition);fillLineupPosition();}
+const bulkLineups=[{% for item in matches %}{% for lineup in item['lineups'] %}{matchId:{{item['row']['id']}},period:{{lineup['period']}},playerId:{{lineup['player_id']}},team:{{lineup['team']|tojson}},position:{{lineup['position']|tojson}}},{% endfor %}{% endfor %}];
+const bulkParticipantPositions={{participant_positions|tojson}};
+const bulkForm=document.getElementById('bulk-lineup-form');
+const bulkMatch=document.getElementById('bulk-lineup-match');
+const bulkPeriod=document.getElementById('bulk-lineup-period');
+const bulkRows=[...document.querySelectorAll('.bulk-lineup-player')];
+const lineupCard=lineupForm?.closest('.card');
+if(lineupCard){
+  lineupCard.id='lineup-management';
+  const header=lineupCard.querySelector('.card-header');
+  if(header){
+    header.classList.add('d-flex','flex-wrap','justify-content-between','align-items-center','gap-2');
+    const openBulk=document.createElement('button');
+    openBulk.type='button';openBulk.className='btn btn-primary';openBulk.textContent='Montar escalação';
+    openBulk.addEventListener('click',()=>bootstrap.Modal.getOrCreateInstance(document.getElementById('bulk-lineup-modal')).show());
+    openBulk.disabled={{(not participants or sumula['locked_at'] or sumula['situacao'] in ('FINALIZADA','CANCELADA'))|tojson}};
+    header.appendChild(openBulk);
+  }
+}
+/* O modal substitui o antigo cadastro de um peladeiro por vez. Mantemos a
+   ação no servidor apenas para compatibilidade, mas removemos o formulário
+   redundante da interface. */
+lineupForm?.remove();
+const updateBulkCounts=()=>{
+  const selected=(team)=>bulkRows.filter(row=>row.querySelector(`input[value="${team}"]`)?.checked).length;
+  const blue=selected('AZUL'),white=selected('BRANCO');
+  const blueCount=document.getElementById('bulk-blue-count');const whiteCount=document.getElementById('bulk-white-count');const noneCount=document.getElementById('bulk-none-count');
+  if(blueCount)blueCount.textContent=blue;if(whiteCount)whiteCount.textContent=white;if(noneCount)noneCount.textContent=bulkRows.length-blue-white;
+  bulkRows.forEach(row=>{const position=row.querySelector('select[name^="position_"]');if(position)position.disabled=!!row.querySelector('input[value=""]:checked');});
+};
+const loadBulkLineup=()=>{
+  const matchId=Number(bulkMatch?.value),period=Number(bulkPeriod?.value);
+  bulkRows.forEach(row=>{
+    const playerId=Number(row.dataset.playerId);const saved=bulkLineups.find(item=>item.matchId===matchId&&item.period===period&&item.playerId===playerId);
+    const team=saved?.team||'';const radio=row.querySelector(`input[value="${team}"]`);if(radio)radio.checked=true;
+    const position=row.querySelector('select[name^="position_"]');if(position)position.value=saved?.position||bulkParticipantPositions[String(playerId)]||'DEFENSOR';
+  });
+  updateBulkCounts();
+};
+bulkMatch?.addEventListener('change',loadBulkLineup);bulkPeriod?.addEventListener('change',loadBulkLineup);
+bulkForm?.addEventListener('change',(event)=>{if(event.target.matches('input[name^="assignment_"]'))updateBulkCounts();});
+document.getElementById('bulk-lineup-search')?.addEventListener('input',(event)=>{
+  const term=event.target.value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+  bulkRows.forEach(row=>{const name=row.dataset.playerName.normalize('NFD').replace(/[\u0300-\u036f]/g,'');row.hidden=!!term&&!name.includes(term);});
+});
+document.getElementById('bulk-lineup-modal')?.addEventListener('show.bs.modal',loadBulkLineup);
+loadBulkLineup();
 const incidentForm=document.querySelector('form input[name="action"][value="incident"]')?.closest('form');
 if(incidentForm){const card=incidentForm.querySelector('select[name="card"]');const level=incidentForm.querySelector('select[name="level"]');const description=incidentForm.querySelector('textarea[name="description"]');const refreshCardFields=()=>{const selected=!!card.value;level.closest('[class*="col-"]').style.display=selected?'none':'';description.closest('[class*="col-"]').style.display=selected?'none':'';description.required=!selected;};card.addEventListener('change',refreshCardFields);refreshCardFields();}
 document.querySelectorAll('form input[name="action"][value="update_participant_order"]').forEach((orderFormInput)=>{const orderForm=orderFormInput.closest('form');const row=orderForm?.closest('.list-group-item');const participantId=orderForm?.querySelector('input[name="participant_id"]')?.value;if(!orderForm||!row||!participantId||row.querySelector('.delete-participant-form'))return;const form=document.createElement('form');form.method='post';form.className='delete-participant-form d-inline';const csrf=document.querySelector('input[name="csrf_token"]')?.value||'';form.innerHTML=`<input type="hidden" name="csrf_token" value="${csrf}"><input type="hidden" name="action" value="delete_participant"><input type="hidden" name="participant_id" value="${participantId}"><button type="submit" class="btn btn-sm btn-outline-danger" title="Excluir participante">Excluir</button>`;form.addEventListener('submit',(event)=>{if(!window.confirm('Excluir este participante da súmula? O cadastro do peladeiro não será apagado.')){event.preventDefault();return;}const button=form.querySelector('button');button.disabled=true;button.textContent='Excluindo…';});orderForm.parentElement?.appendChild(form);});

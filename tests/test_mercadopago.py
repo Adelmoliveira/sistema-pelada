@@ -3503,6 +3503,102 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 [(self.player_id, 3), (second_player_id, 4)],
             )
 
+    def test_bulk_lineup_modal_saves_and_replaces_only_selected_match_period(self):
+        with app.app_context():
+            db = get_db()
+            second_player_id = db.execute(
+                "INSERT INTO players(name,war_name,football_position) VALUES(?,?,?)",
+                ("Segundo escalado", "Segundo", "ATAQUE"),
+            ).lastrowid
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','EM_ANDAMENTO',?)",
+                ("2026-08-23", self.user_id),
+            ).lastrowid
+            match_id = db.execute(
+                "INSERT INTO football_matches(sumula_id,number) VALUES(?,1)", (sumula_id,)
+            ).lastrowid
+            for order, player_id, position in (
+                (1, self.player_id, "DEFENSOR"),
+                (2, second_player_id, "ATACANTE"),
+            ):
+                db.execute(
+                    "INSERT INTO football_participants(sumula_id,player_id,status,preferred_position,draw_order) "
+                    "VALUES(?,?,'CONFIRMADO',?,?)",
+                    (sumula_id, player_id, position, order),
+                )
+            db.execute(
+                "INSERT INTO football_lineups(match_id,player_id,team,position,period) VALUES(?,?,'BRANCO','DEFENSOR',2)",
+                (match_id, self.player_id),
+            )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        page = self.client.get(f"/futebol/sumulas/{sumula_id}")
+        html = page.get_data(as_text=True)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('id="bulk-lineup-modal"', html)
+        self.assertIn("Montar escalação", html)
+        self.assertIn(f'name="assignment_{self.player_id}"', html)
+        self.assertIn(f'name="assignment_{second_player_id}"', html)
+
+        saved = self.client.post(
+            f"/futebol/sumulas/{sumula_id}",
+            data={
+                "action": "bulk_lineup", "match_id": str(match_id), "period": "1",
+                f"assignment_{self.player_id}": "AZUL",
+                f"position_{self.player_id}": "DEFENSOR",
+                f"assignment_{second_player_id}": "BRANCO",
+                f"position_{second_player_id}": "ATACANTE",
+            },
+        )
+        self.assertEqual(saved.status_code, 302)
+        self.assertTrue(saved.headers["Location"].endswith("#lineup-management"))
+
+        replaced = self.client.post(
+            f"/futebol/sumulas/{sumula_id}",
+            data={
+                "action": "bulk_lineup", "match_id": str(match_id), "period": "1",
+                f"assignment_{self.player_id}": "BRANCO",
+                f"position_{self.player_id}": "MEIO_CAMPO",
+                f"assignment_{second_player_id}": "",
+            },
+        )
+        self.assertEqual(replaced.status_code, 302)
+        with app.app_context():
+            rows = get_db().execute(
+                "SELECT player_id,team,position,period FROM football_lineups WHERE match_id=? ORDER BY period,player_id",
+                (match_id,),
+            ).fetchall()
+            self.assertEqual(
+                [(row["player_id"], row["team"], row["position"], row["period"]) for row in rows],
+                [
+                    (self.player_id, "BRANCO", "MEIO_CAMPO", 1),
+                    (self.player_id, "BRANCO", "DEFENSOR", 2),
+                ],
+            )
+
+        rejected = self.client.post(
+            f"/futebol/sumulas/{sumula_id}",
+            data={
+                "action": "bulk_lineup", "match_id": str(match_id), "period": "1",
+                f"assignment_{second_player_id}": "VERDE",
+                f"position_{second_player_id}": "ATACANTE",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn("Time inválido na escalação", rejected.get_data(as_text=True))
+        with app.app_context():
+            preserved = get_db().execute(
+                "SELECT player_id,team,position FROM football_lineups WHERE match_id=? AND period=1",
+                (match_id,),
+            ).fetchall()
+            self.assertEqual(
+                [(row["player_id"], row["team"], row["position"]) for row in preserved],
+                [(self.player_id, "BRANCO", "MEIO_CAMPO")],
+            )
+
     def test_simple_participant_text_import_creates_matches_and_draw_orders(self):
         with app.app_context():
             db = get_db()
