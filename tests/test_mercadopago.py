@@ -1892,6 +1892,30 @@ class MercadoPagoFlowTest(unittest.TestCase):
         send_mock.assert_called_once()
 
         with patch("src.routes.finance.datetime") as clock, patch(
+            "src.routes.finance.send_weekly_tribute_notifications", return_value=4
+        ) as send_mock:
+            clock.now.return_value = datetime(2026, 8, 8, 15, 7)
+            response = self.client.get(
+                "/cron/weekly-tribute",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["sent"], 4)
+        send_mock.assert_called_once()
+
+        with patch("src.routes.finance.datetime") as clock, patch(
+            "src.routes.finance.send_weekly_tribute_notifications"
+        ) as send_mock:
+            clock.now.return_value = datetime(2026, 8, 8, 14, 7)
+            response = self.client.get(
+                "/cron/weekly-tribute",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["sent"], 0)
+        send_mock.assert_not_called()
+
+        with patch("src.routes.finance.datetime") as clock, patch(
             "src.routes.finance.send_weekly_tribute_notifications"
         ) as send_mock:
             clock.now.return_value = datetime(2026, 8, 3, 17, 0)
@@ -1902,6 +1926,34 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["sent"], 0)
         send_mock.assert_not_called()
+
+    def test_weekly_tribute_workflow_uses_sao_paulo_schedule(self):
+        workflow = (Path(__file__).parents[1] / ".github/workflows/weekly-tribute.yml").read_text()
+        self.assertIn('cron: "7 17 * * 3"', workflow)
+        self.assertIn('cron: "7 15 * * 6"', workflow)
+        self.assertEqual(workflow.count('timezone: "America/Sao_Paulo"'), 2)
+        self.assertNotIn('cron: "0 * * * *"', workflow)
+
+    def test_weekly_tribute_accepts_dedicated_hashed_secret(self):
+        dedicated_secret = "segredo-exclusivo-da-homenagem"
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO app_settings(key,value) VALUES(?,?)",
+                ("weekly_tribute_cron_secret_hash", hashlib.sha256(dedicated_secret.encode()).hexdigest()),
+            )
+            db.commit()
+        with patch("src.routes.finance.datetime") as clock, patch(
+            "src.routes.finance.send_weekly_tribute_notifications", return_value=2
+        ) as send_mock:
+            clock.now.return_value = datetime(2026, 8, 5, 17, 7)
+            response = self.client.get(
+                "/cron/weekly-tribute",
+                headers={"Authorization": f"Bearer {dedicated_secret}"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["sent"], 2)
+        send_mock.assert_called_once()
 
     def test_manager_sends_tribute_test_to_only_one_active_player(self):
         with self.client.session_transaction() as session:

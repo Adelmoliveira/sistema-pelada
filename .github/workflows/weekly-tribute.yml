@@ -2,7 +2,11 @@ name: Verificar homenagem agendada
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    # Evita o minuto 00, quando o GitHub alerta para maior risco de atrasos.
+    - cron: "7 17 * * 3"
+      timezone: "America/Sao_Paulo"
+    - cron: "7 15 * * 6"
+      timezone: "America/Sao_Paulo"
   workflow_dispatch:
 
 permissions:

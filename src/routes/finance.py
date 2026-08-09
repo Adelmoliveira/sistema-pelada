@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 from datetime import date, datetime, timedelta
 from email.utils import parseaddr
@@ -27,6 +28,24 @@ from src.services.push_notifications import (
 from src.utils import SAO_PAULO, alphabetical_key, money, brdate, cents, month_bounds, add_months, local_today
 
 bp = Blueprint("finance", __name__)
+WEEKLY_TRIBUTE_SECRET_KEY = "weekly_tribute_cron_secret_hash"
+
+
+def _weekly_tribute_cron_authorized():
+    authorization = request.headers.get("Authorization", "")
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        return False
+    supplied = authorization[len(prefix):]
+    general_secret = current_app.config.get("CRON_SECRET") or ""
+    if general_secret and hmac.compare_digest(supplied, general_secret):
+        return True
+    row = get_db().execute(
+        "SELECT value FROM app_settings WHERE key=?", (WEEKLY_TRIBUTE_SECRET_KEY,)
+    ).fetchone()
+    expected_hash = (row["value"] if row else "") or ""
+    supplied_hash = hashlib.sha256(supplied.encode("utf-8")).hexdigest()
+    return bool(expected_hash) and hmac.compare_digest(supplied_hash, expected_hash)
 
 
 def _membership_start_month(player, year):
@@ -960,9 +979,7 @@ def payment_reminders_cron():
 
 @bp.get("/cron/weekly-tribute")
 def weekly_tribute_cron():
-    secret = current_app.config.get("CRON_SECRET") or ""
-    authorization = request.headers.get("Authorization", "")
-    if not secret or not hmac.compare_digest(authorization, f"Bearer {secret}"):
+    if not _weekly_tribute_cron_authorized():
         return jsonify(error="Não autorizado."), 401
 
     now = datetime.now(SAO_PAULO)
