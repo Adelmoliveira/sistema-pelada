@@ -756,6 +756,54 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertRegex(page, r'data-responsibility-period="year" data-responsibility-type="QUADRO"><strong>Apoio</strong><br><span class="text-muted small">2 vezes</span>')
         self.assertRegex(page, r'data-responsibility-period="year" data-responsibility-type="ARBITRO_VOLUNTARIO"><strong>Apoio</strong><br><span class="text-muted small">2 vezes</span>')
 
+    def test_football_dashboard_shows_top_five_discipline_ranking(self):
+        today = local_today()
+        with app.app_context():
+            db = get_db()
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','FINALIZADA',?)",
+                (today.isoformat(), self.user_id),
+            ).lastrowid
+            canceled_sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','CANCELADA',?)",
+                ((today - timedelta(days=1)).isoformat(), self.user_id),
+            ).lastrowid
+            ranked_players = []
+            for index, name in enumerate(("Alfa", "Bravo", "Charlie", "Delta", "Eco", "Foxtrot"), start=1):
+                player_id = db.execute(
+                    "INSERT INTO players(name,war_name) VALUES(?,?)", (name, name.upper())
+                ).lastrowid
+                ranked_players.append(player_id)
+                for occurrence in range(7 - index):
+                    card = "VERMELHO" if occurrence == 0 and index == 1 else "AMARELO"
+                    db.execute(
+                        "INSERT INTO football_incidents(sumula_id,type,level,player_id,card,description,created_by) "
+                        "VALUES(?,'DISCIPLINAR','INFORMATIVO',?,?,?,?)",
+                        (sumula_id, player_id, card, f"Ocorrência {occurrence}", self.user_id),
+                    )
+            for occurrence in range(10):
+                db.execute(
+                    "INSERT INTO football_incidents(sumula_id,type,level,player_id,card,description,created_by) "
+                    "VALUES(?,'DISCIPLINAR','INFORMATIVO',?,'VERMELHO',?,?)",
+                    (canceled_sumula_id, ranked_players[-1], f"Cancelada {occurrence}", self.user_id),
+                )
+            db.execute(
+                "INSERT INTO football_incidents(sumula_id,type,level,player_id,description,created_by) "
+                "VALUES(?,'LESAO','INFORMATIVO',?,'Lesão não disciplinar',?)",
+                (sumula_id, ranked_players[-1], self.user_id),
+            )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        page = self.client.get("/futebol").get_data(as_text=True)
+        self.assertIn("Top 5 · Peladeiros mais indisciplinados", page)
+        for rank, name in enumerate(("ALFA", "BRAVO", "CHARLIE", "DELTA", "ECO"), start=1):
+            self.assertRegex(page, rf'data-discipline-rank="{rank}"[^>]*>.*?<strong>{name}</strong>')
+        self.assertNotRegex(page, r'data-discipline-rank="6"')
+        self.assertIn("Vermelho: 1", page)
+        self.assertIn("Amarelo: 5", page)
+
     def test_player_names_sort_ignoring_case_and_accents(self):
         names = ["Zeca", "áureo", "Ana", "Álvaro", "bruno"]
         self.assertEqual(

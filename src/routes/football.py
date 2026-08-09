@@ -149,6 +149,29 @@ def _responsibility_leaders(db, start, end):
     return result
 
 
+def _discipline_ranking(db, start, end, limit=5):
+    """Retorna os peladeiros com mais registros de indisciplina no período."""
+    return db.execute(
+        """SELECT p.id,p.name,p.war_name,COUNT(fi.id) total,
+                  SUM(CASE WHEN fi.card='AMARELO' THEN 1 ELSE 0 END) yellow_cards,
+                  SUM(CASE WHEN fi.card='AZUL' THEN 1 ELSE 0 END) blue_cards,
+                  SUM(CASE WHEN fi.card='VERMELHO' THEN 1 ELSE 0 END) red_cards,
+                  SUM(CASE WHEN COALESCE(fi.card,'')='' THEN 1 ELSE 0 END) other_incidents
+           FROM football_incidents fi
+           JOIN football_sumulas fs ON fs.id=fi.sumula_id
+           JOIN players p ON p.id=fi.player_id
+           WHERE fs.situacao!='CANCELADA'
+             AND fs.match_date>=? AND fs.match_date<?
+             AND (COALESCE(fi.card,'')!=''
+                  OR fi.type IN ('DISCIPLINAR','ATRASO','ABANDONO_PARTIDA','DISCUSSAO'))
+           GROUP BY p.id,p.name,p.war_name
+           ORDER BY total DESC,red_cards DESC,blue_cards DESC,yellow_cards DESC,
+                    LOWER(COALESCE(p.war_name,p.name)),LOWER(p.name)
+           LIMIT ?""",
+        (start.isoformat(), end.isoformat(), limit),
+    ).fetchall()
+
+
 def _safe_notification_html(raw):
     raw = (raw or "")[:4000]
     raw = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw, flags=re.I | re.S)
@@ -578,8 +601,9 @@ def dashboard():
         "month": _responsibility_leaders(db, month_start, month_end),
         "year": _responsibility_leaders(db, year_start, year_end),
     }
+    discipline_ranking = _discipline_ranking(db, year_start, year_end)
     position_summary, eligible_total, positioned_total = _position_distribution(db)
-    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, team_wins=wins, attendance=attendance, responsibility_rankings=responsibility_rankings, management_view=True)
+    return render_template("football_dashboard.html", metrics=metrics, recent=recent, situations=SITUATIONS, position_summary=position_summary, eligible_total=eligible_total, positioned_total=positioned_total, team_wins=wins, attendance=attendance, responsibility_rankings=responsibility_rankings, discipline_ranking=discipline_ranking, discipline_year=today.year, management_view=True)
 
 
 @bp.get("/gestao/posicoes")
