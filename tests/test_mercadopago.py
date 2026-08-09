@@ -3596,6 +3596,121 @@ A5: LUCCA"""
             self.assertEqual(db.execute("SELECT COUNT(*) FROM football_participants WHERE sumula_id=?", (sumula_id,)).fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM football_goals").fetchone()[0], 0)
 
+    def test_result_text_imports_scores_goals_assists_referee_and_cards(self):
+        names = ("FERNANDES", "WALTER", "ANDRÉ", "CAZOLARE", "GERMANO", "JANDER", "KIJARA", "JONY", "REGIO", "NILSON")
+        with app.app_context():
+            db = get_db()
+            player_ids = {}
+            for name in names:
+                player_ids[name] = db.execute(
+                    "INSERT INTO players(name,war_name) VALUES(?,?)", (name.title(), name)
+                ).lastrowid
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','RASCUNHO',?)",
+                ("2026-09-12", self.user_id),
+            ).lastrowid
+            match_ids = {}
+            for number in (1, 2):
+                match_ids[number] = db.execute(
+                    "INSERT INTO football_matches(sumula_id,number) VALUES(?,?)", (sumula_id, number)
+                ).lastrowid
+            for order, player_id in enumerate(player_ids.values(), start=1):
+                db.execute(
+                    "INSERT INTO football_participants(sumula_id,player_id,status,draw_order) VALUES(?,?,'CONFIRMADO',?)",
+                    (sumula_id, player_id, order),
+                )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        page = self.client.get(f"/futebol/sumulas/{sumula_id}").get_data(as_text=True)
+        self.assertIn("Importar resultados, gols e ocorrências", page)
+        self.assertNotIn('id="participant-text"', page)
+        result_text = """1ª PARTIDA (AZUL 1 x 1 BRANCO)
+
+Gols e Assistências:
+Time Azul: Gol de FERNANDES (Assistência: WALTER)
+Time Branco: Gol de ANDRÉ (Assistência: CAZOLARE)
+2ª PARTIDA (AZUL 0 x 2 BRANCO)
+
+Gols e Assistências:
+Time Branco:
+1º Gol: GERMANO (Assistência: JANDER)
+2º Gol: KIJARA (Assistência: JONY)
+Juízes:
+REGIO
+Cartão Amarelo:
+REGIO
+NILSON"""
+        imported = self.client.post(
+            f"/futebol/sumulas/{sumula_id}/importar-resultados-texto",
+            data={"result_text": result_text},
+            follow_redirects=True,
+        )
+        html = imported.get_data(as_text=True)
+        self.assertEqual(imported.status_code, 200)
+        self.assertIn("Resultados importados: 2 partida(s), 4 gol(s), 1 juiz(es) e 2 cartão(ões)", html)
+        with app.app_context():
+            db = get_db()
+            scores = db.execute(
+                "SELECT number,blue_score,white_score,status FROM football_matches WHERE sumula_id=? ORDER BY number",
+                (sumula_id,),
+            ).fetchall()
+            self.assertEqual(
+                [(row["number"], row["blue_score"], row["white_score"], row["status"]) for row in scores],
+                [(1, 1, 1, "ENCERRADA"), (2, 0, 2, "ENCERRADA")],
+            )
+            goals = db.execute(
+                "SELECT author_player_id,assist_player_id,benefited_team FROM football_goals ORDER BY id"
+            ).fetchall()
+            self.assertEqual(
+                [(row["author_player_id"], row["assist_player_id"], row["benefited_team"]) for row in goals],
+                [
+                    (player_ids["FERNANDES"], player_ids["WALTER"], "AZUL"),
+                    (player_ids["ANDRÉ"], player_ids["CAZOLARE"], "BRANCO"),
+                    (player_ids["GERMANO"], player_ids["JANDER"], "BRANCO"),
+                    (player_ids["KIJARA"], player_ids["JONY"], "BRANCO"),
+                ],
+            )
+            referee = db.execute("SELECT match_id,player_id,responsibility_type FROM football_responsibles").fetchone()
+            self.assertEqual((referee["match_id"], referee["player_id"], referee["responsibility_type"]), (match_ids[2], player_ids["REGIO"], "ARBITRO_VOLUNTARIO"))
+            cards = db.execute("SELECT match_id,player_id,card FROM football_incidents ORDER BY id").fetchall()
+            self.assertEqual(
+                [(row["match_id"], row["player_id"], row["card"]) for row in cards],
+                [(match_ids[2], player_ids["REGIO"], "AMARELO"), (match_ids[2], player_ids["NILSON"], "AMARELO")],
+            )
+
+    def test_result_text_suggests_similar_name_and_is_atomic(self):
+        with app.app_context():
+            db = get_db()
+            author_id = db.execute("INSERT INTO players(name,war_name) VALUES('André','ANDRÉ')").lastrowid
+            assistant_id = db.execute("INSERT INTO players(name,war_name) VALUES('Cazolare','CAZOLARE')").lastrowid
+            sumula_id = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,situacao,created_by) VALUES(?,'SABADO','RASCUNHO',?)",
+                ("2026-09-19", self.user_id),
+            ).lastrowid
+            db.execute("INSERT INTO football_matches(sumula_id,number) VALUES(?,1)", (sumula_id,))
+            for order, player_id in enumerate((author_id, assistant_id), start=1):
+                db.execute(
+                    "INSERT INTO football_participants(sumula_id,player_id,status,draw_order) VALUES(?,?,'CONFIRMADO',?)",
+                    (sumula_id, player_id, order),
+                )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        rejected = self.client.post(
+            f"/futebol/sumulas/{sumula_id}/importar-resultados-texto",
+            data={"result_text": "1ª PARTIDA (AZUL 0 x 1 BRANCO)\nGols e Assistências:\nTime Branco: Gol de ANDRÉ (Assistência: CAZOLARI)"},
+            follow_redirects=True,
+        )
+        html = rejected.get_data(as_text=True)
+        self.assertIn("Você quis dizer “CAZOLARE”?", html)
+        with app.app_context():
+            db = get_db()
+            match = db.execute("SELECT blue_score,white_score,status FROM football_matches WHERE sumula_id=?", (sumula_id,)).fetchone()
+            self.assertEqual((match["blue_score"], match["white_score"], match["status"]), (0, 0, "PLANEJADA"))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM football_goals").fetchone()[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
