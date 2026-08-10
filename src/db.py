@@ -390,6 +390,44 @@ CREATE TABLE IF NOT EXISTS load_entry_movements (
     moved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_load_movements_entry ON load_entry_movements(load_entry_id,moved_at);
+CREATE TABLE IF NOT EXISTS load_loans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    borrower_name TEXT NOT NULL,
+    borrower_phone TEXT DEFAULT '',
+    borrower_document TEXT DEFAULT '',
+    checkout_on TEXT NOT NULL,
+    due_on TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','partial','returned','cancelled')),
+    notes TEXT DEFAULT '',
+    departure_photo_data TEXT DEFAULT '',
+    departure_thumbnail_data TEXT DEFAULT '',
+    return_photo_data TEXT DEFAULT '',
+    return_thumbnail_data TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    returned_by INTEGER REFERENCES users(id),
+    returned_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS load_loan_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loan_id INTEGER NOT NULL REFERENCES load_loans(id) ON DELETE CASCADE,
+    material_id INTEGER NOT NULL REFERENCES materials(id),
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    returned_quantity INTEGER NOT NULL DEFAULT 0 CHECK(returned_quantity >= 0),
+    UNIQUE(loan_id,material_id)
+);
+CREATE TABLE IF NOT EXISTS load_loan_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loan_id INTEGER NOT NULL REFERENCES load_loans(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    changed_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_load_loans_status_due ON load_loans(status,due_on);
+CREATE INDEX IF NOT EXISTS idx_load_loan_items_loan ON load_loan_items(loan_id);
+CREATE INDEX IF NOT EXISTS idx_load_loan_history_loan ON load_loan_history(loan_id,created_at);
 CREATE TABLE IF NOT EXISTS maintenance_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT NOT NULL UNIQUE,
@@ -1590,6 +1628,29 @@ def init_sqlite(wrapper):
         moved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_load_movements_entry ON load_entry_movements(load_entry_id,moved_at)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS load_loans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, borrower_name TEXT NOT NULL,
+        borrower_phone TEXT DEFAULT '', borrower_document TEXT DEFAULT '',
+        checkout_on TEXT NOT NULL, due_on TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','partial','returned','cancelled')),
+        notes TEXT DEFAULT '', departure_photo_data TEXT DEFAULT '', departure_thumbnail_data TEXT DEFAULT '',
+        return_photo_data TEXT DEFAULT '', return_thumbnail_data TEXT DEFAULT '',
+        created_by INTEGER REFERENCES users(id), returned_by INTEGER REFERENCES users(id), returned_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS load_loan_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, loan_id INTEGER NOT NULL REFERENCES load_loans(id) ON DELETE CASCADE,
+        material_id INTEGER NOT NULL REFERENCES materials(id), quantity INTEGER NOT NULL CHECK(quantity>0),
+        returned_quantity INTEGER NOT NULL DEFAULT 0 CHECK(returned_quantity>=0), UNIQUE(loan_id,material_id)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS load_loan_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, loan_id INTEGER NOT NULL REFERENCES load_loans(id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', changed_by INTEGER REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_load_loans_status_due ON load_loans(status,due_on)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_load_loan_items_loan ON load_loan_items(loan_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_load_loan_history_loan ON load_loan_history(loan_id,created_at)")
     load_schema = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='load_entries'"
     ).fetchone()
@@ -1815,6 +1876,28 @@ def init_postgres(wrapper):
         moved_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""")
     wrapper.execute("CREATE INDEX IF NOT EXISTS idx_load_movements_entry ON load_entry_movements(load_entry_id,moved_at)")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS load_loans (
+        id SERIAL PRIMARY KEY, borrower_name TEXT NOT NULL, borrower_phone TEXT DEFAULT '',
+        borrower_document TEXT DEFAULT '', checkout_on TEXT NOT NULL, due_on TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','partial','returned','cancelled')),
+        notes TEXT DEFAULT '', departure_photo_data TEXT DEFAULT '', departure_thumbnail_data TEXT DEFAULT '',
+        return_photo_data TEXT DEFAULT '', return_thumbnail_data TEXT DEFAULT '',
+        created_by INTEGER REFERENCES users(id), returned_by INTEGER REFERENCES users(id), returned_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS load_loan_items (
+        id SERIAL PRIMARY KEY, loan_id INTEGER NOT NULL REFERENCES load_loans(id) ON DELETE CASCADE,
+        material_id INTEGER NOT NULL REFERENCES materials(id), quantity INTEGER NOT NULL CHECK(quantity>0),
+        returned_quantity INTEGER NOT NULL DEFAULT 0 CHECK(returned_quantity>=0), UNIQUE(loan_id,material_id)
+    )""")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS load_loan_history (
+        id SERIAL PRIMARY KEY, loan_id INTEGER NOT NULL REFERENCES load_loans(id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', changed_by INTEGER REFERENCES users(id),
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_load_loans_status_due ON load_loans(status,due_on)")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_load_loan_items_loan ON load_loan_items(loan_id)")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_load_loan_history_loan ON load_loan_history(loan_id,created_at)")
     wrapper.execute("ALTER TABLE football_incidents ADD COLUMN IF NOT EXISTS card TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE football_responsibles ADD COLUMN IF NOT EXISTS match_id INTEGER REFERENCES football_matches(id) ON DELETE SET NULL")
     wrapper.execute("ALTER TABLE football_lineups ADD COLUMN IF NOT EXISTS period INTEGER NOT NULL DEFAULT 1")
