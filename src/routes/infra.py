@@ -39,6 +39,8 @@ LOAD_STATUS_CLASSES = {
     "lost": "text-bg-danger",
     "borrowed": "text-bg-info",
 }
+LOAN_STATUS_LABELS = {"open": "Emprestado", "partial": "Devolução parcial", "returned": "Devolvido", "cancelled": "Cancelado"}
+LOAN_STATUS_CLASSES = {"open": "text-bg-primary", "partial": "text-bg-warning", "returned": "text-bg-success", "cancelled": "text-bg-secondary"}
 
 
 def next_load_check_date(today=None):
@@ -72,6 +74,18 @@ def material_form_values():
 def material_options(db):
     rows = db.execute("SELECT id,description,load_sheet FROM materials").fetchall()
     return sorted(rows, key=lambda material: alphabetical_key(material["description"]))
+
+
+def loan_material_options(db):
+    rows = db.execute(
+        """SELECT m.id,m.description,m.load_sheet,
+                  (SELECT COUNT(*) FROM load_entries le WHERE le.material_id=m.id AND le.status='active') active_quantity,
+                  COALESCE((SELECT SUM(li.quantity-li.returned_quantity) FROM load_loan_items li
+                            JOIN load_loans l ON l.id=li.loan_id
+                            WHERE li.material_id=m.id AND l.status IN ('open','partial')),0) loaned_quantity
+           FROM materials m ORDER BY m.description"""
+    ).fetchall()
+    return [dict(row, available_quantity=max(0, int(row["active_quantity"] or 0) - int(row["loaned_quantity"] or 0))) for row in rows]
 
 
 def load_form_values(db):
@@ -906,6 +920,197 @@ def delete_load_entry(entry_id):
         current_app.logger.error(f"Erro ao apagar carga {entry_id}: {exc}")
         flash("Erro interno ao apagar a carga.", "danger")
     return redirect(url_for("infra.load_relation"))
+
+
+@bp.route("/loans", methods=["GET", "POST"])
+@roles_allowed("manager", "infra")
+def loans():
+    db = get_db()
+    if request.method == "POST":
+        try:
+            borrower_name = request.form.get("borrower_name", "").strip()
+            borrower_phone = request.form.get("borrower_phone", "").strip()
+            borrower_document = request.form.get("borrower_document", "").strip()
+            checkout_on = request.form.get("checkout_on", "").strip()
+            due_on = request.form.get("due_on", "").strip()
+            notes = request.form.get("notes", "").strip()
+            if not borrower_name:
+                raise ValueError("Informe quem está retirando os materiais.")
+            if len(borrower_name) > 200 or len(borrower_phone) > 50 or len(borrower_document) > 100:
+                raise ValueError("Os dados do responsável excedem o tamanho permitido.")
+            try:
+                checkout_date, due_date = date.fromisoformat(checkout_on), date.fromisoformat(due_on)
+            except ValueError as exc:
+                raise ValueError("Informe as datas de retirada e devolução.") from exc
+            if due_date < checkout_date:
+                raise ValueError("A devolução não pode ser anterior à retirada.")
+            requested = {}
+            for material_value, quantity_value in zip(request.form.getlist("material_id"), request.form.getlist("quantity")):
+                if not material_value and not quantity_value:
+                    continue
+                try:
+                    material_id, quantity = int(material_value), int(quantity_value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("Selecione o material e informe uma quantidade válida.") from exc
+                if quantity <= 0:
+                    raise ValueError("A quantidade emprestada deve ser maior que zero.")
+                requested[material_id] = requested.get(material_id, 0) + quantity
+            if not requested:
+                raise ValueError("Adicione pelo menos um material ao empréstimo.")
+            available = {item["id"]: item for item in loan_material_options(db)}
+            for material_id, quantity in requested.items():
+                material = available.get(material_id)
+                if not material:
+                    raise ValueError("Material não encontrado.")
+                if quantity > material["available_quantity"]:
+                    raise ValueError(f"{material['description']}: somente {material['available_quantity']} unidade(s) disponível(is).")
+            departure_photo = departure_thumbnail = ""
+            upload = request.files.get("departure_photo")
+            if upload and upload.filename:
+                departure_photo, departure_thumbnail = process_material_photo(upload)
+            with db:
+                cursor = db.execute(
+                    """INSERT INTO load_loans
+                       (borrower_name,borrower_phone,borrower_document,checkout_on,due_on,notes,
+                        departure_photo_data,departure_thumbnail_data,created_by)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (borrower_name, borrower_phone, borrower_document, checkout_on, due_on, notes,
+                     departure_photo, departure_thumbnail, g.user["id"]),
+                )
+                loan_id = cursor.lastrowid
+                descriptions = []
+                for material_id, quantity in requested.items():
+                    db.execute("INSERT INTO load_loan_items(loan_id,material_id,quantity) VALUES(?,?,?)", (loan_id, material_id, quantity))
+                    descriptions.append(f"{quantity}x {available[material_id]['description']}")
+                db.execute(
+                    "INSERT INTO load_loan_history(loan_id,event_type,description,changed_by) VALUES(?,'checkout',?,?)",
+                    (loan_id, "Retirada: " + ", ".join(descriptions), g.user["id"]),
+                )
+            flash(f"Empréstimo EMP-{loan_id:06d} registrado.", "success")
+            return redirect(url_for("infra.loan_detail", loan_id=loan_id))
+        except ValueError as exc:
+            db.rollback()
+            flash(str(exc), "danger")
+        except Exception:
+            db.rollback()
+            current_app.logger.exception("Erro ao registrar empréstimo de carga")
+            flash("Não foi possível registrar o empréstimo.", "danger")
+    status = request.args.get("status", "open").strip()
+    query = request.args.get("q", "").strip()
+    conditions, params = [], []
+    if status in LOAN_STATUS_LABELS:
+        conditions.append("l.status=?")
+        params.append(status)
+    elif status == "overdue":
+        conditions.extend(["l.status IN ('open','partial')", "l.due_on<?"])
+        params.append(local_today().isoformat())
+    if query:
+        conditions.append("(LOWER(l.borrower_name) LIKE ? OR LOWER(l.borrower_document) LIKE ?)")
+        params.extend([f"%{query.lower()}%", f"%{query.lower()}%"])
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    rows = db.execute(
+        f"""SELECT l.*,u.name created_by_name,
+                   (SELECT SUM(quantity) FROM load_loan_items WHERE loan_id=l.id) total_quantity,
+                   (SELECT SUM(returned_quantity) FROM load_loan_items WHERE loan_id=l.id) returned_quantity
+            FROM load_loans l LEFT JOIN users u ON u.id=l.created_by{where}
+            ORDER BY CASE WHEN l.status IN ('open','partial') THEN 0 ELSE 1 END,l.due_on,l.id DESC""",
+        tuple(params),
+    ).fetchall()
+    return render_template("load_loans.html", loans=rows, materials=loan_material_options(db), today=local_today(),
+                           status=status, query=query, loan_statuses=LOAN_STATUS_LABELS,
+                           loan_status_classes=LOAN_STATUS_CLASSES)
+
+
+@bp.get("/loans/<int:loan_id>")
+@roles_allowed("manager", "infra")
+def loan_detail(loan_id):
+    db = get_db()
+    loan = db.execute(
+        """SELECT l.*,u.name created_by_name,ru.name returned_by_name FROM load_loans l
+           LEFT JOIN users u ON u.id=l.created_by LEFT JOIN users ru ON ru.id=l.returned_by WHERE l.id=?""",
+        (loan_id,),
+    ).fetchone()
+    if not loan:
+        flash("Empréstimo não encontrado.", "warning")
+        return redirect(url_for("infra.loans"))
+    items = db.execute(
+        """SELECT li.*,m.description,m.load_sheet FROM load_loan_items li
+           JOIN materials m ON m.id=li.material_id WHERE li.loan_id=? ORDER BY m.description""",
+        (loan_id,),
+    ).fetchall()
+    history = db.execute(
+        """SELECT h.*,u.name changed_by_name FROM load_loan_history h
+           LEFT JOIN users u ON u.id=h.changed_by WHERE h.loan_id=? ORDER BY h.id DESC""",
+        (loan_id,),
+    ).fetchall()
+    return render_template("load_loan_detail.html", loan=loan, items=items, history=history, today=local_today(),
+                           loan_statuses=LOAN_STATUS_LABELS, loan_status_classes=LOAN_STATUS_CLASSES)
+
+
+@bp.post("/loans/<int:loan_id>/return")
+@roles_allowed("manager", "infra")
+def return_loan(loan_id):
+    db = get_db()
+    loan = db.execute("SELECT * FROM load_loans WHERE id=?", (loan_id,)).fetchone()
+    if not loan or loan["status"] not in ("open", "partial"):
+        flash("Este empréstimo não aceita devoluções.", "warning")
+        return redirect(url_for("infra.loan_detail", loan_id=loan_id))
+    try:
+        items = db.execute("SELECT * FROM load_loan_items WHERE loan_id=?", (loan_id,)).fetchall()
+        returns, descriptions = {}, []
+        for item in items:
+            value = request.form.get(f"return_{item['id']}", "0").strip() or "0"
+            try:
+                quantity = int(value)
+            except ValueError as exc:
+                raise ValueError("Informe quantidades de devolução válidas.") from exc
+            remaining = int(item["quantity"]) - int(item["returned_quantity"])
+            if quantity < 0 or quantity > remaining:
+                raise ValueError("A devolução não pode ultrapassar a quantidade pendente.")
+            if quantity:
+                returns[item["id"]] = quantity
+                descriptions.append(f"{quantity} unidade(s) do item #{item['id']}")
+        if not returns:
+            raise ValueError("Informe ao menos uma quantidade devolvida.")
+        return_photo = return_thumbnail = ""
+        upload = request.files.get("return_photo")
+        if upload and upload.filename:
+            return_photo, return_thumbnail = process_material_photo(upload)
+        with db:
+            for item_id, quantity in returns.items():
+                db.execute("UPDATE load_loan_items SET returned_quantity=returned_quantity+? WHERE id=? AND loan_id=?", (quantity, item_id, loan_id))
+            pending = db.execute("SELECT SUM(quantity-returned_quantity) FROM load_loan_items WHERE loan_id=?", (loan_id,)).fetchone()[0]
+            status = "returned" if int(pending or 0) == 0 else "partial"
+            db.execute(
+                """UPDATE load_loans SET status=?,return_photo_data=CASE WHEN ?<>'' THEN ? ELSE return_photo_data END,
+                   return_thumbnail_data=CASE WHEN ?<>'' THEN ? ELSE return_thumbnail_data END,
+                   returned_by=?,returned_at=CASE WHEN ?='returned' THEN CURRENT_TIMESTAMP ELSE returned_at END,
+                   updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (status, return_photo, return_photo, return_thumbnail, return_thumbnail, g.user["id"], status, loan_id),
+            )
+            db.execute(
+                "INSERT INTO load_loan_history(loan_id,event_type,description,changed_by) VALUES(?,'return',?,?)",
+                (loan_id, "Devolução: " + ", ".join(descriptions), g.user["id"]),
+            )
+        flash("Devolução registrada.", "success")
+    except ValueError as exc:
+        db.rollback(); flash(str(exc), "danger")
+    except Exception:
+        db.rollback(); current_app.logger.exception("Erro ao devolver empréstimo %s", loan_id)
+        flash("Não foi possível registrar a devolução.", "danger")
+    return redirect(url_for("infra.loan_detail", loan_id=loan_id))
+
+
+@bp.post("/loans/<int:loan_id>/cancel")
+@roles_allowed("manager", "infra")
+def cancel_loan(loan_id):
+    db = get_db()
+    with db:
+        changed = db.execute("UPDATE load_loans SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='open'", (loan_id,))
+        if changed.rowcount:
+            db.execute("INSERT INTO load_loan_history(loan_id,event_type,description,changed_by) VALUES(?,'cancel','Empréstimo cancelado.',?)", (loan_id, g.user["id"]))
+    flash("Empréstimo cancelado." if changed.rowcount else "O empréstimo não pode ser cancelado.", "success" if changed.rowcount else "warning")
+    return redirect(url_for("infra.loan_detail", loan_id=loan_id))
 
 
 @bp.get("/load-relation/report.pdf")

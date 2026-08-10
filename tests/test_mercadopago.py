@@ -862,7 +862,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             session["user_id"] = self.user_id
         page = self.client.get("/players").get_data(as_text=True)
         self.assertIn('id="app-sidebar"', page)
-        modules = ["Bar", "Financeiro", "Infra-Estrutura", "Relatórios", "Urgente", "Administração"]
+        modules = ["Bar", "Financeiro", "Infraestrutura", "Relatórios", "Urgente", "Administração"]
         positions = [page.index(f"<span>{label}</span>") for label in modules]
         self.assertEqual(positions, sorted(positions))
         for links in (
@@ -975,7 +975,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         page = form.get_data(as_text=True)
         self.assertIn("<span>Novo chamado</span>", page)
         self.assertIn("<span>Urgente</span>", page)
-        self.assertNotIn("<span>Infra-Estrutura</span>", page)
+        self.assertNotIn("<span>Infraestrutura</span>", page)
         self.assertNotIn("Acompanhamento e resolução", page)
         self.assertIn('id="pwa-install"', page)
         self.assertNotIn("← Voltar", page)
@@ -1033,7 +1033,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(form.status_code, 200)
         page = form.get_data(as_text=True)
         self.assertIn("<span>Bar</span>", page)
-        self.assertIn("<span>Infra-Estrutura</span>", page)
+        self.assertIn("<span>Infraestrutura</span>", page)
         self.assertIn(">Novo chamado</a>", page)
         self.assertIn(">Relação de Carga</a>", page)
         self.assertIn(">Validar conferência</a>", page)
@@ -1546,6 +1546,82 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(report.status_code, 200)
         self.assertIn("Equipe B", report.get_data(as_text=True))
 
+    def test_load_loans_batch_partial_return_and_availability(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            material_id = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES(?,?)",
+                ("Cadeira plástica", "FCG-CADEIRA"),
+            ).lastrowid
+            for index in range(6):
+                cursor = db.execute(
+                    """INSERT INTO load_entries(material_id,bmp,area_code,location,status)
+                       VALUES(?,?,'INT','Sede','active')""",
+                    (material_id, f"BMP-LOAN-{index}"),
+                )
+            db.commit()
+
+        departure_photo = BytesIO()
+        Image.new("RGB", (800, 600), color=(80, 110, 150)).save(departure_photo, format="JPEG")
+        departure_photo.seek(0)
+        created = self.client.post(
+            "/infra/loans",
+            data={
+                "borrower_name": "Fernando Silva",
+                "borrower_phone": "11999999999",
+                "borrower_document": "DOC-123",
+                "checkout_on": local_today().isoformat(),
+                "due_on": (local_today() + timedelta(days=3)).isoformat(),
+                "material_id": [str(material_id)],
+                "quantity": ["4"],
+                "notes": "Festa familiar",
+                "departure_photo": (departure_photo, "retirada.jpg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            loan = db.execute("SELECT * FROM load_loans").fetchone()
+            loan_id = loan["id"]
+            item = db.execute("SELECT * FROM load_loan_items WHERE loan_id=?", (loan_id,)).fetchone()
+            self.assertEqual((loan["status"], item["quantity"], item["returned_quantity"]), ("open", 4, 0))
+            self.assertTrue(loan["departure_photo_data"].startswith("data:image/jpeg;base64,"))
+
+        blocked = self.client.post(
+            "/infra/loans",
+            data={
+                "borrower_name": "Outro responsável",
+                "checkout_on": local_today().isoformat(),
+                "due_on": (local_today() + timedelta(days=2)).isoformat(),
+                "material_id": [str(material_id)],
+                "quantity": ["3"],
+            },
+        )
+        self.assertEqual(blocked.status_code, 200)
+        self.assertIn("somente 2 unidade(s) disponível(is)", blocked.get_data(as_text=True))
+
+        partial = self.client.post(f"/infra/loans/{loan_id}/return", data={f"return_{item['id']}": "2"})
+        self.assertEqual(partial.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT status FROM load_loans WHERE id=?", (loan_id,)).fetchone()[0], "partial")
+            self.assertEqual(db.execute("SELECT returned_quantity FROM load_loan_items WHERE id=?", (item["id"],)).fetchone()[0], 2)
+
+        completed = self.client.post(f"/infra/loans/{loan_id}/return", data={f"return_{item['id']}": "2"})
+        self.assertEqual(completed.status_code, 302)
+        detail = self.client.get(f"/infra/loans/{loan_id}").get_data(as_text=True)
+        self.assertIn("Devolvido", detail)
+        self.assertIn("Fernando Silva", detail)
+        with app.app_context():
+            db = get_db()
+            loan = db.execute("SELECT * FROM load_loans WHERE id=?", (loan_id,)).fetchone()
+            self.assertEqual(loan["status"], "returned")
+            self.assertIsNotNone(loan["returned_at"])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM load_loan_history WHERE loan_id=?", (loan_id,)).fetchone()[0], 3)
+
     def test_maintenance_list_colors_priority_and_open_age(self):
         today = local_today()
         with app.app_context():
@@ -1819,7 +1895,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         page = self.client.get("/infra/load-relation")
         self.assertEqual(page.status_code, 200)
         html = page.get_data(as_text=True)
-        self.assertIn("<span>Infra-Estrutura</span>", html)
+        self.assertIn("<span>Infraestrutura</span>", html)
         self.assertIn(">Manutenção</a>", html)
         self.assertIn('class="sidebar-module sidebar-direct urgent ', html)
         self.assertIn("<span>Urgente</span>", html)
