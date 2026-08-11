@@ -499,7 +499,10 @@ def _sumula(db, sumula_id, audit_page=None):
     row = db.execute("SELECT fs.*,u.name created_by_name FROM football_sumulas fs LEFT JOIN users u ON u.id=fs.created_by WHERE fs.id=?", (sumula_id,)).fetchone()
     if not row:
         return None
-    participants = db.execute("SELECT fp.*,p.name,p.war_name,p.photo_data,p.thumbnail_data,p.football_position,p.historical_only FROM football_participants fp JOIN players p ON p.id=fp.player_id WHERE fp.sumula_id=? ORDER BY COALESCE(fp.draw_order,999999),LOWER(p.war_name),LOWER(p.name)", (sumula_id,)).fetchall()
+    participants = db.execute("""SELECT fp.*,p.name,p.war_name,p.football_position,p.historical_only
+        FROM football_participants fp JOIN players p ON p.id=fp.player_id
+        WHERE fp.sumula_id=?
+        ORDER BY COALESCE(fp.draw_order,999999),LOWER(p.war_name),LOWER(p.name)""", (sumula_id,)).fetchall()
     matches = []
     for match in db.execute("SELECT * FROM football_matches WHERE sumula_id=? ORDER BY number", (sumula_id,)).fetchall():
         lineups = [dict(item) for item in db.execute("SELECT fl.*,p.name,p.war_name FROM football_lineups fl JOIN players p ON p.id=fl.player_id WHERE fl.match_id=? ORDER BY fl.period,fl.team,fl.position,COALESCE(fl.draw_order,999999),LOWER(p.name)", (match["id"],)).fetchall()]
@@ -923,7 +926,11 @@ def transfer_window():
                 flash(f"A janela de transferência abre em fevereiro de {window['year']}.", "warning")
             else:
                 try:
-                    player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchone()
+                    player = db.execute(
+                        """SELECT id,name,war_name,football_position,football_join_date
+                           FROM players WHERE id=? AND active=1""",
+                        (g.user["player_id"],),
+                    ).fetchone()
                     requested = request.form.get("requested_position", "").strip().upper()
                     reason = request.form.get("reason", "").strip()[:500]
                     if not player or requested not in TRANSFER_POSITIONS:
@@ -1003,7 +1010,11 @@ def transfer_window():
     own_request = None
     own_history = []
     if not is_manager:
-        player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchone()
+        player = db.execute(
+            """SELECT id,name,war_name,football_position,football_join_date
+               FROM players WHERE id=? AND active=1""",
+            (g.user["player_id"],),
+        ).fetchone()
         if player:
             own_request = db.execute("SELECT * FROM football_transfer_requests WHERE player_id=? ORDER BY window_year DESC,id DESC LIMIT 1", (player["id"],)).fetchone()
             own_history = db.execute("SELECT * FROM football_transfer_requests WHERE player_id=? ORDER BY window_year DESC,id DESC", (player["id"],)).fetchall()

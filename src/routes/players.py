@@ -9,9 +9,18 @@ from src.utils import local_today
 bp = Blueprint("players", __name__)
 FOOTBALL_POSITIONS = {"GOL": "Goleiro", "DEFESA": "Defesa", "MEIO": "Meio", "ATAQUE": "Ataque", "JUIZ": "Juiz", "APOSENTADO": "Aposentado"}
 
+# Keep original Base64 photos out of reports and lists. HTML lists add only
+# the much smaller thumbnail; PDF exports do not fetch either image.
+PLAYER_REPORT_COLUMNS = """id,name,war_name,cpf,phone,emergency_phone,gender,birth_date,
+    postal_code,address_street,address_number,address_complement,address_neighborhood,
+    address_city,address_state,email,membership_type,football_position,
+    football_join_date,historical_only,active,created_at"""
+PLAYER_LIST_COLUMNS = f"{PLAYER_REPORT_COLUMNS},thumbnail_data"
 
-def _player_report_rows(db, query="", address_filter="", cadastro_filter=""):
-    rows = db.execute("SELECT * FROM players WHERE active=1").fetchall()
+
+def _player_report_rows(db, query="", address_filter="", cadastro_filter="", include_thumbnail=True):
+    columns = PLAYER_LIST_COLUMNS if include_thumbnail else PLAYER_REPORT_COLUMNS
+    rows = db.execute(f"SELECT {columns} FROM players WHERE active=1").fetchall()
     query = (query or "").strip()
     if query:
         folded = query.casefold()
@@ -58,7 +67,9 @@ def players_report_pdf():
     cadastro_filter = request.args.get("cadastro", "")
     if cadastro_filter not in {"", "incomplete"}:
         cadastro_filter = ""
-    rows = _player_report_rows(get_db(), query, address_filter, cadastro_filter)
+    rows = _player_report_rows(
+        get_db(), query, address_filter, cadastro_filter, include_thumbnail=False
+    )
     if cadastro_filter == "incomplete":
         report = build_incomplete_players_pdf(rows, local_today())
         filename = "peladeiros-cadastro-pendente.pdf"
@@ -71,7 +82,9 @@ def players_report_pdf():
 @bp.get("/players/report/<int:player_id>")
 @roles_allowed("manager")
 def player_report_detail(player_id):
-    player = get_db().execute("SELECT * FROM players WHERE id=? AND active=1", (player_id,)).fetchone()
+    player = get_db().execute(
+        f"SELECT {PLAYER_LIST_COLUMNS} FROM players WHERE id=? AND active=1", (player_id,)
+    ).fetchone()
     if not player:
         flash("Peladeiro não encontrado.", "warning")
         return redirect(url_for("players.players_report"))
@@ -162,7 +175,7 @@ def players():
     if player_filter not in filters:
         player_filter = "active"
     where, params = filters[player_filter]
-    items = db.execute(f"SELECT * FROM players WHERE {where}", params).fetchall()
+    items = db.execute(f"SELECT {PLAYER_LIST_COLUMNS} FROM players WHERE {where}", params).fetchall()
     items = sorted(items, key=lambda player: alphabetical_key(player["war_name"] or player["name"]))
     return render_template(
         "players.html",
@@ -235,7 +248,7 @@ def football_positions():
 @roles_allowed("manager")
 def reset_player_password(player_id):
     db = get_db()
-    player = db.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    player = db.execute("SELECT id,war_name FROM players WHERE id=?", (player_id,)).fetchone()
     password = request.form.get("new_password", "")
     if not player:
         flash("Peladeiro não encontrado.", "warning")
@@ -270,7 +283,12 @@ def reset_player_password(player_id):
 @roles_allowed("manager")
 def edit_player(player_id):
     db = get_db()
-    player = db.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    player = db.execute(
+        """SELECT id,name,war_name,cpf,email,phone,emergency_phone,gender,membership_type,
+                  photo_data,thumbnail_data,football_position,football_join_date
+           FROM players WHERE id=?""",
+        (player_id,),
+    ).fetchone()
     if not player:
         flash("Peladeiro não encontrado.", "warning")
         return redirect(url_for("players.players"))
@@ -316,14 +334,19 @@ def edit_player(player_id):
                     flash("Já existe outro peladeiro com esse nome ou CPF.", "danger")
                 else:
                     flash("Erro interno ao atualizar cadastro do peladeiro.", "danger")
-        player = db.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+        player = db.execute(
+            """SELECT id,name,war_name,cpf,email,phone,emergency_phone,gender,membership_type,
+                      photo_data,thumbnail_data,football_position,football_join_date
+               FROM players WHERE id=?""",
+            (player_id,),
+        ).fetchone()
     return render_template("edit_player.html", player=player, football_positions=FOOTBALL_POSITIONS)
 
 @bp.post("/players/<int:player_id>/toggle-active")
 @roles_allowed("manager")
 def toggle_player_active(player_id):
     db = get_db()
-    player = db.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    player = db.execute("SELECT id,active FROM players WHERE id=?", (player_id,)).fetchone()
     if not player:
         flash("Peladeiro não encontrado.", "warning")
     else:
@@ -405,7 +428,7 @@ def import_players():
                     continue
 
                 existing = db.execute(
-                    """SELECT * FROM players
+                    """SELECT id FROM players
                        WHERE LOWER(name)=LOWER(?)
                           OR (?<>'' AND LOWER(email)=LOWER(?))
                           OR (?<>'' AND cpf=?)

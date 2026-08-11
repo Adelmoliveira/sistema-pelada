@@ -67,7 +67,8 @@ def _completed_years(join_date):
 
 def _client_player_for_username(db, username):
     return db.execute(
-        "SELECT * FROM players WHERE active=1 AND war_name<>'' AND LOWER(war_name)=LOWER(?)",
+        """SELECT id,name,war_name
+           FROM players WHERE active=1 AND war_name<>'' AND LOWER(war_name)=LOWER(?)""",
         (username.strip(),),
     ).fetchone()
 
@@ -275,7 +276,9 @@ def client_password_setup():
     if not player_id:
         return redirect(url_for("auth.login"))
     db = get_db()
-    player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (player_id,)).fetchone()
+    player = db.execute(
+        "SELECT id,name,war_name FROM players WHERE id=? AND active=1", (player_id,)
+    ).fetchone()
     if not player or not player["war_name"]:
         session.pop("pending_client_player_id", None)
         flash("Peladeiro não encontrado ou sem nome de guerra cadastrado.", "danger")
@@ -405,7 +408,14 @@ def my_account():
             current_app.logger.warning("Configuração de logo ainda não migrada: %s", exc)
             row = None
         return render_template("my_account.html", player=None, branding_logo_active=bool(row and row["value"]))
-    player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchone()
+    player = db.execute(
+        """SELECT id,name,war_name,birth_date,phone,emergency_phone,postal_code,
+                  address_street,address_number,address_complement,address_neighborhood,
+                  address_city,address_state,football_join_date,photo_data,thumbnail_data,
+                  club_qr_data,club_qr_token
+           FROM players WHERE id=? AND active=1""",
+        (g.user["player_id"],),
+    ).fetchone()
     if not player:
         flash("Seu usuário ainda não está vinculado a um peladeiro.", "danger")
         return redirect(url_for("sales.sale"))
@@ -475,7 +485,14 @@ def my_account():
                  values["address_neighborhood"], values["address_city"], values["address_state"], player["id"]))
             db.commit()
             flash("Foto atualizada com sucesso." if uploaded_photo and uploaded_photo.filename else "Dados da conta atualizados com sucesso.", "success")
-            player = db.execute("SELECT * FROM players WHERE id=?", (player["id"],)).fetchone()
+            player = db.execute(
+                """SELECT id,name,war_name,birth_date,phone,emergency_phone,postal_code,
+                          address_street,address_number,address_complement,address_neighborhood,
+                          address_city,address_state,football_join_date,photo_data,thumbnail_data,
+                          club_qr_data,club_qr_token
+                   FROM players WHERE id=?""",
+                (player["id"],),
+            ).fetchone()
         except ValueError as exc:
             flash(str(exc), "danger")
         except Exception as exc:
@@ -498,7 +515,11 @@ def my_account():
 @roles_allowed("client")
 def update_club_card():
     db = get_db()
-    player = db.execute("SELECT * FROM players WHERE id=? AND active=1", (g.user["player_id"],)).fetchone()
+    player = db.execute(
+        """SELECT id,club_qr_data,club_qr_token
+           FROM players WHERE id=? AND active=1""",
+        (g.user["player_id"],),
+    ).fetchone()
     if not player:
         flash("Seu usuário ainda não está vinculado a um peladeiro.", "danger")
         return redirect(url_for("auth.my_account"))

@@ -12,7 +12,7 @@ try:
 except ImportError:
     pass
 
-from src.db import get_db, read_user_from_session
+from src.db import database_error_category, get_db, is_transient_database_error, read_user_from_session
 from src.utils import money, brdate, cpfmask, local_today, month_year_label, service_medals
 from src.routes.auth import bp as auth_bp, home_endpoint
 from src.routes.players import bp as players_bp
@@ -81,7 +81,12 @@ def handle_method_not_allowed(error):
 
 @app.errorhandler(500)
 def handle_internal_error(error):
-    app.logger.error(f"Erro interno: {error}")
+    original = getattr(error, "original_exception", None) or error
+    app.logger.error(
+        "DB_QUERY_ERROR function=handle_internal_error operation=REQUEST path=%s "
+        "exception_type=%s",
+        request.path, type(original).__name__,
+    )
     error_msg = str(error)
     if "DATABASE_URL" in error_msg:
         return "Erro: DATABASE_URL não configurada corretamente. Verifique o ambiente Vercel.", 500
@@ -145,7 +150,34 @@ if not app.debug and app.config["SECRET_KEY"] == "troque-esta-chave-em-producao"
 def close_db(_error=None):
     connection = g.pop("db", None)
     if connection is not None:
-        connection.close()
+        try:
+            if _error is not None:
+                connection.rollback()
+        finally:
+            connection.close()
+
+
+@app.get("/health")
+def health():
+    """Minimal external health check; never performs setup or migrations."""
+    try:
+        get_db().execute("SELECT 1").fetchone()
+        return jsonify(status="ok", database="ok")
+    except Exception as exc:
+        db = g.get("db")
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        app.logger.error(
+            "DB_HEALTHCHECK_ERROR function=health operation=SELECT_1 path=%s "
+            "exception_type=%s category=%s sqlstate=%s",
+            request.path, type(exc).__name__, database_error_category(exc),
+            getattr(exc, "pgcode", None) or getattr(exc, "sqlstate", None) or "-",
+        )
+        status_code = 503 if is_transient_database_error(exc) else 500
+        return jsonify(status="unavailable", database="unavailable"), status_code
 
 @app.before_request
 def load_user_and_protect_routes():
@@ -166,7 +198,7 @@ def load_user_and_protect_routes():
 
     # Arquivos do PWA precisam continuar disponíveis mesmo durante uma
     # instabilidade momentânea do banco de dados.
-    if request.endpoint in {"static", "service_worker", "offline"}:
+    if request.endpoint in {"static", "service_worker", "offline", "health"}:
         return None
 
     def database_unavailable(exc, operation):
@@ -176,14 +208,16 @@ def load_user_and_protect_routes():
                 db.rollback()
             except Exception:
                 pass
+        category = database_error_category(exc)
         app.logger.error(
-            "Erro ao %s | operation=%s | sql=%s | exception_type=%s | detail=%s",
-            operation,
-            operation,
-            "SELECT users WHERE id=? AND active=1" if operation == "carregar usuário da sessão" else "SELECT 1 FROM users LIMIT 1",
-            type(exc).__name__,
-            exc,
+            "%s function=load_user_and_protect_routes operation=%s path=%s "
+            "exception_type=%s category=%s sqlstate=%s",
+            "SESSION_LOAD_ERROR" if operation.startswith("carregar") else "DB_HEALTHCHECK_ERROR",
+            operation, request.path, type(exc).__name__, category,
+            getattr(exc, "pgcode", None) or getattr(exc, "sqlstate", None) or "-",
         )
+        if not is_transient_database_error(exc):
+            raise exc
         message = "Não foi possível conectar ao sistema agora. Sua sessão foi preservada; tente novamente."
         if request.accept_mimetypes.best == "application/json":
             response = jsonify(error=message)
@@ -209,15 +243,16 @@ def load_user_and_protect_routes():
     if request.endpoint == "auth.setup":
         return None
 
-    try:
-        has_users = get_db().execute("SELECT 1 FROM users LIMIT 1").fetchone()
-    except Exception as exc:
-        return database_unavailable(exc, "verificar tabela de usuários")
+    # A successful authenticated-user read already proves that the database
+    # and users table are available. Keep the setup probe only before login.
+    if not g.user:
+        try:
+            has_users = get_db().execute("SELECT 1 FROM users LIMIT 1").fetchone()
+        except Exception as exc:
+            return database_unavailable(exc, "verificar tabela de usuários")
 
-    if not has_users:
-        if request.endpoint == "auth.setup":
-            return None
-        return redirect(url_for("auth.setup"))
+        if not has_users:
+            return redirect(url_for("auth.setup"))
 
     public_endpoints = {"auth.login", "auth.branding_logo", "auth.client_access", "auth.client_password_setup", "auth.forgot_password", "auth.reset_password", "auth.club_card", "auth.club_card_manifest", "sales.guest_event_sale"}
     if request.endpoint in public_endpoints or request.endpoint is None:

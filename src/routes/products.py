@@ -138,7 +138,11 @@ def products():
                 flash("Não foi possível cadastrar devido a um erro interno.", "danger")
         return redirect(url_for("products.products"))
 
-    items = db.execute("SELECT * FROM products ORDER BY active DESC, category, name").fetchall()
+    items = db.execute(
+        """SELECT id,name,category,package_type,units_per_case,price_cents,cost_cents,
+                  stock,min_stock,supplier_email,thumbnail_data,expiry_date,active,created_at
+           FROM products ORDER BY active DESC,category,name"""
+    ).fetchall()
     return render_template("products.html", products=items, product_categories=PRODUCT_CATEGORIES)
 
 @bp.post("/products/<int:product_id>/toggle")
@@ -294,7 +298,11 @@ def stock():
             flash("Erro interno ao registrar reposição de estoque.", "danger")
         return redirect(url_for("products.stock"))
 
-    product_rows = db.execute("SELECT * FROM products WHERE active=1 ORDER BY stock, name").fetchall()
+    product_rows = db.execute(
+        """SELECT id,name,category,package_type,units_per_case,price_cents,cost_cents,
+                  stock,min_stock,supplier_email,expiry_date,active,created_at
+           FROM products WHERE active=1 ORDER BY stock,name"""
+    ).fetchall()
     alert_rows = [dict(row) for row in product_rows]
     sales = db.execute(
         """SELECT si.product_id,si.quantity,s.created_at FROM sale_items si JOIN sales s ON s.id=si.sale_id

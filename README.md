@@ -38,25 +38,59 @@ No PowerShell, dentro desta pasta:
 py -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python scripts/init_local_db.py
 python app.py
 ```
 
-Abra `http://127.0.0.1:5000`. O banco SQLite `bar.db` é criado automaticamente na primeira execução.
+Abra `http://127.0.0.1:5000`. O banco SQLite deve ser preparado explicitamente
+antes da primeira execução. Abrir a aplicação não cria nem altera tabelas.
 
 Em desenvolvimento local, `DATABASE_URL` é opcional e o sistema usa automaticamente o arquivo `bar.db`. Em produção na Vercel, `DATABASE_URL` deve apontar para o PostgreSQL/Supabase.
 
-### Migração do PostgreSQL/Supabase
+Para usar outro arquivo SQLite:
 
-As tabelas e alterações de esquema do PostgreSQL não são executadas durante
-requisições HTTP. Depois de publicar uma alteração que inclua schema, execute
-uma vez, em ambiente controlado, antes de liberar o deploy:
-
-```bash
-DATABASE_URL='postgresql://...' .venv/bin/python scripts/migrate_postgres_schema.py
+```powershell
+python scripts/init_local_db.py --database .\dados\desenvolvimento.db
 ```
 
-O comando é idempotente, mas deve ser executado fora da função serverless para
-evitar que instâncias concorrentes alterem o catálogo do PostgreSQL.
+O comando é idempotente e preserva os dados existentes. Para executar os testes:
+
+```powershell
+python -m unittest discover -s tests
+```
+
+### Migração do PostgreSQL/Supabase
+
+As migrations incrementais ficam em `supabase/migrations`, com nome iniciado
+por timestamp. Elas nunca são executadas durante requests HTTP. Aplique-as uma
+vez, em ambiente controlado, antes de liberar o deploy:
+
+```powershell
+$env:APPLY_POSTGRES_MIGRATIONS='1'
+$env:DATABASE_URL='postgresql://...'
+python scripts/migrate_postgres_schema.py
+```
+
+O executor registra cada arquivo em `schema_migrations`, ignora versões já
+aplicadas e usa advisory lock para impedir execuções simultâneas.
+`init_postgres()` é um bootstrap monolítico legado e não deve receber novas
+alterações.
+
+Para criar uma migration, adicione somente a alteração incremental em um novo
+arquivo `supabase/migrations/AAAAMMDDHHMMSS_descricao.sql`. Não edite migrations
+já aplicadas e não inclua dados secretos no SQL.
+
+Fluxo recomendado de produção:
+
+1. revisar e testar o código;
+2. aplicar as migrations com o comando controlado acima;
+3. validar `GET /health`;
+4. publicar o deployment na Vercel;
+5. monitorar logs e uso do Supabase.
+
+> **Nunca executar migrations, `CREATE TABLE`, `ALTER TABLE`, `init_sqlite()`
+> ou `init_postgres()` durante requests HTTP, importação da aplicação ou startup
+> de funções serverless.**
 
 ## Mercado Pago Pix
 

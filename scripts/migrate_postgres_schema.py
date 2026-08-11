@@ -10,6 +10,11 @@ intentionally not called by ``app.py`` or by Vercel request handlers.
 
 import os
 import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 try:
     from dotenv import load_dotenv
@@ -23,15 +28,25 @@ from src.db import run_postgres_migrations
 
 
 def main():
+    if os.environ.get("APPLY_POSTGRES_MIGRATIONS") != "1":
+        raise SystemExit("Defina APPLY_POSTGRES_MIGRATIONS=1 para confirmar a execução controlada.")
     database_url = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL")
     if not database_url:
         raise SystemExit("Defina DATABASE_URL ou SUPABASE_DB_URL antes de executar a migração.")
     try:
-        run_postgres_migrations(database_url)
-    except Exception as exc:
-        print(f"Falha na migração PostgreSQL ({type(exc).__name__}): {exc}", file=sys.stderr)
+        applied = run_postgres_migrations(database_url)
+    except RuntimeError as exc:
+        print(f"Falha na migração PostgreSQL: {exc}", file=sys.stderr)
         raise SystemExit(1)
-    print("Migração PostgreSQL concluída com sucesso.")
+    except Exception as exc:
+        print(f"Falha na migração PostgreSQL ({type(exc).__name__}).", file=sys.stderr)
+        raise SystemExit(1)
+    if applied:
+        print("Migrations aplicadas:")
+        for version in applied:
+            print(f"- {version}")
+    else:
+        print("Banco já está atualizado; nenhuma migration pendente.")
 
 
 if __name__ == "__main__":
