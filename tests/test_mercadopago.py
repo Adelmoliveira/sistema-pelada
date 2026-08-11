@@ -320,6 +320,98 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Informe seu nome de usuário", response.get_data(as_text=True))
 
+    def test_credit_balance_get_is_read_only_and_returns_minimal_payload(self):
+        with app.app_context():
+            db = get_db()
+            client_user_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("saldo.polling", "Saldo Polling", "hash", self.player_id),
+            ).lastrowid
+            db.execute("DELETE FROM bar_credit_accounts WHERE player_id=?", (self.player_id,))
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_user_id
+
+        connection = connect_db(app)
+        statements = []
+
+        class ReadRecorder:
+            def execute(self, statement, params=()):
+                statements.append(" ".join(statement.split()).upper())
+                return connection.execute(statement, params)
+
+        try:
+            with patch("src.routes.credits.get_db", return_value=ReadRecorder()):
+                missing = self.client.get("/creditos/saldo")
+            self.assertEqual(missing.status_code, 200)
+            self.assertEqual(missing.get_json(), {"balance_cents": 0})
+            self.assertEqual(len(statements), 1)
+            self.assertTrue(statements[0].startswith("SELECT BALANCE_CENTS"))
+            self.assertFalse(any("INSERT" in statement for statement in statements))
+
+            connection.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,?)",
+                (self.player_id, 4321),
+            )
+            connection.commit()
+            statements.clear()
+            with patch("src.routes.credits.get_db", return_value=ReadRecorder()):
+                existing = self.client.get("/creditos/saldo")
+            self.assertEqual(existing.status_code, 200)
+            self.assertEqual(existing.get_json(), {"balance_cents": 4321})
+            self.assertEqual(len(statements), 1)
+            self.assertFalse(any("INSERT" in statement for statement in statements))
+        finally:
+            connection.close()
+
+        pending_credits = self.client.get("/creditos/pendentes")
+        pending_delivery = self.client.get("/minhas-compras/pending-count")
+        self.assertEqual(set(pending_credits.get_json()), {"count"})
+        self.assertEqual(set(pending_delivery.get_json()), {"count"})
+
+    def test_stage8_credit_and_delivery_polling_contracts(self):
+        credit_script = Path("static/credit-pending.js").read_text(encoding="utf-8")
+        pwa_script = Path("static/pwa.js").read_text(encoding="utf-8")
+        sale_template = Path("templates/sale.html").read_text(encoding="utf-8")
+        orders_template = Path("templates/orders.html").read_text(encoding="utf-8")
+        history_template = Path("templates/order_history.html").read_text(encoding="utf-8")
+        credits_template = Path("templates/credits.html").read_text(encoding="utf-8")
+
+        self.assertIn("CREDIT_PENDING_POLL_INTERVAL_MS = 60000", credit_script)
+        self.assertIn("document.visibilityState !== 'visible'", credit_script)
+        self.assertIn("state.requestInFlight", credit_script)
+        self.assertIn("window.clearInterval(state.timer)", credit_script)
+        self.assertIn("visibilitychange", credit_script)
+        self.assertIn("refresh();\n    startPolling();", credit_script)
+
+        self.assertIn("DELIVERY_POLL_INTERVAL_MS = 60000", pwa_script)
+        self.assertIn('document.visibilityState !== "visible"', pwa_script)
+        self.assertIn("deliveryPollingState.requestInFlight", pwa_script)
+        self.assertIn("window.clearInterval(deliveryPollingState.timer)", pwa_script)
+        self.assertIn("!hasPendingDeliveryIndicator()", pwa_script)
+        self.assertIn("visibilitychange", pwa_script)
+        self.assertIn("syncPendingDelivery();\n    startDeliveryPolling();", pwa_script)
+
+        self.assertIn("CREDIT_BALANCE_POLL_INTERVAL_MS=60000", sale_template)
+        self.assertIn("document.visibilityState!=='visible'", sale_template)
+        self.assertIn("creditBalanceRequestInProgress", sale_template)
+        self.assertIn("clearInterval(creditRefreshTimer)", sale_template)
+        self.assertIn("visibilitychange", sale_template)
+        self.assertIn("refreshCreditBalance();startCreditBalancePolling()", sale_template)
+
+        # Os pollings temporários de confirmação Pix continuam rápidos e
+        # encerram quando a operação chega a um estado final.
+        self.assertIn("pollTimer=setTimeout(()=>pollPayment(statusUrl),5000)", sale_template)
+        self.assertIn("pollTimer=setTimeout(()=>pollPayment(statusUrl),7000)", sale_template)
+        self.assertIn("setTimeout(async()=>", credits_template)
+        self.assertIn("},5000)", credits_template)
+
+        # Operações que mudam entregas continuam atualizando a tela sem
+        # aguardar o próximo ciclo de sessenta segundos.
+        self.assertIn("await refresh()", orders_template)
+        self.assertIn("await refresh()", history_template)
+
     def test_manager_changes_player_password_from_player_record(self):
         with app.app_context():
             db = get_db()

@@ -43,18 +43,53 @@
     }
   };
 
+  const DELIVERY_POLL_INTERVAL_MS = 60000;
+  const deliveryPollingState = window.__gpctaDeliveryPolling || { timer: null, requestInFlight: false };
+  if (deliveryPollingState.timer !== null) window.clearInterval(deliveryPollingState.timer);
+  deliveryPollingState.timer = null;
+  window.__gpctaDeliveryPolling = deliveryPollingState;
+  const hasPendingDeliveryIndicator = () => Boolean(
+    document.querySelector("#pending-delivery-bell") || document.querySelector("#sidebar-pending-delivery-link")
+  );
+
   const syncPendingDelivery = async () => {
-    if (!document.querySelector("#pending-delivery-bell") && !document.querySelector("#sidebar-pending-delivery-link")) return;
+    if (document.visibilityState !== "visible" || deliveryPollingState.requestInFlight) return;
+    if (!hasPendingDeliveryIndicator()) return;
+    deliveryPollingState.requestInFlight = true;
     try {
       const response = await fetch("/minhas-compras/pending-count", {credentials: "same-origin", cache: "no-store"});
       if (!response.ok) return;
       const data = await response.json();
       updatePendingDelivery(data.count);
-    } catch (_) {}
+    } catch (_) {
+      // Preserve the last known counter until the next scheduled refresh.
+    } finally {
+      deliveryPollingState.requestInFlight = false;
+    }
   };
-  syncPendingDelivery();
-  window.setInterval(syncPendingDelivery, 20000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) syncPendingDelivery(); });
+
+  const stopDeliveryPolling = () => {
+    if (deliveryPollingState.timer === null) return;
+    window.clearInterval(deliveryPollingState.timer);
+    deliveryPollingState.timer = null;
+  };
+  const startDeliveryPolling = () => {
+    stopDeliveryPolling();
+    if (document.visibilityState !== "visible" || !hasPendingDeliveryIndicator()) return;
+    deliveryPollingState.timer = window.setInterval(syncPendingDelivery, DELIVERY_POLL_INTERVAL_MS);
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") {
+      stopDeliveryPolling();
+      return;
+    }
+    syncPendingDelivery();
+    startDeliveryPolling();
+  });
+  if (document.visibilityState === "visible") {
+    syncPendingDelivery();
+    startDeliveryPolling();
+  }
   let serviceWorkerRegistration;
   let registrationPromise;
   if ("serviceWorker" in navigator) {

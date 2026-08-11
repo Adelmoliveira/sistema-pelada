@@ -45,13 +45,11 @@ def index():
 @roles_allowed("client")
 def current_balance():
     """Return the connected player's current balance for live UI updates."""
-    account = balance(get_db(), _player_id())
-    balance_cents = int(account["balance_cents"] or 0)
-    return jsonify(
-        balance_cents=balance_cents,
-        low_balance=balance_cents <= low_balance_threshold(),
-        low_balance_threshold_cents=low_balance_threshold(),
-    )
+    account = get_db().execute(
+        "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?",
+        (_player_id(),),
+    ).fetchone()
+    return jsonify(balance_cents=int(account["balance_cents"] or 0) if account else 0)
 
 
 @bp.get("/pendentes")
