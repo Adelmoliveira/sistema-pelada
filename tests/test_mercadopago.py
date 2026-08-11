@@ -2596,6 +2596,113 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(feed["pending"], [])
         self.assertEqual(feed["delivered"][0]["delivered_by_name"], "Teste")
 
+    def test_manager_restores_accidental_full_delivery_without_changing_payment_or_stock(self):
+        sale_id = self.create_order("ORD-RESTORE-DELIVERY", 2)
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "UPDATE sales SET paid=1,payment_status='approved',ready_for_delivery=1,paid_at=CURRENT_TIMESTAMP WHERE id=?",
+                (sale_id,),
+            )
+            db.commit()
+            stock_before = db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"]
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        delivered = self.client.post(f"/orders/{sale_id}/deliver", headers={"Accept": "application/json"})
+        self.assertEqual(delivered.status_code, 200)
+
+        with app.app_context():
+            db = get_db()
+            staff = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'staff')",
+                ("atendente.restore", "Atendente Restore", "hash"),
+            ).lastrowid
+            db.execute(
+                "CREATE TRIGGER fail_delivery_restore BEFORE UPDATE OF delivered_at ON sales "
+                "WHEN OLD.id=%d BEGIN SELECT RAISE(ABORT, 'falha simulada'); END" % sale_id
+            )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff
+        denied = self.client.post(
+            f"/orders/{sale_id}/restore-delivery",
+            json={"reason": "Correção solicitada."},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        failed = self.client.post(
+            f"/orders/{sale_id}/restore-delivery",
+            json={"reason": "Falha transacional simulada."},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(failed.status_code, 500)
+        with app.app_context():
+            db = get_db()
+            self.assertIsNotNone(db.execute("SELECT delivered_at FROM sales WHERE id=?", (sale_id,)).fetchone()["delivered_at"])
+            self.assertGreater(
+                db.execute(
+                    "SELECT COUNT(*) total FROM sale_item_deliveries sid JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=?",
+                    (sale_id,),
+                ).fetchone()["total"],
+                0,
+            )
+            db.execute("DROP TRIGGER fail_delivery_restore")
+            db.commit()
+
+        invalid = self.client.post(
+            f"/orders/{sale_id}/restore-delivery",
+            json={"reason": "ops"},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(invalid.status_code, 400)
+
+        restored = self.client.post(
+            f"/orders/{sale_id}/restore-delivery",
+            json={"reason": "Entrega total registrada por engano."},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(restored.status_code, 200)
+        with app.app_context():
+            db = get_db()
+            sale = db.execute(
+                "SELECT paid,payment_status,ready_for_delivery,delivered_at,delivered_by FROM sales WHERE id=?",
+                (sale_id,),
+            ).fetchone()
+            deliveries = db.execute(
+                "SELECT COUNT(*) total FROM sale_item_deliveries sid JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=?",
+                (sale_id,),
+            ).fetchone()["total"]
+            stock_after = db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"]
+            self.assertEqual((sale["paid"], sale["payment_status"], sale["ready_for_delivery"]), (1, "approved", 1))
+            self.assertIsNone(sale["delivered_at"])
+            self.assertIsNone(sale["delivered_by"])
+            self.assertEqual(deliveries, 0)
+            self.assertEqual(stock_after, stock_before)
+            sale_item_id = db.execute(
+                "SELECT id FROM sale_items WHERE sale_id=? ORDER BY id LIMIT 1",
+                (sale_id,),
+            ).fetchone()["id"]
+
+        partial = self.client.post(
+            f"/orders/{sale_id}/deliver",
+            json={
+                "sale_item_id": sale_item_id,
+                "quantity": 1,
+            },
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(partial.status_code, 200)
+        self.assertTrue(partial.get_json()["partial"])
+        self.assertEqual(partial.get_json()["remaining_items"][0]["quantity"], 1)
+
+        history = self.client.get("/orders/delivered").get_data(as_text=True)
+        self.assertIn("Corrigir entrega", history)
+
     def test_cash_order_waits_for_staff_payment_delivery_or_cancel(self):
         with app.app_context():
             db = get_db()

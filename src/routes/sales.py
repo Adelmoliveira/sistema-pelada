@@ -687,6 +687,50 @@ def deliver_order(sale_id):
     ) if delivered_sale and delivered_sale["player_id"] else "skipped_guest"
     return jsonify(ok=True, sale_id=sale_id, partial=bool(remaining_items), remaining_items=remaining_items, receipt_status=receipt_status)
 
+@bp.post("/orders/<int:sale_id>/restore-delivery")
+@roles_allowed("manager")
+def restore_delivered_order(sale_id):
+    """Reopen an order that was marked as fully delivered by mistake."""
+    payload = request.get_json(silent=True) or {}
+    reason = " ".join((payload.get("reason") or "").split())
+    if len(reason) < 5:
+        return jsonify(error="Informe uma justificativa com pelo menos 5 caracteres."), 400
+    reason = reason[:500]
+
+    db = get_db()
+    sale = db.execute(
+        "SELECT id,delivered_at,paid,payment_status,ready_for_delivery FROM sales WHERE id=?",
+        (sale_id,),
+    ).fetchone()
+    if not sale or not sale["delivered_at"]:
+        return jsonify(error="Pedido não encontrado ou não está totalmente entregue."), 409
+
+    try:
+        with db:
+            removed = db.execute(
+                "DELETE FROM sale_item_deliveries WHERE sale_item_id IN "
+                "(SELECT id FROM sale_items WHERE sale_id=?)",
+                (sale_id,),
+            ).rowcount
+            updated = db.execute(
+                "UPDATE sales SET delivered_at=NULL,delivered_by=NULL WHERE id=? AND delivered_at IS NOT NULL",
+                (sale_id,),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("pedido deixou de estar entregue durante a restauração")
+    except Exception as exc:
+        current_app.logger.error(
+            "ORDER_DELIVERY_RESTORE_ERROR sale_id=%s manager_id=%s exception_type=%s",
+            sale_id, g.user["id"], type(exc).__name__,
+        )
+        return jsonify(error="Não foi possível restaurar o pedido."), 500
+
+    current_app.logger.warning(
+        "ORDER_DELIVERY_RESTORED sale_id=%s manager_id=%s removed_deliveries=%s reason=%s",
+        sale_id, g.user["id"], removed, reason,
+    )
+    return jsonify(ok=True, sale_id=sale_id)
+
 @bp.post("/orders/<int:sale_id>/cancel")
 @roles_allowed("manager", "staff")
 def cancel_cash_order(sale_id):
