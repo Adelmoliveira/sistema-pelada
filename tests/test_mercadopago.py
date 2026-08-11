@@ -3,8 +3,10 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
@@ -16,9 +18,25 @@ from unittest.mock import patch
 from PIL import Image
 from openpyxl import load_workbook
 
+# Tests must never inherit the developer's production Supabase connection from
+# .env.local.  Every test configures an isolated SQLite database in setUp.
+os.environ["DATABASE_URL"] = ""
+os.environ["SUPABASE_DB_URL"] = ""
+
 from app import app
-from src.db import get_db, init_postgres
+from flask import has_request_context
+from src.db import (
+    DbWrapper,
+    connect_db,
+    get_db,
+    init_postgres,
+    init_sqlite,
+    initialize_sqlite_database,
+    read_user_from_session,
+    run_postgres_migrations,
+)
 from src.routes.auth import make_password_hash
+from src.routes.football import _sumula
 from src.routes.sales import pix_access_token
 from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
@@ -33,6 +51,12 @@ from werkzeug.security import check_password_hash
 
 
 class MercadoPagoFlowTest(unittest.TestCase):
+    SCHEMA_SQL = re.compile(
+        r"^\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|FUNCTION|INDEX)|ALTER\s+TABLE|"
+        r"DROP\s+(?:TABLE|INDEX|CONSTRAINT)|DO\s+\$\$)",
+        re.IGNORECASE,
+    )
+
     def test_postgres_schema_omits_sqlite_seed_syntax(self):
         class Recorder:
             def __init__(self):
@@ -64,6 +88,35 @@ class MercadoPagoFlowTest(unittest.TestCase):
             for statement in recorder.statements
         ))
 
+    def test_postgres_connect_does_not_run_schema_setup(self):
+        """Opening a production connection may set the timezone, but never run DDL."""
+        statements = []
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def execute(self, statement, _params=()):
+                statements.append(statement)
+
+        class Connection:
+            def cursor(self):
+                return Cursor()
+
+        config = type("AppConfig", (), {"config": {"DATABASE_URL": "postgresql://example.invalid/db"}})()
+        with patch.dict(os.environ, {"DATABASE_URL": ""}), \
+             patch("psycopg2.connect", return_value=Connection()), \
+             patch("src.db.init_postgres") as schema_setup:
+            connection = connect_db(config)
+
+        self.assertIsInstance(connection, DbWrapper)
+        schema_setup.assert_not_called()
+        self.assertEqual(statements, ["SET TIME ZONE 'UTC'"])
+        self.assertFalse(any(self.SCHEMA_SQL.match(statement) for statement in statements))
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         app.config.update(
@@ -79,6 +132,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             GMAIL_APP_PASSWORD="app-password-test",
             CRON_SECRET="cron-secret-test",
         )
+        initialize_sqlite_database(app.config["DATABASE"])
         with app.app_context():
             db = get_db()
             db.execute("INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'manager')", ("teste", "Teste", "hash"))
@@ -96,7 +150,17 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.client = app.test_client()
 
     def tearDown(self):
-        self.tempdir.cleanup()
+        # Windows can briefly retain a just-closed SQLite file handle. Retry
+        # only the fixture cleanup; application connections are still closed
+        # by Flask's teardown on every request/app context.
+        for attempt in range(3):
+            try:
+                self.tempdir.cleanup()
+                break
+            except OSError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
 
     def headers(self):
         return {"Accept": "application/json", "X-Pix-Token": self.token}
@@ -323,6 +387,76 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             player = get_db().execute("SELECT thumbnail_data FROM players WHERE id=?", (self.player_id,)).fetchone()
             self.assertTrue(player["thumbnail_data"].startswith("data:image/jpeg;base64,"))
+
+    def test_manager_edit_preserves_and_can_replace_player_photo(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        first_photo = BytesIO()
+        Image.new("RGB", (800, 600), (30, 90, 160)).save(first_photo, format="JPEG")
+        first_photo.seek(0)
+        created = self.client.post(
+            "/players",
+            data={
+                "name": "Foto preservada",
+                "war_name": "Preserva",
+                "gender": "male",
+                "membership_type": "regular",
+                "photo": (first_photo, "original.jpg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(created.status_code, 302)
+        with app.app_context():
+            db = get_db()
+            player = db.execute(
+                "SELECT id,photo_data,thumbnail_data FROM players WHERE war_name=?", ("Preserva",)
+            ).fetchone()
+            player_id = player["id"]
+            original = (player["photo_data"], player["thumbnail_data"])
+
+        preserved = self.client.post(
+            f"/players/{player_id}/edit",
+            data={
+                "name": "Foto preservada",
+                "war_name": "Preserva",
+                "gender": "male",
+                "membership_type": "regular",
+                "football_position": "",
+                "football_join_date": "",
+            },
+        )
+        self.assertEqual(preserved.status_code, 302)
+        with app.app_context():
+            player = get_db().execute(
+                "SELECT photo_data,thumbnail_data FROM players WHERE id=?", (player_id,)
+            ).fetchone()
+            self.assertEqual((player["photo_data"], player["thumbnail_data"]), original)
+
+        replacement = BytesIO()
+        Image.new("RGB", (800, 600), (180, 70, 35)).save(replacement, format="JPEG")
+        replacement.seek(0)
+        replaced = self.client.post(
+            f"/players/{player_id}/edit",
+            data={
+                "name": "Foto preservada",
+                "war_name": "Preserva",
+                "gender": "male",
+                "membership_type": "regular",
+                "football_position": "",
+                "football_join_date": "",
+                "photo": (replacement, "nova.jpg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(replaced.status_code, 302)
+        with app.app_context():
+            player = get_db().execute(
+                "SELECT photo_data,thumbnail_data FROM players WHERE id=?", (player_id,)
+            ).fetchone()
+            self.assertTrue(player["photo_data"].startswith("data:image/jpeg;base64,"))
+            self.assertTrue(player["thumbnail_data"].startswith("data:image/jpeg;base64,"))
+            self.assertNotEqual((player["photo_data"], player["thumbnail_data"]), original)
 
     def test_client_can_use_and_revoke_club_qr_card_without_login(self):
         with app.app_context():
@@ -1778,10 +1912,13 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(self.client.get("/offline").status_code, 200)
 
     def test_transient_database_failure_preserves_authenticated_session(self):
+        class TransientError(RuntimeError):
+            pgcode = "08006"
+
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
 
-        with patch("app.get_db", side_effect=RuntimeError("falha temporária simulada")):
+        with patch("src.db.get_db", side_effect=TransientError("falha temporária simulada")):
             response = self.client.get("/players")
 
         self.assertEqual(response.status_code, 503)
@@ -1790,7 +1927,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with self.client.session_transaction() as session:
             self.assertEqual(session.get("user_id"), self.user_id)
 
-        with patch("app.get_db", side_effect=RuntimeError("falha temporária simulada")):
+        with patch("app.get_db", side_effect=TransientError("falha temporária simulada")):
             static_response = self.client.get("/static/pwa.js")
         self.assertEqual(static_response.status_code, 200)
         static_response.close()
@@ -1824,6 +1961,87 @@ class MercadoPagoFlowTest(unittest.TestCase):
 
         self.assertEqual([response.status_code for response in responses], [200, 200])
         self.assertEqual([response.get_json()["count"] for response in responses], [0, 0])
+        self.assertTrue(all(set(response.get_json()) == {"count"} for response in responses))
+
+    def test_common_http_requests_never_execute_schema_sql(self):
+        """Regression barrier for DDL/schema repair inside normal HTTP requests."""
+        with app.app_context():
+            db = get_db()
+            db.execute("INSERT INTO players(name,war_name) VALUES(?,?)", ("Guarda DDL", "guardaddl"))
+            player_id = db.execute("SELECT id FROM players WHERE war_name=?", ("guardaddl",)).fetchone()["id"]
+            db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("guardaddl", "Guarda DDL", "hash", player_id),
+            )
+            db.commit()
+            client_user_id = db.execute("SELECT id FROM users WHERE username=?", ("guardaddl",)).fetchone()["id"]
+
+        original_execute = DbWrapper.execute
+        statements = []
+
+        def reject_schema_sql(wrapper, statement, params=()):
+            normalized = " ".join(str(statement).split())
+            if has_request_context():
+                statements.append(normalized)
+                if self.SCHEMA_SQL.match(normalized):
+                    raise AssertionError(f"DDL executado durante request HTTP: {normalized[:120]}")
+                if re.match(r"^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+users\b", normalized, re.IGNORECASE):
+                    raise AssertionError(f"Carregamento de sessao escreveu em users: {normalized[:120]}")
+            return original_execute(wrapper, statement, params)
+
+        with patch.object(DbWrapper, "execute", new=reject_schema_sql), patch("src.db.init_sqlite"):
+            self.client.get("/login")
+
+            with self.client.session_transaction() as session:
+                session["user_id"] = self.user_id
+            for endpoint in ("/", "/players", "/futebol", "/health"):
+                response = self.client.get(endpoint)
+                self.assertNotEqual(response.status_code, 500, endpoint)
+
+            with self.client.session_transaction() as session:
+                session["user_id"] = client_user_id
+            response = self.client.get(
+                "/notifications/push/unread-count", headers={"Accept": "application/json"}
+            )
+            self.assertEqual(response.status_code, 200)
+
+        self.assertTrue(statements)
+        self.assertFalse(any(self.SCHEMA_SQL.match(statement) for statement in statements))
+
+    def test_priority_player_queries_do_not_load_original_photos(self):
+        """Lists, authentication and match sheets must never fetch photo_data."""
+        statements = []
+        original_execute = DbWrapper.execute
+
+        def record_player_queries(wrapper, statement, params=()):
+            normalized = " ".join(str(statement).split())
+            if re.search(r"\b(?:FROM|JOIN)\s+players\b", normalized, re.IGNORECASE):
+                statements.append(normalized)
+            return original_execute(wrapper, statement, params)
+
+        with app.app_context():
+            db = get_db()
+            cursor = db.execute(
+                "INSERT INTO football_sumulas(match_date,day_pelada,created_by) VALUES(?,?,?)",
+                ("2026-08-12", "QUARTA", self.user_id),
+            )
+            sumula_id = cursor.lastrowid
+            db.commit()
+            with patch.object(DbWrapper, "execute", new=record_player_queries):
+                self.assertIsNotNone(_sumula(db, sumula_id))
+
+        with patch.object(DbWrapper, "execute", new=record_player_queries), patch("src.db.init_sqlite"):
+            self.client.post("/login", data={"username": "usuario-inexistente", "password": "invalida"})
+            with self.client.session_transaction() as session:
+                session["user_id"] = self.user_id
+            for endpoint in ("/players", "/sale", "/finance", "/futebol"):
+                response = self.client.get(endpoint)
+                self.assertNotEqual(response.status_code, 500, endpoint)
+
+        self.assertTrue(statements)
+        offending = [statement for statement in statements if re.search(r"\bphoto_data\b", statement, re.IGNORECASE)]
+        self.assertEqual(offending, [])
+        self.assertTrue(any("FROM football_participants" in statement for statement in statements))
 
     def test_password_hash_is_compatible_with_local_python(self):
         password_hash = make_password_hash("senha-segura-123")
@@ -3930,6 +4148,293 @@ NILSON"""
             match = db.execute("SELECT blue_score,white_score,status FROM football_matches WHERE sumula_id=?", (sumula_id,)).fetchone()
             self.assertEqual((match["blue_score"], match["white_score"], match["status"]), (0, 0, "PLANEJADA"))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM football_goals").fetchone()[0], 0)
+
+    def test_stage3_session_load_is_read_only_explicit_and_one_connection(self):
+        statements = []
+        original_execute = DbWrapper.execute
+        real_connect = connect_db
+
+        def record(wrapper, statement, params=()):
+            statements.append(" ".join(str(statement).split()))
+            return original_execute(wrapper, statement, params)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with patch.object(DbWrapper, "execute", new=record), patch(
+            "src.db.connect_db", wraps=real_connect
+        ) as connect:
+            response = self.client.get("/players")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(connect.call_count, 1)
+        session_queries = [sql for sql in statements if "FROM users WHERE id=" in sql]
+        self.assertEqual(len(session_queries), 1)
+        self.assertNotIn("SELECT *", session_queries[0].upper())
+        self.assertFalse(any(re.match(r"^(INSERT|UPDATE|DELETE)", sql, re.I) for sql in statements))
+        self.assertFalse(any("SELECT 1 FROM users LIMIT 1" in sql for sql in statements))
+
+    def test_stage3_retry_only_transient_and_auth_error_is_not_retried(self):
+        class DbError(RuntimeError):
+            def __init__(self, sqlstate=None, message="database failure"):
+                super().__init__(message)
+                self.pgcode = sqlstate
+
+        class FakeDb:
+            def __init__(self, errors):
+                self.errors = list(errors)
+                self.execute_count = 0
+                self.rollback_count = 0
+
+            def execute(self, _sql, _params):
+                self.execute_count += 1
+                if self.errors:
+                    raise self.errors.pop(0)
+                return self
+
+            def fetchone(self):
+                return {"id": 1}
+
+            def rollback(self):
+                self.rollback_count += 1
+
+        retryable_errors = (
+            DbError("40001"),
+            DbError("40P01"),
+            DbError(message="tuple concurrently updated"),
+        )
+        for error in retryable_errors:
+            with self.subTest(error=str(error), sqlstate=error.pgcode):
+                transient = FakeDb([error])
+                with app.test_request_context("/players"), patch(
+                    "src.db.get_db", return_value=transient
+                ), patch("src.db.time.sleep") as sleep:
+                    self.assertEqual(read_user_from_session(1)["id"], 1)
+                self.assertEqual(transient.execute_count, 2)
+                self.assertEqual(transient.rollback_count, 1)
+                sleep.assert_called_once()
+
+        permanent_errors = (
+            DbError("28P01", "password authentication failed"),
+            DbError("42P01", "relation does not exist"),
+            DbError(None, "connection timeout"),
+        )
+        for error in permanent_errors:
+            with self.subTest(no_retry=str(error), sqlstate=error.pgcode):
+                database = FakeDb([error])
+                with app.test_request_context("/players"), patch("src.db.get_db", return_value=database):
+                    with self.assertRaises(DbError):
+                        read_user_from_session(1)
+                self.assertEqual(database.execute_count, 1)
+
+    def test_stage3_health_and_safe_database_logs(self):
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"database": "ok", "status": "ok"})
+
+        secret = "postgresql://admin:senha-secreta@example.test/db"
+        class TemporaryConnectionError(RuntimeError):
+            pgcode = "08006"
+
+        with self.assertLogs(app.logger.name, level="ERROR") as captured, patch(
+            "app.get_db", side_effect=TemporaryConnectionError(secret)
+        ):
+            failed = self.client.get("/health")
+        self.assertEqual(failed.status_code, 503)
+        logs = "\n".join(captured.output)
+        self.assertIn("DB_HEALTHCHECK_ERROR", logs)
+        self.assertNotIn(secret, logs)
+        self.assertNotIn("senha-secreta", logs)
+
+        class SchemaError(RuntimeError):
+            pgcode = "42P01"
+
+        with patch("app.get_db", side_effect=SchemaError("relation does not exist")):
+            permanent = self.client.get("/health")
+        self.assertEqual(permanent.status_code, 500)
+
+    def test_stage3_teardown_rolls_back_after_error_and_closes(self):
+        class FakeConnection:
+            def __init__(self):
+                self.rolled_back = False
+                self.closed = False
+
+            def rollback(self):
+                self.rolled_back = True
+
+            def close(self):
+                self.closed = True
+
+        connection = FakeConnection()
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            with app.app_context():
+                from flask import g
+                g.db = connection
+                raise RuntimeError("boom")
+        self.assertTrue(connection.rolled_back)
+        self.assertTrue(connection.closed)
+
+    def test_stage4_sqlite_connect_is_schema_free(self):
+        database = str(Path(self.tempdir.name) / "connection-only.db")
+        config = type("AppConfig", (), {"config": {"DATABASE_URL": None, "DATABASE": database}})()
+        with patch.dict(os.environ, {"DATABASE_URL": "", "SUPABASE_DB_URL": ""}), patch(
+            "src.db.init_sqlite"
+        ) as schema_setup:
+            connection = connect_db(config)
+        try:
+            tables = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        finally:
+            connection.close()
+        schema_setup.assert_not_called()
+        self.assertEqual(tables, [])
+
+    def test_stage4_explicit_sqlite_setup_is_idempotent_and_preserves_data(self):
+        database = str(Path(self.tempdir.name) / "explicit-setup.db")
+        first_path = initialize_sqlite_database(database)
+        first = connect_db(type("Config", (), {"config": {"DATABASE_URL": None, "DATABASE": database}})())
+        first.execute(
+            "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'manager')",
+            ("preservado", "Preservado", "hash"),
+        )
+        first.commit()
+        first.close()
+
+        second_path = initialize_sqlite_database(database)
+        second = connect_db(type("Config", (), {"config": {"DATABASE_URL": None, "DATABASE": database}})())
+        try:
+            row = second.execute("SELECT name FROM users WHERE username=?", ("preservado",)).fetchone()
+        finally:
+            second.close()
+        self.assertEqual(first_path, second_path)
+        self.assertEqual(row["name"], "Preservado")
+
+    def test_stage4_setup_and_migrations_never_run_during_requests(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with patch("src.db.init_sqlite") as sqlite_setup, patch(
+            "src.db.run_postgres_migrations"
+        ) as postgres_setup:
+            response = self.client.get("/players")
+        self.assertEqual(response.status_code, 200)
+        sqlite_setup.assert_not_called()
+        postgres_setup.assert_not_called()
+
+        with app.test_request_context("/health"):
+            with self.assertRaisesRegex(RuntimeError, "requisição HTTP"):
+                initialize_sqlite_database(str(Path(self.tempdir.name) / "forbidden.db"))
+            with self.assertRaisesRegex(RuntimeError, "requests HTTP"):
+                run_postgres_migrations("postgresql://redacted.invalid/db")
+
+    def test_stage4_commands_require_explicit_execution(self):
+        from scripts.init_local_db import main as init_local_main
+        from scripts.migrate_postgres_schema import main as postgres_migration_main
+
+        database = str(Path(self.tempdir.name) / "command.db")
+        self.assertEqual(init_local_main(["--database", database]), 0)
+        connection = connect_db(type("Config", (), {"config": {"DATABASE_URL": None, "DATABASE": database}})())
+        try:
+            self.assertIsNotNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'"
+            ).fetchone())
+        finally:
+            connection.close()
+
+        with patch.dict(os.environ, {
+            "DATABASE_URL": "postgresql://redacted.invalid/db",
+            "SUPABASE_DB_URL": "",
+            "APPLY_POSTGRES_MIGRATIONS": "",
+        }), patch("scripts.migrate_postgres_schema.run_postgres_migrations") as runner:
+            with self.assertRaises(SystemExit):
+                postgres_migration_main()
+            runner.assert_not_called()
+
+        with patch.dict(os.environ, {
+            "DATABASE_URL": "postgresql://redacted.invalid/db",
+            "SUPABASE_DB_URL": "",
+            "APPLY_POSTGRES_MIGRATIONS": "1",
+        }), patch("scripts.migrate_postgres_schema.run_postgres_migrations", return_value=[]) as runner:
+            postgres_migration_main()
+            runner.assert_called_once_with("postgresql://redacted.invalid/db")
+
+    def test_stage5_postgres_runner_orders_skips_records_and_closes_with_mocks(self):
+        migration_dir = Path(self.tempdir.name) / "migrations"
+        migration_dir.mkdir()
+        (migration_dir / "001_applied.sql").write_text("SELECT 10;", encoding="utf-8")
+        (migration_dir / "002_empty.sql").write_text("", encoding="utf-8")
+        (migration_dir / "003_pending.sql").write_text("SELECT 30;", encoding="utf-8")
+
+        class FakeConnection:
+            def __init__(self):
+                self.applied = {"001_applied.sql"}
+                self.statements = []
+                self.commits = 0
+                self.rollbacks = 0
+                self.closed = False
+                self.fail_sql = None
+
+            def cursor(self):
+                connection = self
+
+                class Cursor:
+                    result = None
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *_args):
+                        return False
+
+                    def execute(self, sql, params=None):
+                        normalized = " ".join(str(sql).split())
+                        connection.statements.append((normalized, params))
+                        if normalized == connection.fail_sql:
+                            raise RuntimeError("falha simulada")
+                        if "to_regclass" in normalized:
+                            self.result = ("users",)
+                        elif normalized.startswith("SELECT 1 FROM schema_migrations"):
+                            self.result = (1,) if params[0] in connection.applied else None
+                        elif normalized.startswith("INSERT INTO schema_migrations"):
+                            connection.applied.add(params[0])
+
+                    def fetchone(self):
+                        return self.result
+
+                return Cursor()
+
+            def commit(self):
+                self.commits += 1
+
+            def rollback(self):
+                self.rollbacks += 1
+
+            def close(self):
+                self.closed = True
+
+        connection = FakeConnection()
+        with patch("psycopg2.connect", return_value=connection):
+            applied = run_postgres_migrations("postgresql://redacted.invalid/db", migration_dir)
+
+        self.assertEqual(applied, ["002_empty.sql", "003_pending.sql"])
+        self.assertEqual(connection.commits, 3)
+        self.assertEqual(connection.rollbacks, 0)
+        self.assertTrue(connection.closed)
+        self.assertIn("002_empty.sql", connection.applied)
+        self.assertIn("003_pending.sql", connection.applied)
+        self.assertFalse(any(sql == "SELECT 10;" for sql, _params in connection.statements))
+        self.assertTrue(any(sql == "SELECT 30;" for sql, _params in connection.statements))
+        self.assertTrue(any("pg_advisory_lock" in sql for sql, _params in connection.statements))
+        self.assertTrue(any("pg_advisory_unlock" in sql for sql, _params in connection.statements))
+
+        failed_connection = FakeConnection()
+        failed_connection.applied.add("002_empty.sql")
+        failed_connection.fail_sql = "SELECT 30;"
+        with patch("psycopg2.connect", return_value=failed_connection):
+            with self.assertRaisesRegex(RuntimeError, "falha simulada"):
+                run_postgres_migrations("postgresql://redacted.invalid/db", migration_dir)
+        self.assertEqual(failed_connection.rollbacks, 1)
+        self.assertTrue(failed_connection.closed)
+        self.assertNotIn("003_pending.sql", failed_connection.applied)
 
 
 if __name__ == "__main__":

@@ -2,8 +2,9 @@ import os
 import sqlite3
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
-from flask import g, current_app
+from flask import g, current_app, has_request_context, request
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -872,17 +873,55 @@ def get_db():
     return g.db
 
 
-TRANSIENT_POSTGRES_SQLSTATES = {"40001", "40P01"}
+SESSION_RETRY_SQLSTATES = {"40001", "40P01"}
+TEMPORARY_CONNECTION_SQLSTATES = {"53300", "57P01", "57P02", "57P03"}
+
+
+def database_error_category(exc):
+    """Classify a database exception without exposing sensitive detail."""
+    sqlstate = getattr(exc, "pgcode", None) or getattr(exc, "sqlstate", None) or ""
+    detail = str(exc).lower()
+    if str(sqlstate).startswith("28") or "password authentication failed" in detail:
+        return "DB_AUTH_ERROR"
+    if sqlstate in {"42P01", "42703"} or any(
+        marker in detail for marker in ("relation does not exist", "column does not exist", "undefined table", "undefined column")
+    ):
+        return "DB_SCHEMA_ERROR"
+    if sqlstate in {"40001", "40P01"} or "tuple concurrently updated" in detail:
+        return "DB_CONCURRENCY_ERROR"
+    if str(sqlstate).startswith("08") or sqlstate in TEMPORARY_CONNECTION_SQLSTATES:
+        return "DB_CONNECTION_ERROR"
+    if "timeout" in detail or "timed out" in detail:
+        return "DB_TIMEOUT"
+    if any(item in detail for item in (
+        "connection refused", "connection reset", "connection closed", "connection temporarily unavailable",
+    )):
+        return "DB_CONNECTION_ERROR"
+    return "DB_QUERY_ERROR"
+
+
+def is_session_load_retryable(exc):
+    """Retry session SELECTs only for the three explicitly safe races."""
+    sqlstate = getattr(exc, "pgcode", None) or getattr(exc, "sqlstate", None)
+    return sqlstate in SESSION_RETRY_SQLSTATES or "tuple concurrently updated" in str(exc).lower()
 
 
 def is_transient_database_error(exc):
-    """Return True only for retryable PostgreSQL concurrency failures."""
+    """Return True when a request may safely report temporary unavailability."""
     sqlstate = getattr(exc, "pgcode", None) or getattr(exc, "sqlstate", None)
-    if sqlstate in TRANSIENT_POSTGRES_SQLSTATES:
+    detail = str(exc).lower()
+    if database_error_category(exc) in {"DB_AUTH_ERROR", "DB_SCHEMA_ERROR"}:
+        return False
+    if is_session_load_retryable(exc):
         return True
-    # Supabase/PostgreSQL may surface this catalog-update race without a
-    # populated SQLSTATE in the serverless log.
-    return "tuple concurrently updated" in str(exc).lower()
+    if sqlstate and str(sqlstate).startswith("08"):
+        return True
+    if sqlstate in TEMPORARY_CONNECTION_SQLSTATES:
+        return True
+    return any(marker in detail for marker in (
+        "timeout", "timed out", "connection refused", "connection reset",
+        "connection closed", "connection temporarily unavailable",
+    ))
 
 
 def read_user_from_session(user_id, retries=2):
@@ -892,7 +931,8 @@ def read_user_from_session(user_id, retries=2):
     races. Every failed attempt is rolled back before another query is sent.
     """
     db = get_db()
-    sql = "SELECT * FROM users WHERE id=? AND active=1"
+    sql = """SELECT id,username,name,password_required,role,active,player_id
+             FROM users WHERE id=? AND active=1"""
     for attempt in range(retries + 1):
         try:
             return db.execute(sql, (user_id,)).fetchone()
@@ -901,33 +941,62 @@ def read_user_from_session(user_id, retries=2):
                 db.rollback()
             except Exception:
                 pass
-            if not is_transient_database_error(exc) or attempt >= retries:
+            if not is_session_load_retryable(exc) or attempt >= retries:
                 raise
+            current_app.logger.warning(
+                "SESSION_LOAD_RETRY function=read_user_from_session operation=SELECT_USER "
+                "attempt=%s max_attempts=%s path=%s exception_type=%s category=%s sqlstate=%s",
+                attempt + 1, retries + 1,
+                request.path if has_request_context() else "-",
+                type(exc).__name__, database_error_category(exc),
+                getattr(exc, "pgcode", None) or getattr(exc, "sqlstate", None) or "-",
+            )
             time.sleep(0.05 * (attempt + 1))
 
 
-def run_postgres_migrations(database_url):
-    """Run the complete PostgreSQL schema setup explicitly, outside HTTP.
-
-    This is intentionally callable from a deploy/maintenance command only;
-    ``connect_db`` must never invoke it for a normal request.
-    """
+def run_postgres_migrations(database_url, migrations_dir=None):
+    """Apply each versioned PostgreSQL migration once, outside HTTP."""
+    if has_request_context():
+        raise RuntimeError("Migrations PostgreSQL não podem executar durante requests HTTP.")
     import psycopg2
     import psycopg2.extras
 
+    directory = Path(migrations_dir or Path(__file__).resolve().parents[1] / "supabase" / "migrations")
+    migration_files = sorted(directory.glob("*.sql"))
+    if not migration_files:
+        raise RuntimeError(f"Nenhuma migration SQL encontrada em {directory}.")
     conn = psycopg2.connect(
         database_url,
         sslmode="require",
         connect_timeout=10,
         cursor_factory=psycopg2.extras.DictCursor,
     )
+    applied = []
     try:
-        # Protect an explicitly-run migration from two release jobs touching
-        # PostgreSQL's catalog at the same time.
         with conn.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_lock(hashtext('sistema-pelada-schema'))")
-        wrapper = DbWrapper(conn, is_postgres=True)
-        init_postgres(wrapper)
+            cursor.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""")
+            cursor.execute("SELECT to_regclass('public.users')")
+            if not cursor.fetchone()[0]:
+                raise RuntimeError(
+                    "Banco PostgreSQL sem schema base; use o bootstrap legado apenas em ambiente controlado."
+                )
+        conn.commit()
+        for migration_file in migration_files:
+            version = migration_file.name
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM schema_migrations WHERE version=%s", (version,))
+                if cursor.fetchone():
+                    continue
+                sql = migration_file.read_text(encoding="utf-8").strip()
+                if sql:
+                    cursor.execute(sql)
+                cursor.execute("INSERT INTO schema_migrations(version) VALUES(%s)", (version,))
+            conn.commit()
+            applied.append(version)
     except Exception:
         conn.rollback()
         raise
@@ -938,6 +1007,7 @@ def run_postgres_migrations(database_url):
         except Exception:
             pass
         conn.close()
+    return applied
 
 def connect_db(app):
     db_url = os.environ.get("DATABASE_URL") or app.config.get("DATABASE_URL")
@@ -950,22 +1020,7 @@ def connect_db(app):
         database_path = app.config.get("DATABASE")
         if not database_path:
             raise RuntimeError("Banco local não configurado. Defina DATABASE ou DATABASE_URL.")
-        conn = sqlite3.connect(database_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        sao_paulo = ZoneInfo("America/Sao_Paulo")
-        def local_date(value):
-            try:
-                parsed = datetime.fromisoformat(str(value))
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                return parsed.astimezone(sao_paulo).date().isoformat()
-            except (TypeError, ValueError):
-                return None
-        conn.create_function("date", 1, local_date)
-        wrapper = DbWrapper(conn, is_postgres=False)
-        init_sqlite(wrapper)
-        return wrapper
+        return connect_sqlite(database_path)
 
     if not (db_url.startswith("postgresql://") or db_url.startswith("postgres://")):
         raise RuntimeError("DATABASE_URL inválida. Use uma URL PostgreSQL do Supabase.")
@@ -986,6 +1041,45 @@ def connect_db(app):
     # updated". Run ``scripts/migrate_postgres_schema.py`` explicitly during
     # deployment/maintenance instead.
     return DbWrapper(conn, is_postgres=True)
+
+
+def connect_sqlite(database_path):
+    """Open and configure SQLite without creating or migrating schema."""
+    conn = sqlite3.connect(database_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    sao_paulo = ZoneInfo("America/Sao_Paulo")
+
+    def local_date(value):
+        try:
+            parsed = datetime.fromisoformat(str(value))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(sao_paulo).date().isoformat()
+        except (TypeError, ValueError):
+            return None
+
+    conn.create_function("date", 1, local_date)
+    return DbWrapper(conn, is_postgres=False)
+
+
+def initialize_sqlite_database(database_path):
+    """Explicitly bootstrap/upgrade a local SQLite database, preserving data."""
+    if has_request_context():
+        raise RuntimeError("O setup SQLite não pode ser executado durante uma requisição HTTP.")
+    path = os.path.abspath(os.fspath(database_path))
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    wrapper = connect_sqlite(path)
+    try:
+        init_sqlite(wrapper)
+    except Exception:
+        wrapper.rollback()
+        raise
+    finally:
+        wrapper.close()
+    return path
 
 def migrate_payment_method(connection):
     row = connection.execute(
@@ -1685,6 +1779,9 @@ def init_sqlite(wrapper):
     conn.commit()
 
 def init_postgres(wrapper):
+    """Legacy monolithic bootstrap; prefer versioned Supabase migrations."""
+    if has_request_context():
+        raise RuntimeError("init_postgres() não pode executar durante requests HTTP.")
     wrapper.execute("""
     CREATE OR REPLACE FUNCTION date(t timestamp with time zone) RETURNS date AS $$
         SELECT timezone('America/Sao_Paulo', t)::date;

@@ -168,7 +168,9 @@ def dashboard():
         "year_label": str(today_date.year),
     }
     
-    low = db.execute("SELECT * FROM products WHERE active=1 AND stock<=min_stock ORDER BY stock, name").fetchall()
+    low = db.execute(
+        "SELECT id,name,stock,min_stock FROM products WHERE active=1 AND stock<=min_stock ORDER BY stock,name"
+    ).fetchall()
     recent = db.execute("""SELECT s.*, COALESCE(p.name,s.guest_name,'Convidado') player_name FROM sales s LEFT JOIN players p ON p.id=s.player_id
                             WHERE s.paid=1 ORDER BY s.id DESC LIMIT 8""").fetchall()
     finance = finance_summary(db)
@@ -470,7 +472,10 @@ def finance():
     except ValueError:
         year = local_today().year
         
-    players_rows = db.execute("SELECT * FROM players WHERE active=1 AND membership_type='regular'").fetchall()
+    players_rows = db.execute(
+        """SELECT id,name,war_name,football_join_date
+           FROM players WHERE active=1 AND membership_type='regular'"""
+    ).fetchall()
     players_rows = sorted(players_rows, key=lambda player: alphabetical_key(player["name"]))
     exempt_count = db.execute("SELECT COUNT(*) FROM players WHERE active=1 AND membership_type IN ('goalkeeper','board','veteran','collaborator')").fetchone()[0]
     paid_rows = db.execute("SELECT player_id, month FROM membership_months WHERE month LIKE ?", (f"{year}-%",)).fetchall()

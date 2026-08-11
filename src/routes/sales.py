@@ -162,7 +162,7 @@ def sale():
             placeholders = ",".join("?" for _ in requested)
             products_by_id = {
                 r["id"]: r for r in db.execute(
-                    f"SELECT * FROM products WHERE active=1 AND id IN ({placeholders})",
+                    f"SELECT id,name,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
                     tuple(requested)
                 )
             }
@@ -226,7 +226,8 @@ def sale():
             current_app.logger.error(f"Erro ao processar venda: {exc}")
             flash("Erro interno ao processar a venda. Tente novamente.", "danger")
 
-    player_select = """SELECT p.*, COALESCE((SELECT SUM(s.total_cents) FROM sales s
+    player_select = """SELECT p.id,p.name,p.war_name,p.thumbnail_data,
+                         COALESCE((SELECT SUM(s.total_cents) FROM sales s
                          WHERE s.player_id=p.id AND s.paid=1), 0) accumulated_total_cents
                       FROM players p WHERE p.active=1"""
     if g.user["role"] == "client":
@@ -238,7 +239,9 @@ def sale():
         key=lambda player: alphabetical_key(player["war_name"] or player["name"]),
     )
     product_rows = db.execute(
-        """SELECT p.*, COALESCE(SUM(CASE WHEN s.paid=1 THEN si.quantity ELSE 0 END), 0) sold_quantity
+        """SELECT p.id,p.name,p.category,p.package_type,p.units_per_case,p.price_cents,
+                  p.cost_cents,p.stock,p.min_stock,p.thumbnail_data,
+                  COALESCE(SUM(CASE WHEN s.paid=1 THEN si.quantity ELSE 0 END), 0) sold_quantity
            FROM products p
            LEFT JOIN sale_items si ON si.product_id=p.id
            LEFT JOIN sales s ON s.id=si.sale_id
@@ -312,7 +315,10 @@ def guest_event_sale(token):
             if not requested:
                 raise ValueError("Escolha ao menos um produto.")
             placeholders = ",".join("?" for _ in requested)
-            products = db.execute(f"SELECT * FROM products WHERE active=1 AND id IN ({placeholders})", tuple(requested)).fetchall()
+            products = db.execute(
+                f"SELECT id,name,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
+                tuple(requested),
+            ).fetchall()
             products_by_id = {row["id"]: row for row in products}
             if len(products_by_id) != len(requested):
                 raise ValueError("Produto inválido ou inativo.")
@@ -347,7 +353,9 @@ def guest_event_sale(token):
             flash("Erro interno ao processar a venda. Tente novamente.", "danger")
 
     product_rows = db.execute(
-        """SELECT p.*, COALESCE(SUM(CASE WHEN s.paid=1 THEN si.quantity ELSE 0 END),0) sold_quantity
+        """SELECT p.id,p.name,p.category,p.package_type,p.units_per_case,p.price_cents,
+                  p.cost_cents,p.stock,p.min_stock,p.thumbnail_data,
+                  COALESCE(SUM(CASE WHEN s.paid=1 THEN si.quantity ELSE 0 END),0) sold_quantity
            FROM products p LEFT JOIN sale_items si ON si.product_id=p.id LEFT JOIN sales s ON s.id=si.sale_id
            WHERE p.active=1 AND p.stock>0 GROUP BY p.id"""
     ).fetchall()
@@ -807,7 +815,8 @@ def mercadopago_create_order():
     player = db.execute("SELECT id,email FROM players WHERE id=? AND active=1", (player_id,)).fetchone() if player_id else None
     placeholders = ",".join("?" for _ in requested)
     products = db.execute(
-        f"SELECT * FROM products WHERE active=1 AND id IN ({placeholders})", tuple(requested)
+        f"SELECT id,name,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
+        tuple(requested),
     ).fetchall()
     products_by_id = {product["id"]: product for product in products}
     if (event_id and not event) or (not event_id and not player) or len(products_by_id) != len(requested):
