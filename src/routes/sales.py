@@ -460,7 +460,7 @@ def pending_delivery_orders(db):
         f"""{select}
              WHERE s.paid=1 AND s.delivered_at IS NULL
                AND (s.ready_for_delivery=1 OR s.event_id IS NOT NULL)
-             ORDER BY COALESCE(s.paid_at,s.created_at),s.id"""
+             ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC"""
     ).fetchall()
     result = []
     for sale in sales:
@@ -580,7 +580,7 @@ def orders_feed():
         f"""{select} WHERE (s.ready_for_delivery=1 OR (s.event_id IS NOT NULL AND s.delivered_at IS NULL))
              AND s.delivered_at IS NULL
              AND (s.paid=1 OR s.payment_status='pending_cash'){payment_clause}
-             ORDER BY COALESCE(s.paid_at,s.created_at),s.id""", payment_params
+             ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC""", payment_params
     ).fetchall()
     delivered = db.execute(
         f"{select} WHERE s.ready_for_delivery=1 AND s.delivered_at IS NOT NULL{payment_clause} ORDER BY s.delivered_at DESC LIMIT 20",

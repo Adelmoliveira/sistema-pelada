@@ -52,6 +52,47 @@ def next_load_check_date(today=None):
     return date(year, month, day).isoformat()
 
 
+def load_conference_filter(due, today=None, alias="le"):
+    """Return the existing load-conference rule as SQL and parameters.
+
+    Keeping these predicates in one place prevents the relation filters and
+    the current-operation counter from disagreeing about a valid conference.
+    """
+    resolved_today = today or local_today()
+    today = resolved_today.isoformat() if isinstance(resolved_today, date) else str(resolved_today)
+    prefix = f"{alias}."
+    active = f"{prefix}status NOT IN ('discharged','lost')"
+    if due == "valid":
+        return (
+            f"{active} AND {prefix}last_checked_at IS NOT NULL "
+            f"AND {prefix}next_check_due_at IS NOT NULL "
+            f"AND date({prefix}next_check_due_at)>?",
+            [today],
+        )
+    if due == "missing":
+        return (
+            f"{active} AND ({prefix}last_checked_at IS NULL "
+            f"OR {prefix}next_check_due_at IS NULL)",
+            [],
+        )
+    if due == "expired":
+        return (
+            f"{active} AND {prefix}last_checked_at IS NOT NULL "
+            f"AND {prefix}next_check_due_at IS NOT NULL "
+            f"AND date({prefix}next_check_due_at)<=?",
+            [today],
+        )
+    if due == "pending":
+        # Backward compatibility for existing links: this is the exact
+        # previous combined "missing or expired" predicate.
+        return (
+            f"{active} AND ({prefix}next_check_due_at IS NULL "
+            f"OR date({prefix}next_check_due_at)<=?)",
+            [today],
+        )
+    return "", []
+
+
 def bmp_code(entry_id, area_code):
     return f"BMP-{entry_id:06d} | {area_code}"
 
@@ -150,8 +191,10 @@ def load_entry_rows(db, query="", area_code="", status="", location="", responsi
     if responsible:
         conditions.append("LOWER(le.responsible) LIKE ?")
         params.append(f"%{responsible.lower()}%")
-    if due == "pending":
-        conditions.append("le.status NOT IN ('discharged','lost') AND (le.next_check_due_at IS NULL OR date(le.next_check_due_at)<=date('now'))")
+    conference_condition, conference_params = load_conference_filter(due, alias="le")
+    if conference_condition:
+        conditions.append(conference_condition)
+        params.extend(conference_params)
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY le.id DESC"
@@ -759,6 +802,15 @@ def check_load_entry_auto(entry_id):
     """Atomically store QR conference evidence and register the conference."""
     db = get_db()
     try:
+        try:
+            operation_entry_ids = [
+                int(value) for value in request.form.getlist("operation_entry_ids")
+            ]
+        except (TypeError, ValueError):
+            return jsonify(ok=False, error="Operação de conferência inválida."), 400
+        operation_entry_ids = list(dict.fromkeys([*operation_entry_ids, entry_id]))
+        if len(operation_entry_ids) > 5000:
+            return jsonify(ok=False, error="Operação de conferência muito extensa."), 400
         entry = db.execute(
             "SELECT id,bmp,status FROM load_entries WHERE id=?", (entry_id,)
         ).fetchone()
@@ -792,7 +844,23 @@ def check_load_entry_auto(entry_id):
                    last_checked_by=?,next_check_due_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                 (g.user["id"], due_at, entry_id),
             )
-        return jsonify(ok=True, bmp=entry["bmp"], next_check_due_at=due_at)
+        placeholders = ",".join("?" for _ in operation_entry_ids)
+        valid_condition, valid_params = load_conference_filter("valid", alias="le")
+        checked_count = db.execute(
+            f"""SELECT COUNT(DISTINCT le.id) total FROM load_entries le
+                WHERE le.id IN ({placeholders}) AND le.last_checked_by=?
+                  AND {valid_condition}
+                  AND EXISTS (
+                      SELECT 1 FROM load_entry_photos lp
+                      WHERE lp.load_entry_id=le.id AND lp.captured_by=?
+                        AND lp.photo_kind IN ('reference','conference')
+                  )""",
+            (*operation_entry_ids, g.user["id"], *valid_params, g.user["id"]),
+        ).fetchone()["total"]
+        return jsonify(
+            ok=True, bmp=entry["bmp"], next_check_due_at=due_at,
+            checked_count=int(checked_count or 0),
+        )
     except ValueError as exc:
         db.rollback()
         return jsonify(ok=False, error=str(exc)), 400
