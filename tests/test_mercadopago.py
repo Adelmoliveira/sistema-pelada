@@ -1737,6 +1737,150 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("utilizada como referência", detail)
         self.assertIn("Por Teste", detail)
 
+    def test_load_check_counter_counts_distinct_successes_in_current_tab_operation(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            material_id = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES(?,?)",
+                ("Cargas da operação", "FCG-OP"),
+            ).lastrowid
+            entry_ids = []
+            for index in range(1, 10):
+                entry_ids.append(db.execute(
+                    """INSERT INTO load_entries(material_id,bmp,area_code,status)
+                       VALUES(?,?,'BAR','active')""",
+                    (material_id, f"BMP-OP-{index} | BAR"),
+                ).lastrowid)
+            other_user_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'staff')",
+                ("conferente.outro", "Outro conferente", "hash"),
+            ).lastrowid
+            db.commit()
+
+        def conference(entry_id, operation_ids=()):
+            photo = BytesIO()
+            Image.new("RGB", (80, 60), color=(30, 100, 160)).save(photo, format="JPEG")
+            photo.seek(0)
+            return self.client.post(
+                f"/infra/load-relation/{entry_id}/check-auto",
+                data={
+                    "operation_entry_ids": [str(value) for value in operation_ids],
+                    "photo": (photo, f"carga-{entry_id}.jpg"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        # A successful conference from before this screen operation must not
+        # enter the new tab's counter.
+        previous = conference(entry_ids[0])
+        self.assertEqual(previous.get_json()["checked_count"], 1)
+        page = self.client.get("/infra/load-relation/check").get_data(as_text=True)
+        self.assertIn('<strong id="checked-count">0</strong>', page)
+        self.assertIn("body.append('operation_entry_ids', seenId)", page)
+        self.assertIn("data.checked_count", page)
+
+        current_operation = []
+        first = conference(entry_ids[1], current_operation)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.get_json()["checked_count"], 1)
+        current_operation.append(entry_ids[1])
+
+        duplicate = conference(entry_ids[1], current_operation)
+        self.assertEqual(duplicate.get_json()["checked_count"], 1)
+
+        for expected_count, entry_id in enumerate(entry_ids[2:6], start=2):
+            response = conference(entry_id, current_operation)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["checked_count"], expected_count)
+            current_operation.append(entry_id)
+        self.assertEqual(len(current_operation), 5)
+
+        # A second tab starts with an empty operation list and therefore has
+        # an independent counter without resetting the first tab.
+        second_tab = conference(entry_ids[6])
+        self.assertEqual(second_tab.get_json()["checked_count"], 1)
+        first_tab_again = conference(entry_ids[5], current_operation)
+        self.assertEqual(first_tab_again.get_json()["checked_count"], 5)
+
+        # Persisted evidence belonging to another user is not included even
+        # if its ID is submitted as part of this operation.
+        with self.client.session_transaction() as session:
+            session["user_id"] = other_user_id
+        other_user = conference(entry_ids[7])
+        self.assertEqual(other_user.get_json()["checked_count"], 1)
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        restricted = conference(entry_ids[5], [*current_operation, entry_ids[7]])
+        self.assertEqual(restricted.get_json()["checked_count"], 5)
+
+        with app.app_context():
+            db = get_db()
+            never_checked = db.execute(
+                "SELECT last_checked_at FROM load_entries WHERE id=?", (entry_ids[8],)
+            ).fetchone()
+            self.assertIsNone(never_checked["last_checked_at"])
+
+    def test_load_conference_filters_separate_valid_missing_expired_and_keep_pending(self):
+        today = local_today()
+        with app.app_context():
+            db = get_db()
+            material_id = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES(?,?)",
+                ("Cargas para filtros", "FCG-FILTRO"),
+            ).lastrowid
+            rows = (
+                ("BMP-FILTRO-VALIDA | BAR", "active", today.isoformat(), (today + timedelta(days=10)).isoformat()),
+                ("BMP-FILTRO-SEM | BAR", "active", None, None),
+                ("BMP-FILTRO-VENCIDA | BAR", "active", today.isoformat(), (today - timedelta(days=1)).isoformat()),
+                ("BMP-FILTRO-BAIXADA | BAR", "discharged", today.isoformat(), (today + timedelta(days=10)).isoformat()),
+            )
+            for bmp, status, last_checked_at, next_check_due_at in rows:
+                db.execute(
+                    """INSERT INTO load_entries(
+                           material_id,bmp,area_code,status,last_checked_at,last_checked_by,next_check_due_at
+                       ) VALUES(?,?,'BAR',?,?,?,?)""",
+                    (material_id, bmp, status, last_checked_at, self.user_id if last_checked_at else None, next_check_due_at),
+                )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        relation = self.client.get("/infra/load-relation").get_data(as_text=True)
+        self.assertIn('<option value="">Todas</option>', relation)
+        self.assertIn('value="valid"', relation)
+        self.assertIn("Conferência validada", relation)
+        self.assertIn("Sem conferência", relation)
+        self.assertIn("Conferência vencida", relation)
+
+        valid = self.client.get("/infra/load-relation?due=valid").get_data(as_text=True)
+        self.assertIn("BMP-FILTRO-VALIDA", valid)
+        self.assertNotIn("BMP-FILTRO-SEM | BAR</strong>", valid)
+        self.assertNotIn("BMP-FILTRO-VENCIDA | BAR</strong>", valid)
+        self.assertNotIn("BMP-FILTRO-BAIXADA | BAR</strong>", valid)
+
+        missing = self.client.get("/infra/load-relation?due=missing").get_data(as_text=True)
+        self.assertIn("BMP-FILTRO-SEM", missing)
+        self.assertNotIn("BMP-FILTRO-VALIDA | BAR</strong>", missing)
+        self.assertNotIn("BMP-FILTRO-VENCIDA | BAR</strong>", missing)
+
+        expired = self.client.get("/infra/load-relation?due=expired").get_data(as_text=True)
+        self.assertIn("BMP-FILTRO-VENCIDA", expired)
+        self.assertNotIn("BMP-FILTRO-VALIDA | BAR</strong>", expired)
+        self.assertNotIn("BMP-FILTRO-SEM | BAR</strong>", expired)
+
+        legacy_pending = self.client.get("/infra/load-relation?due=pending").get_data(as_text=True)
+        self.assertIn("BMP-FILTRO-SEM", legacy_pending)
+        self.assertIn("BMP-FILTRO-VENCIDA", legacy_pending)
+        self.assertNotIn("BMP-FILTRO-VALIDA | BAR</strong>", legacy_pending)
+
+        report = self.client.get("/infra/load-relation/report?due=valid").get_data(as_text=True)
+        self.assertIn("Conferência validada", report)
+        self.assertIn("BMP-FILTRO-VALIDA", report)
+        self.assertNotIn("BMP-FILTRO-VENCIDA</td>", report)
+
     def test_load_batch_movement_status_and_report_filters(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
@@ -2687,6 +2831,50 @@ class MercadoPagoFlowTest(unittest.TestCase):
         feed = self.client.get("/orders/feed", headers={"Accept": "application/json"}).get_json()
         self.assertEqual(feed["pending"], [])
         self.assertEqual(feed["delivered"][0]["delivered_by_name"], "Teste")
+
+    def test_pending_order_queues_show_newest_orders_first(self):
+        with app.app_context():
+            db = get_db()
+            sale_ids = []
+            for created_at in (
+                "2026-08-12 10:00:00",
+                "2026-08-12 11:00:00",
+                "2026-08-12 12:00:00",
+            ):
+                sale_id = db.execute(
+                    """INSERT INTO sales(
+                           player_id,payment_method,total_cents,paid,payment_status,
+                           ready_for_delivery,created_at,paid_at
+                       ) VALUES(?, 'Pix', 300, 1, 'approved', 1, ?, ?)""",
+                    (self.player_id, created_at, created_at),
+                ).lastrowid
+                db.execute(
+                    """INSERT INTO sale_items(
+                           sale_id,product_id,quantity,unit_price_cents,unit_cost_cents
+                       ) VALUES(?,?,?,?,?)""",
+                    (sale_id, self.product_id, 1, 300, 100),
+                )
+                sale_ids.append(sale_id)
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        expected = list(reversed(sale_ids))
+
+        orders_feed = self.client.get("/orders/feed").get_json()["pending"]
+        self.assertEqual([order["id"] for order in orders_feed], expected)
+
+        panel_feed = self.client.get("/painel/feed").get_json()["orders"]
+        self.assertEqual([order["id"] for order in panel_feed], expected)
+
+        pending_page = self.client.get("/orders/pending-delivery").get_data(as_text=True)
+        positions = [pending_page.index(f"Pedido #{sale_id}") for sale_id in expected]
+        self.assertEqual(positions, sorted(positions))
+
+        with patch("src.routes.sales.build_pending_delivery_pdf", return_value=BytesIO(b"%PDF-1.4\n%%EOF")) as build_pdf:
+            pdf = self.client.get("/orders/pending-delivery.pdf")
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual([order["id"] for order in build_pdf.call_args.args[0]], expected)
 
     def test_manager_restores_accidental_full_delivery_without_changing_payment_or_stock(self):
         sale_id = self.create_order("ORD-RESTORE-DELIVERY", 2)

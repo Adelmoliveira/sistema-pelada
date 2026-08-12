@@ -87,12 +87,13 @@
     processing = true; confirm.disabled = true; cancel.disabled = true; status.textContent = 'Salvando foto e conferência...';
     const id = pendingId;
     const body = new FormData(); body.append('csrf_token', csrf); body.append('photo', file, file.name);
+    seen.forEach(seenId => body.append('operation_entry_ids', seenId));
     try {
       const url = endpointTemplate.replace('/0/check-auto', `/${id}/check-auto`);
       const response = await fetch(url, {method:'POST', headers:{'Accept':'application/json','X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'}, body});
       const data = await response.json();
       if (!response.ok) { issues.textContent = Number(issues.textContent) + 1; addResult(data.error || 'Não foi possível conferir esta carga.', 'danger'); confirm.disabled = false; status.textContent = 'Corrija a foto e tente novamente.'; return; }
-      seen.add(id); checked.textContent = Number(checked.textContent) + 1;
+      seen.add(id); checked.textContent = String(Number(data.checked_count ?? seen.size));
       const row = document.querySelector(`tr[data-entry-id="${id}"]`); if (row) row.remove();
       addResult(`${data.bmp} conferida com foto e horário registrados.`, 'success'); clearPhotoStep(); await startScanner();
     } catch (error) { issues.textContent = Number(issues.textContent) + 1; addResult('Não foi possível conectar ao servidor. Tente novamente.', 'danger'); confirm.disabled = false; status.textContent = 'Falha de conexão.'; }

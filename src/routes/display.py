@@ -29,7 +29,7 @@ def feed():
     pending_rows = db.execute(
         f"""{select} WHERE s.ready_for_delivery=1 AND s.delivered_at IS NULL
             AND (s.paid=1 OR s.payment_status='pending_cash')
-            ORDER BY COALESCE(s.paid_at,s.created_at),s.id"""
+            ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC"""
     ).fetchall()
     today = local_today()
     birthday_rows = db.execute(
