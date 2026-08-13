@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS bar_restock_request_items (
     request_id INTEGER NOT NULL REFERENCES bar_restock_requests(id) ON DELETE CASCADE,
     product_id INTEGER NOT NULL REFERENCES products(id),
     quantity INTEGER NOT NULL CHECK(quantity > 0),
+    approved_quantity INTEGER CHECK(approved_quantity IS NULL OR (approved_quantity > 0 AND approved_quantity <= quantity)),
     measure TEXT NOT NULL CHECK(measure IN ('caixas','unidades')),
     description TEXT NOT NULL DEFAULT ''
 );
@@ -1508,6 +1509,12 @@ def init_sqlite(wrapper):
     restock_item_columns = {row[1] for row in conn.execute("PRAGMA table_info(bar_restock_request_items)")}
     if "description" not in restock_item_columns:
         conn.execute("ALTER TABLE bar_restock_request_items ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    if "approved_quantity" not in restock_item_columns:
+        conn.execute(
+            """ALTER TABLE bar_restock_request_items ADD COLUMN approved_quantity INTEGER
+            CHECK(approved_quantity IS NULL OR (approved_quantity > 0 AND approved_quantity <= quantity))"""
+        )
         conn.commit()
 
     restock_request_columns = {row[1] for row in conn.execute("PRAGMA table_info(bar_restock_requests)")}

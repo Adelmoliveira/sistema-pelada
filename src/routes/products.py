@@ -30,6 +30,7 @@ RESTOCK_STATUS_LABELS = {
     "CANCELADA": "Cancelada",
 }
 RESTOCK_STATUS_ORDER = ("PENDENTE", "VISTA", "EM_PROCESSO", "COMPRA_EFETUADA", "ATENDIDA", "CANCELADA")
+RESTOCK_APPROVAL_EDITABLE_STATUSES = {"PENDENTE", "VISTA", "EM_PROCESSO"}
 
 def _row_get(row, key, default=None):
     """Read a column defensively from SQLite rows and psycopg DictRows.
@@ -72,6 +73,31 @@ def _restock_status_options(status):
             options.append(next_status)
     options.append("CANCELADA")
     return options
+
+
+def _restock_workflow_status(row):
+    return str(
+        _row_get(row, "workflow_status", _row_get(row, "status", "PENDENTE"))
+        or "PENDENTE"
+    ).strip().upper()
+
+
+def _restock_quantity(row):
+    approved = _row_get(row, "approved_quantity")
+    return int(approved if approved is not None else row["quantity"])
+
+
+def _restock_money_label(amount_cents):
+    value = f"{int(amount_cents or 0) / 100:,.2f}"
+    return "R$ " + value.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _restock_purchase_cents(value):
+    """Parse the HTML number input without treating its decimal dot as thousands."""
+    normalized = str(value or "0").strip()
+    if "," not in normalized and "." in normalized:
+        normalized = normalized.replace(".", ",")
+    return cents(normalized)
 
 
 def _safe_rollback(db, operation):
@@ -605,8 +631,16 @@ def restock_request():
         db.commit()
     histories = {}
     request_ids = [row["id"] for row in own_requests]
+    items_by_request = {}
     if request_ids:
         placeholders = ",".join("?" for _ in request_ids)
+        for item in db.execute(
+            f"""SELECT i.*,p.name product_name FROM bar_restock_request_items i
+                JOIN products p ON p.id=i.product_id
+                WHERE i.request_id IN ({placeholders}) ORDER BY p.name""",
+            request_ids,
+        ).fetchall():
+            items_by_request.setdefault(item["request_id"], []).append(item)
         for history in db.execute(
             f"SELECT h.*,u.name changed_by_name FROM bar_restock_request_history h JOIN users u ON u.id=h.changed_by WHERE h.request_id IN ({placeholders}) ORDER BY h.created_at DESC",
             request_ids,
@@ -614,7 +648,147 @@ def restock_request():
             histories.setdefault(history["request_id"], []).append(history)
     return render_template("restock_request.html", products=products, requests=own_requests,
                            notifications=notifications, unread_notifications=unread_notifications,
-                           histories=histories, status_labels=RESTOCK_STATUS_LABELS)
+                           histories=histories, items_by_request=items_by_request,
+                           status_labels=RESTOCK_STATUS_LABELS)
+
+
+@bp.post("/stock/restock-requests/<int:request_id>/approval")
+@roles_allowed("manager")
+def update_restock_request_approval(request_id):
+    """Set the amount to buy without overwriting the staff request."""
+    db = get_db()
+    try:
+        item_id = int(request.form.get("item_id", ""))
+        approved_quantity = int(request.form.get("approved_quantity", ""))
+        reason = request.form.get("reason", "").strip()
+        current = db.execute(
+            "SELECT * FROM bar_restock_requests WHERE id=?", (request_id,)
+        ).fetchone()
+        item = db.execute(
+            """SELECT i.*,p.name product_name FROM bar_restock_request_items i
+               JOIN products p ON p.id=i.product_id
+               WHERE i.id=? AND i.request_id=?""",
+            (item_id, request_id),
+        ).fetchone()
+        if not current or not item:
+            raise ValueError("Solicitação ou item não encontrado.")
+        status = _restock_workflow_status(current)
+        if status not in RESTOCK_APPROVAL_EDITABLE_STATUSES or _row_get(current, "purchase_recorded_at"):
+            raise ValueError("A quantidade não pode ser alterada após a efetivação da compra.")
+        requested_quantity = int(item["quantity"])
+        if approved_quantity <= 0:
+            raise ValueError("A quantidade aprovada deve ser maior que zero.")
+        if approved_quantity > requested_quantity:
+            raise ValueError("A quantidade aprovada não pode ser maior que a quantidade solicitada.")
+        previous_approved = _row_get(item, "approved_quantity")
+        if previous_approved is not None and int(previous_approved) == approved_quantity:
+            raise ValueError("A quantidade aprovada não foi alterada.")
+        if len(reason) < 5:
+            raise ValueError("Informe uma justificativa com pelo menos 5 caracteres.")
+        previous_label = (
+            str(previous_approved)
+            if previous_approved is not None
+            else f"não definida (solicitado: {requested_quantity})"
+        )
+        history_notes = (
+            f"Aprovação de {item['product_name']}: {previous_label} → "
+            f"{approved_quantity} {item['measure']}. Justificativa: {reason}"
+        )
+        with db:
+            updated = db.execute(
+                """UPDATE bar_restock_request_items SET approved_quantity=?
+                   WHERE id=? AND request_id=? AND EXISTS (
+                       SELECT 1 FROM bar_restock_requests r
+                       WHERE r.id=? AND r.purchase_recorded_at IS NULL
+                         AND r.workflow_status IN ('PENDENTE','VISTA','EM_PROCESSO')
+                   )""",
+                (approved_quantity, item_id, request_id, request_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("A compra foi efetivada e a quantidade não pode mais ser alterada.")
+            db.execute(
+                """INSERT INTO bar_restock_request_history
+                   (request_id,status,notes,changed_by) VALUES(?,?,?,?)""",
+                (request_id, status, history_notes, g.user["id"]),
+            )
+        flash("Quantidade aprovada atualizada com histórico preservado.", "success")
+    except (TypeError, ValueError) as exc:
+        _safe_rollback(db, "ajuste da quantidade aprovada")
+        flash(str(exc), "danger")
+    except Exception:
+        _safe_rollback(db, "ajuste da quantidade aprovada")
+        current_app.logger.exception(
+            "Erro ao ajustar quantidade aprovada (request_id=%s)", request_id
+        )
+        flash("Erro interno ao ajustar a quantidade aprovada.", "danger")
+    return redirect(url_for("products.restock_requests"), code=303)
+
+
+@bp.post("/stock/restock-requests/<int:request_id>/value-correction")
+@roles_allowed("manager")
+def correct_restock_request_value(request_id):
+    """Correct the request total only when no active cash movement exists."""
+    db = get_db()
+    try:
+        corrected_amount_cents = _restock_purchase_cents(
+            request.form.get("purchase_amount", "0")
+        )
+        reason = request.form.get("reason", "").strip()
+        current = db.execute(
+            "SELECT * FROM bar_restock_requests WHERE id=?", (request_id,)
+        ).fetchone()
+        if not current:
+            raise ValueError("Solicitação não encontrada.")
+        previous_amount_cents = int(_row_get(current, "purchase_amount_cents", 0) or 0)
+        if corrected_amount_cents <= 0:
+            raise ValueError("O valor corrigido deve ser maior que zero.")
+        if corrected_amount_cents == previous_amount_cents:
+            raise ValueError("O valor informado é igual ao valor atual da solicitação.")
+        if len(reason) < 5:
+            raise ValueError("Informe uma justificativa com pelo menos 5 caracteres.")
+        movement = db.execute(
+            """SELECT m.*,EXISTS(
+                   SELECT 1 FROM cash_movements reversal
+                   WHERE reversal.reversed_movement_id=m.id
+               ) reversed
+               FROM cash_movements m
+               WHERE m.source='bar_restock_request' AND m.source_id=?
+               ORDER BY m.id LIMIT 1""",
+            (request_id,),
+        ).fetchone()
+        if movement and not movement["reversed"]:
+            raise ValueError(
+                "A compra possui uma movimentação financeira ativa. Corrija/estorne primeiro "
+                "o lançamento do caixa e depois atualize o valor da solicitação."
+            )
+        status = _restock_workflow_status(current)
+        history_notes = (
+            f"Valor da compra corrigido: {_restock_money_label(previous_amount_cents)} → "
+            f"{_restock_money_label(corrected_amount_cents)}. Justificativa: {reason}"
+        )
+        with db:
+            updated = db.execute(
+                "UPDATE bar_restock_requests SET purchase_amount_cents=? WHERE id=?",
+                (corrected_amount_cents, request_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("Solicitação não encontrada.")
+            db.execute(
+                """INSERT INTO bar_restock_request_history
+                   (request_id,status,notes,changed_by) VALUES(?,?,?,?)""",
+                (request_id, status, history_notes, g.user["id"]),
+            )
+        flash("Valor da solicitação corrigido sem alterar estoque ou caixa.", "success")
+    except (TypeError, ValueError) as exc:
+        _safe_rollback(db, "correção do valor da solicitação")
+        flash(str(exc), "danger")
+    except Exception:
+        _safe_rollback(db, "correção do valor da solicitação")
+        current_app.logger.exception(
+            "Erro ao corrigir valor da solicitação (request_id=%s)", request_id
+        )
+        flash("Erro interno ao corrigir o valor da solicitação.", "danger")
+    return redirect(url_for("products.restock_requests"), code=303)
 
 
 @bp.route("/stock/restock-requests", methods=["GET", "POST"])
@@ -631,10 +805,7 @@ def restock_requests():
             current = db.execute("SELECT * FROM bar_restock_requests WHERE id=?", (request_id,)).fetchone()
             if not current:
                 raise ValueError("Solicitação não encontrada.")
-            current_status = str(
-                _row_get(current, "workflow_status", _row_get(current, "status", "PENDENTE"))
-                or "PENDENTE"
-            ).strip().upper()
+            current_status = _restock_workflow_status(current)
             if status not in _restock_status_options(current_status):
                 raise ValueError("Essa transição de situação não é permitida.")
             notes = request.form.get("review_notes", "").strip()
@@ -643,7 +814,7 @@ def restock_requests():
             purchase = status == "COMPRA_EFETUADA"
             supplier = request.form.get("supplier", "").strip()
             payment_account = request.form.get("payment_account", "bank").strip()
-            purchase_amount_cents = cents(request.form.get("purchase_amount", "0")) if purchase else int(_row_get(current, "purchase_amount_cents", 0) or 0)
+            purchase_amount_cents = _restock_purchase_cents(request.form.get("purchase_amount", "0")) if purchase else int(_row_get(current, "purchase_amount_cents", 0) or 0)
             if purchase:
                 if not supplier:
                     raise ValueError("Informe o fornecedor da compra.")
@@ -719,10 +890,10 @@ def restock_requests():
                     for item in item_rows:
                         if item["measure"] == "caixas" and not int(item["units_per_case"] or 0):
                             raise ValueError(f"O produto {item['product_name']} não possui unidades por caixa cadastradas.")
-                        total_units += int(item["quantity"]) * (int(item["units_per_case"] or 0) if item["measure"] == "caixas" else 1)
+                        total_units += _restock_quantity(item) * (int(item["units_per_case"] or 0) if item["measure"] == "caixas" else 1)
                     unit_cost = purchase_amount_cents // total_units if total_units else 0
                     for item in item_rows:
-                        units = int(item["quantity"]) * (int(item["units_per_case"] or 0) if item["measure"] == "caixas" else 1)
+                        units = _restock_quantity(item) * (int(item["units_per_case"] or 0) if item["measure"] == "caixas" else 1)
                         db.execute(
                             "INSERT INTO restocks(product_id,quantity,unit_cost_cents,notes) VALUES(?,?,?,?)",
                             (item["product_id"], units, unit_cost, f"Reposição via solicitação #{request_id} — {supplier}"),
@@ -814,7 +985,8 @@ def restock_requests():
     ).fetchall()
     items_by_request = {}
     for item in db.execute(
-        """SELECT i.request_id,i.quantity,i.measure,i.description,p.name product_name
+        """SELECT i.id,i.request_id,i.quantity,i.approved_quantity,i.measure,i.description,
+                  p.name product_name
            FROM bar_restock_request_items i JOIN products p ON p.id=i.product_id
            WHERE i.request_id IN (SELECT id FROM bar_restock_requests ORDER BY id DESC LIMIT 50)
            ORDER BY p.name"""

@@ -37,7 +37,21 @@
     <div class="card-body">
       <ul class="mb-3">
         {% for i in items_by_request.get(r.id, []) %}
-          <li>{{i.quantity}} {{i.measure}} de <strong>{{i.product_name}}</strong>{% if i.description %} <span class="text-muted">({{i.description}})</span>{% endif %}</li>
+          <li class="mb-3">
+            <strong>{{i.product_name}}</strong>{% if i.description %} <span class="text-muted">({{i.description}})</span>{% endif %}<br>
+            <span>Quantidade solicitada: <strong>{{i.quantity}} {{i.measure}}</strong></span><br>
+            <span>Quantidade aprovada: <strong>{{i.approved_quantity if i.approved_quantity is not none else i.quantity}} {{i.measure}}</strong>{% if i.approved_quantity is none %} <small class="text-muted">(igual à solicitada)</small>{% endif %}</span>
+            {% if workflow in ['PENDENTE','VISTA','EM_PROCESSO'] and not r.purchase_recorded_at %}
+              <details class="mt-2"><summary class="btn btn-sm btn-outline-warning">Editar aprovação</summary>
+                <form method="post" action="{{url_for('products.update_restock_request_approval',request_id=r.id)}}" class="row g-2 mt-1 border rounded p-2">
+                  <input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="item_id" value="{{i.id}}">
+                  <div class="col-sm-3"><label class="form-label small">Quantidade aprovada</label><input type="number" min="1" max="{{i.quantity}}" name="approved_quantity" value="{{i.approved_quantity if i.approved_quantity is not none else i.quantity}}" class="form-control form-control-sm" required></div>
+                  <div class="col-sm-7"><label class="form-label small">Justificativa</label><input name="reason" minlength="5" maxlength="250" class="form-control form-control-sm" placeholder="Ex.: valor disponível em caixa" required></div>
+                  <div class="col-sm-2 d-flex align-items-end"><button class="btn btn-sm btn-warning w-100">Salvar</button></div>
+                </form>
+              </details>
+            {% endif %}
+          </li>
         {% else %}<li>Nenhum item de bar informado.</li>{% endfor %}
       </ul>
       {% if r.cleaning_materials %}<p><strong>Materiais de limpeza:</strong><br>{{r.cleaning_materials|replace('\n','<br>')|safe}}</p>{% endif %}
@@ -50,6 +64,18 @@
           Conta: {{'Dinheiro físico' if r.payment_account == 'cash' else 'Conta / Pix'}}.
           {% if r.receipt_data %} <a href="{{url_for('products.restock_receipt', request_id=r.id)}}" target="_blank" rel="noopener">Ver comprovante</a>{% endif %}
         </div>
+      {% endif %}
+
+      {% if r.purchase_amount_cents %}
+        <details class="mb-3"><summary class="btn btn-sm btn-outline-warning">Corrigir valor</summary>
+          <form method="post" action="{{url_for('products.correct_restock_request_value',request_id=r.id)}}" class="row g-2 mt-1 border rounded p-3">
+            <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+            <div class="col-md-4"><label class="form-label">Valor correto</label><div class="input-group"><span class="input-group-text">R$</span><input name="purchase_amount" type="number" min="0.01" step="0.01" value="{{'%.2f'|format(r.purchase_amount_cents / 100)}}" class="form-control" required></div></div>
+            <div class="col-md-6"><label class="form-label">Justificativa da correção</label><input name="reason" minlength="5" maxlength="250" class="form-control" placeholder="Ex.: valor digitado incorretamente" required></div>
+            <div class="col-md-2 d-flex align-items-end"><button class="btn btn-warning w-100">Corrigir</button></div>
+            <div class="col-12 small text-muted">A correção não altera estoque ou custo do produto. Se houver lançamento ativo no caixa, ele deverá ser corrigido ou estornado primeiro.</div>
+          </form>
+        </details>
       {% endif %}
 
       {% if status_options.get(r.id) %}

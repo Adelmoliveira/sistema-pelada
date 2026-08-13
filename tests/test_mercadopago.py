@@ -3415,6 +3415,357 @@ class MercadoPagoFlowTest(unittest.TestCase):
             302,
         )
 
+    def _create_bar_restock_request(self, quantity=10, units_per_case=0):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "UPDATE products SET units_per_case=? WHERE id=?",
+                (units_per_case, self.product_id),
+            )
+            staff_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'staff')",
+                ("staff.restock", "Atendente Reposição", "hash"),
+            ).lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        response = self.client.post(
+            "/stock/restock-request",
+            data={f"quantity_{self.product_id}": str(quantity)},
+        )
+        self.assertEqual(response.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            restock_request = db.execute(
+                "SELECT * FROM bar_restock_requests ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            item = db.execute(
+                "SELECT * FROM bar_restock_request_items WHERE request_id=?",
+                (restock_request["id"],),
+            ).fetchone()
+        return restock_request["id"], item["id"], staff_id
+
+    def _purchase_bar_restock_request(self, request_id, amount="90.00"):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        self.client.post("/cash/open", data={"opening_cash": "0", "opening_bank": "10000"})
+        for status in ("VISTA", "EM_PROCESSO"):
+            response = self.client.post(
+                "/stock/restock-requests",
+                data={"request_id": request_id, "status": status},
+            )
+            self.assertEqual(response.status_code, 303)
+        response = self.client.post(
+            "/stock/restock-requests",
+            data={
+                "request_id": request_id,
+                "status": "COMPRA_EFETUADA",
+                "supplier": "Fornecedor Teste",
+                "purchase_amount": amount,
+                "payment_account": "bank",
+            },
+        )
+        self.assertEqual(response.status_code, 303)
+
+    def test_restock_request_approval_preserves_requested_and_controls_purchase(self):
+        request_id, item_id, staff_id = self._create_bar_restock_request(
+            quantity=10, units_per_case=2
+        )
+        with app.app_context():
+            columns = {
+                row[1] for row in get_db().execute(
+                    "PRAGMA table_info(bar_restock_request_items)"
+                ).fetchall()
+            }
+            self.assertIn("approved_quantity", columns)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        manager_page = self.client.get("/stock/restock-requests").get_data(as_text=True)
+        self.assertIn("Quantidade solicitada", manager_page)
+        self.assertIn("Quantidade aprovada", manager_page)
+        self.assertIn("Editar aprovação", manager_page)
+        self.assertIn(f'name="item_id" value="{item_id}"', manager_page)
+        approved = self.client.post(
+            f"/stock/restock-requests/{request_id}/approval",
+            data={
+                "item_id": item_id,
+                "approved_quantity": 6,
+                "reason": "Limite disponível no caixa",
+            },
+        )
+        self.assertEqual(approved.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            item = db.execute(
+                "SELECT * FROM bar_restock_request_items WHERE id=?", (item_id,)
+            ).fetchone()
+            self.assertEqual((item["quantity"], item["approved_quantity"]), (10, 6))
+            history = db.execute(
+                "SELECT * FROM bar_restock_request_history WHERE request_id=? ORDER BY id DESC LIMIT 1",
+                (request_id,),
+            ).fetchone()
+            self.assertIn("não definida (solicitado: 10) → 6 caixas", history["notes"])
+            self.assertEqual(history["changed_by"], self.user_id)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        staff_page = self.client.get("/stock/restock-request").get_data(as_text=True)
+        self.assertIn("Solicitado: 10 caixas", staff_page)
+        self.assertIn("Aprovado: 6 caixas", staff_page)
+
+        self._purchase_bar_restock_request(request_id)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(
+                db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"],
+                17,
+            )
+            self.assertEqual(
+                db.execute("SELECT quantity FROM restocks ORDER BY id DESC LIMIT 1").fetchone()["quantity"],
+                12,
+            )
+        blocked = self.client.post(
+            f"/stock/restock-requests/{request_id}/approval",
+            data={"item_id": item_id, "approved_quantity": 5, "reason": "Tentativa tardia"},
+            follow_redirects=True,
+        )
+        self.assertIn("não pode ser alterada após", blocked.get_data(as_text=True))
+        with app.app_context():
+            self.assertEqual(
+                get_db().execute(
+                    "SELECT approved_quantity FROM bar_restock_request_items WHERE id=?", (item_id,)
+                ).fetchone()["approved_quantity"],
+                6,
+            )
+
+    def test_restock_request_null_approval_uses_requested_quantity(self):
+        request_id, item_id, _staff_id = self._create_bar_restock_request(quantity=3)
+        self._purchase_bar_restock_request(request_id, amount="30.00")
+        with app.app_context():
+            db = get_db()
+            item = db.execute(
+                "SELECT * FROM bar_restock_request_items WHERE id=?", (item_id,)
+            ).fetchone()
+            self.assertIsNone(item["approved_quantity"])
+            self.assertEqual(
+                db.execute("SELECT quantity FROM restocks ORDER BY id DESC LIMIT 1").fetchone()["quantity"],
+                3,
+            )
+            self.assertEqual(
+                db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"],
+                8,
+            )
+
+    def test_restock_request_approval_validates_quantity_and_manager_role(self):
+        request_id, item_id, staff_id = self._create_bar_restock_request(quantity=10)
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        for invalid in ("0", "-1", "11", "invalida"):
+            response = self.client.post(
+                f"/stock/restock-requests/{request_id}/approval",
+                data={"item_id": item_id, "approved_quantity": invalid, "reason": "Valor inválido"},
+            )
+            self.assertEqual(response.status_code, 303)
+        with app.app_context():
+            self.assertIsNone(
+                get_db().execute(
+                    "SELECT approved_quantity FROM bar_restock_request_items WHERE id=?", (item_id,)
+                ).fetchone()["approved_quantity"]
+            )
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        denied_staff = self.client.post(
+            f"/stock/restock-requests/{request_id}/approval",
+            headers={"Accept": "application/json"},
+            data={"item_id": item_id, "approved_quantity": 6, "reason": "Sem permissão"},
+        )
+        self.assertEqual(denied_staff.status_code, 403)
+        denied_staff_value = self.client.post(
+            f"/stock/restock-requests/{request_id}/value-correction",
+            headers={"Accept": "application/json"},
+            data={"purchase_amount": "90.00", "reason": "Sem permissão"},
+        )
+        self.assertEqual(denied_staff_value.status_code, 403)
+
+        with app.app_context():
+            db = get_db()
+            client_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'client')",
+                ("cliente.restock", "Cliente Reposição", "hash"),
+            ).lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+        denied_client = self.client.post(
+            f"/stock/restock-requests/{request_id}/approval",
+            headers={"Accept": "application/json"},
+            data={"item_id": item_id, "approved_quantity": 6, "reason": "Sem permissão"},
+        )
+        self.assertEqual(denied_client.status_code, 403)
+        denied_client_value = self.client.post(
+            f"/stock/restock-requests/{request_id}/value-correction",
+            headers={"Accept": "application/json"},
+            data={"purchase_amount": "90.00", "reason": "Sem permissão"},
+        )
+        self.assertEqual(denied_client_value.status_code, 403)
+
+    def test_restock_request_value_correction_without_cash_is_audited_and_atomic(self):
+        request_id, _item_id, _staff_id = self._create_bar_restock_request(quantity=10)
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "UPDATE bar_restock_requests SET purchase_amount_cents=900000 WHERE id=?",
+                (request_id,),
+            )
+            original_product = db.execute(
+                "SELECT stock,cost_cents FROM products WHERE id=?", (self.product_id,)
+            ).fetchone()
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        missing_reason = self.client.post(
+            f"/stock/restock-requests/{request_id}/value-correction",
+            data={"purchase_amount": "90.00", "reason": ""},
+        )
+        self.assertEqual(missing_reason.status_code, 303)
+        corrected = self.client.post(
+            f"/stock/restock-requests/{request_id}/value-correction",
+            data={"purchase_amount": "90.00", "reason": "Valor digitado incorretamente"},
+        )
+        self.assertEqual(corrected.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            request_row = db.execute(
+                "SELECT * FROM bar_restock_requests WHERE id=?", (request_id,)
+            ).fetchone()
+            product = db.execute(
+                "SELECT stock,cost_cents FROM products WHERE id=?", (self.product_id,)
+            ).fetchone()
+            self.assertEqual(request_row["purchase_amount_cents"], 9000)
+            self.assertEqual(tuple(product), tuple(original_product))
+            self.assertEqual(db.execute("SELECT COUNT(*) total FROM restocks").fetchone()["total"], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) total FROM cash_movements").fetchone()["total"], 0)
+            history = db.execute(
+                "SELECT * FROM bar_restock_request_history WHERE request_id=? ORDER BY id DESC LIMIT 1",
+                (request_id,),
+            ).fetchone()
+            self.assertIn("R$ 9.000,00 → R$ 90,00", history["notes"])
+            self.assertIn("Valor digitado incorretamente", history["notes"])
+
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                """CREATE TRIGGER fail_restock_value_history BEFORE INSERT ON bar_restock_request_history
+                   WHEN NEW.notes LIKE 'Valor da compra corrigido:%'
+                   BEGIN SELECT RAISE(ABORT, 'falha simulada'); END"""
+            )
+            db.commit()
+        failed = self.client.post(
+            f"/stock/restock-requests/{request_id}/value-correction",
+            data={"purchase_amount": "80.00", "reason": "Falha transacional simulada"},
+        )
+        self.assertEqual(failed.status_code, 303)
+        with app.app_context():
+            self.assertEqual(
+                get_db().execute(
+                    "SELECT purchase_amount_cents FROM bar_restock_requests WHERE id=?", (request_id,)
+                ).fetchone()["purchase_amount_cents"],
+                9000,
+            )
+
+    def test_restock_request_value_correction_after_reversal_creates_no_movement(self):
+        request_id, _item_id, _staff_id = self._create_bar_restock_request(quantity=10)
+        self._purchase_bar_restock_request(request_id, amount="9000.00")
+        with app.app_context():
+            db = get_db()
+            movement_id = db.execute(
+                "SELECT id FROM cash_movements WHERE source='bar_restock_request' AND source_id=?",
+                (request_id,),
+            ).fetchone()["id"]
+            product_before = db.execute(
+                "SELECT stock,cost_cents FROM products WHERE id=?", (self.product_id,)
+            ).fetchone()
+        reversed_response = self.client.post(f"/cash/movements/{movement_id}/reverse")
+        self.assertEqual(reversed_response.status_code, 303)
+        corrected = self.client.post(
+            f"/stock/restock-requests/{request_id}/value-correction",
+            data={"purchase_amount": "90.00", "reason": "Compra real foi noventa reais"},
+        )
+        self.assertEqual(corrected.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(
+                db.execute(
+                    "SELECT purchase_amount_cents FROM bar_restock_requests WHERE id=?", (request_id,)
+                ).fetchone()["purchase_amount_cents"],
+                9000,
+            )
+            self.assertEqual(db.execute("SELECT COUNT(*) total FROM cash_movements").fetchone()["total"], 2)
+            product_after = db.execute(
+                "SELECT stock,cost_cents FROM products WHERE id=?", (self.product_id,)
+            ).fetchone()
+            self.assertEqual(tuple(product_after), tuple(product_before))
+
+    def test_restock_request_value_correction_blocks_active_movement_even_when_closed(self):
+        request_id, _item_id, _staff_id = self._create_bar_restock_request(quantity=10)
+        self._purchase_bar_restock_request(request_id, amount="9000.00")
+        correction_url = f"/stock/restock-requests/{request_id}/value-correction"
+        payload = {"purchase_amount": "90.00", "reason": "Valor digitado incorretamente"}
+        active = self.client.post(correction_url, data=payload, follow_redirects=True)
+        self.assertIn("movimentação financeira ativa", active.get_data(as_text=True))
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE cash_sessions SET status='closed'")
+            db.commit()
+        closed = self.client.post(correction_url, data=payload, follow_redirects=True)
+        self.assertIn("movimentação financeira ativa", closed.get_data(as_text=True))
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(
+                db.execute(
+                    "SELECT purchase_amount_cents FROM bar_restock_requests WHERE id=?", (request_id,)
+                ).fetchone()["purchase_amount_cents"],
+                900000,
+            )
+            self.assertEqual(db.execute("SELECT COUNT(*) total FROM cash_movements").fetchone()["total"], 1)
+
+    def test_restock_adjustment_requests_execute_no_schema_sql(self):
+        request_id, item_id, _staff_id = self._create_bar_restock_request(quantity=10)
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "UPDATE bar_restock_requests SET purchase_amount_cents=900000 WHERE id=?",
+                (request_id,),
+            )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        original_execute = DbWrapper.execute
+        statements = []
+
+        def reject_schema_sql(wrapper, statement, params=()):
+            normalized = " ".join(str(statement).split())
+            if has_request_context():
+                statements.append(normalized)
+                if self.SCHEMA_SQL.match(normalized):
+                    raise AssertionError(f"DDL executado durante request HTTP: {normalized[:120]}")
+            return original_execute(wrapper, statement, params)
+
+        with patch.object(DbWrapper, "execute", new=reject_schema_sql), patch("src.db.init_sqlite"):
+            approval = self.client.post(
+                f"/stock/restock-requests/{request_id}/approval",
+                data={"item_id": item_id, "approved_quantity": 6, "reason": "Compra parcial"},
+            )
+            correction = self.client.post(
+                f"/stock/restock-requests/{request_id}/value-correction",
+                data={"purchase_amount": "90.00", "reason": "Correção do valor"},
+            )
+        self.assertEqual((approval.status_code, correction.status_code), (303, 303))
+        self.assertTrue(statements)
+        self.assertFalse(any(self.SCHEMA_SQL.match(statement) for statement in statements))
+
     def test_manager_corrects_restock_with_audit_trail(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
