@@ -230,7 +230,8 @@ def _save_sports_config(db, product_id, type_id, variants, form):
            ON CONFLICT(product_id) DO UPDATE SET type_id=excluded.type_id,
            allow_custom_name=excluded.allow_custom_name,
            allow_custom_number=excluded.allow_custom_number,
-           allow_backorder=excluded.allow_backorder,updated_at=CURRENT_TIMESTAMP""",
+           allow_backorder=excluded.allow_backorder,updated_at=CURRENT_TIMESTAMP
+           RETURNING product_id""",
         (product_id, type_id, form.get("allow_custom_name") == "1",
          form.get("allow_custom_number") == "1", form.get("allow_backorder") == "1"),
     )

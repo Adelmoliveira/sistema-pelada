@@ -229,7 +229,7 @@ def _create_sports_sale(db):
                 if updated.rowcount != 1: raise ValueError(f"Estoque insuficiente para {row['name']} — {row['size']}.")
             sale_item = db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)", (sale.lastrowid,product_id,qty,row["price_cents"],row["cost_cents"]))
             db.execute("""INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,custom_name,custom_number,order_mode,fulfillment_status)
-                VALUES(?,?,?,?,?,?,?)""", (sale_item.lastrowid,variant_id,row["size"],custom_name,custom_number,mode,"reserved" if mode=="ready" else "requested"))
+                VALUES(?,?,?,?,?,?,?) RETURNING sale_item_id""", (sale_item.lastrowid,variant_id,row["size"],custom_name,custom_number,mode,"reserved" if mode=="ready" else "requested"))
         if method == "Créditos": consume_credit(db,player_id,total,sale.lastrowid,g.user["id"])
     return sale.lastrowid
 
@@ -269,7 +269,7 @@ def _create_sports_pix_sale(db, body, access_token):
                 updated=db.execute("UPDATE sports_product_variants SET stock=stock-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND product_id=? AND active AND stock>=?",(qty,variant_id,product_id,qty))
                 if updated.rowcount!=1: raise ValueError(f"Estoque insuficiente para {row['name']} — {row['size']}.")
             si=db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",(sale_id,product_id,qty,row["price_cents"],row["cost_cents"]))
-            db.execute("INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,custom_name,custom_number,order_mode,fulfillment_status) VALUES(?,?,?,?,?,?,?)",(si.lastrowid,variant_id,row["size"],name,number,mode,"reserved" if mode=="ready" else "requested"))
+            db.execute("INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,custom_name,custom_number,order_mode,fulfillment_status) VALUES(?,?,?,?,?,?,?) RETURNING sale_item_id",(si.lastrowid,variant_id,row["size"],name,number,mode,"reserved" if mode=="ready" else "requested"))
             if mode=="ready": db.execute("INSERT INTO sports_stock_reservations(sale_item_id,variant_id,quantity,status) VALUES(?,?,?,'reserved')",(si.lastrowid,variant_id,qty))
     try:
         order=create_pix_order(access_token,external_reference,total,idempotency_key,player["email"]); order_id=order.get("id"); payments=(order.get("transactions") or {}).get("payments") or []; qr=((payments[0].get("payment_method") or {}).get("qr_code") if payments else None)

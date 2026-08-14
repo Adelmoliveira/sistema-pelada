@@ -864,6 +864,83 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIs(variant_params[-1], True)
         self.assertTrue(any("SET active=FALSE" in sql for sql, _ in recorder.calls))
 
+    def test_sports_non_id_primary_keys_use_explicit_returning(self):
+        class Cursor:
+            def __init__(self):
+                self.statement = ""
+
+            def execute(self, statement, _params=()):
+                self.statement = statement
+
+            def fetchone(self):
+                return (37,)
+
+        class Connection:
+            def __init__(self):
+                self.cursor_instance = Cursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+        connection = Connection()
+        result = DbWrapper(connection, is_postgres=True).execute(
+            "INSERT INTO sports_product_config(product_id,type_id) "
+            "VALUES(?,?) RETURNING product_id",
+            (37, 1),
+        )
+        self.assertEqual(result.lastrowid, 37)
+        self.assertIn("RETURNING product_id", connection.cursor_instance.statement)
+        self.assertNotIn("RETURNING id", connection.cursor_instance.statement)
+
+        sqlite_connection = sqlite3.connect(":memory:")
+        try:
+            sqlite_connection.execute(
+                "CREATE TABLE config(product_id INTEGER PRIMARY KEY, type_id INTEGER NOT NULL)"
+            )
+            returned = sqlite_connection.execute(
+                "INSERT INTO config(product_id,type_id) VALUES(?,?) RETURNING product_id",
+                (37, 1),
+            ).fetchone()
+            self.assertEqual(returned, (37,))
+        finally:
+            sqlite_connection.close()
+
+        config_source = inspect.getsource(_save_sports_config)
+        sale_sources = inspect.getsource(_create_sports_sale) + inspect.getsource(_create_sports_pix_sale)
+        self.assertIn("RETURNING product_id", config_source)
+        self.assertEqual(sale_sources.count("INSERT INTO sports_sale_item_details"), 2)
+        self.assertEqual(sale_sources.count("RETURNING sale_item_id"), 2)
+
+    def test_sports_product_creation_rolls_back_when_config_fails(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            type_id = get_db().execute(
+                "SELECT id FROM sports_material_types ORDER BY id LIMIT 1"
+            ).fetchone()["id"]
+
+        with patch("src.routes.products._save_sports_config", side_effect=RuntimeError("config failed")):
+            response = self.client.post("/material-esportivo", data={
+                "name": "Produto Rollback Esportivo",
+                "type_id": str(type_id),
+                "price": "10,00",
+                "cost": "5,00",
+                "active": "1",
+                "variant_size": "M",
+                "variant_stock": "1",
+                "variant_min_stock": "0",
+                "variant_active": "1",
+            })
+        self.assertEqual(response.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            self.assertIsNone(db.execute(
+                "SELECT id FROM products WHERE name=?", ("Produto Rollback Esportivo",)
+            ).fetchone())
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) total FROM sports_product_variants"
+            ).fetchone()["total"], 0)
+
     def test_sports_phase_c1_ready_backorder_snapshots_cancel_and_pix_block(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
