@@ -225,7 +225,7 @@ def _create_sports_sale(db):
         for product_id, variant_id, qty, custom_name, custom_number, mode in items:
             row = by_variant[variant_id]
             if mode == "ready":
-                updated = db.execute("UPDATE sports_product_variants SET stock=stock-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND product_id=? AND active=1 AND stock>=?", (qty,variant_id,product_id,qty))
+                updated = db.execute("UPDATE sports_product_variants SET stock=stock-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND product_id=? AND active AND stock>=?", (qty,variant_id,product_id,qty))
                 if updated.rowcount != 1: raise ValueError(f"Estoque insuficiente para {row['name']} — {row['size']}.")
             sale_item = db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)", (sale.lastrowid,product_id,qty,row["price_cents"],row["cost_cents"]))
             db.execute("""INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,custom_name,custom_number,order_mode,fulfillment_status)
@@ -266,7 +266,7 @@ def _create_sports_pix_sale(db, body, access_token):
         for product_id,variant_id,qty,name,number,mode in items:
             row=by_id[variant_id]
             if mode=="ready":
-                updated=db.execute("UPDATE sports_product_variants SET stock=stock-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND product_id=? AND active=1 AND stock>=?",(qty,variant_id,product_id,qty))
+                updated=db.execute("UPDATE sports_product_variants SET stock=stock-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND product_id=? AND active AND stock>=?",(qty,variant_id,product_id,qty))
                 if updated.rowcount!=1: raise ValueError(f"Estoque insuficiente para {row['name']} — {row['size']}.")
             si=db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",(sale_id,product_id,qty,row["price_cents"],row["cost_cents"]))
             db.execute("INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,custom_name,custom_number,order_mode,fulfillment_status) VALUES(?,?,?,?,?,?,?)",(si.lastrowid,variant_id,row["size"],name,number,mode,"reserved" if mode=="ready" else "requested"))
@@ -450,7 +450,7 @@ def sale():
         v.id variant_id,v.size variant_size,v.stock variant_stock
         FROM products p JOIN sports_product_config c ON c.product_id=p.id
         JOIN sports_material_types t ON t.id=c.type_id
-        JOIN sports_product_variants v ON v.product_id=p.id AND v.active=1
+        JOIN sports_product_variants v ON v.product_id=p.id AND v.active
         WHERE p.active=1 AND p.category=? ORDER BY p.name,v.id""", (SPORTS_MATERIAL_CATEGORY,)).fetchall()
     sports = {}
     for row in sports_rows:

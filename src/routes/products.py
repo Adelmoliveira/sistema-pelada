@@ -211,7 +211,7 @@ def _sports_variants_from_form(form):
 
 
 def _sports_types(db, include_inactive=False):
-    where = "" if include_inactive else "WHERE active=1"
+    where = "" if include_inactive else "WHERE active"
     return db.execute(
         f"SELECT id,code,name,active,sort_order FROM sports_material_types {where} ORDER BY sort_order,name"
     ).fetchall()
@@ -219,7 +219,7 @@ def _sports_types(db, include_inactive=False):
 
 def _save_sports_config(db, product_id, type_id, variants, form):
     material_type = db.execute(
-        "SELECT id FROM sports_material_types WHERE id=? AND active=1", (type_id,)
+        "SELECT id FROM sports_material_types WHERE id=? AND active", (type_id,)
     ).fetchone()
     if not material_type:
         raise ValueError("Selecione um tipo de material válido.")
@@ -231,17 +231,17 @@ def _save_sports_config(db, product_id, type_id, variants, form):
            allow_custom_name=excluded.allow_custom_name,
            allow_custom_number=excluded.allow_custom_number,
            allow_backorder=excluded.allow_backorder,updated_at=CURRENT_TIMESTAMP""",
-        (product_id, type_id, int(form.get("allow_custom_name") == "1"),
-         int(form.get("allow_custom_number") == "1"), int(form.get("allow_backorder") == "1")),
+        (product_id, type_id, form.get("allow_custom_name") == "1",
+         form.get("allow_custom_number") == "1", form.get("allow_backorder") == "1"),
     )
-    db.execute("UPDATE sports_product_variants SET active=0,updated_at=CURRENT_TIMESTAMP WHERE product_id=?", (product_id,))
+    db.execute("UPDATE sports_product_variants SET active=FALSE,updated_at=CURRENT_TIMESTAMP WHERE product_id=?", (product_id,))
     for variant in variants:
         db.execute(
             """INSERT INTO sports_product_variants(product_id,size,stock,min_stock,active)
                VALUES(?,?,?,?,?) ON CONFLICT(product_id,size) DO UPDATE SET
                stock=excluded.stock,min_stock=excluded.min_stock,active=excluded.active,
                updated_at=CURRENT_TIMESTAMP""",
-            (product_id, variant["size"], variant["stock"], variant["min_stock"], int(variant["active"])),
+            (product_id, variant["size"], variant["stock"], variant["min_stock"], variant["active"]),
         )
 
 
@@ -282,7 +282,7 @@ def sports_materials():
         """SELECT p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
                   config.product_id configured,type.name sports_type,
                   config.allow_custom_name,config.allow_custom_number,config.allow_backorder,
-                  COALESCE(SUM(CASE WHEN variant.active=1 THEN variant.stock ELSE 0 END),0) variant_stock,
+                  COALESCE(SUM(CASE WHEN variant.active THEN variant.stock ELSE 0 END),0) variant_stock,
                   COUNT(variant.id) variant_count
            FROM products p
            LEFT JOIN sports_product_config config ON config.product_id=p.id

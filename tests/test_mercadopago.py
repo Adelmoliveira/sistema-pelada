@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import inspect
 import json
 import os
 import re
@@ -40,6 +41,8 @@ from src.db import (
 from src.routes.auth import make_password_hash
 from src.routes.football import _sumula
 from src.routes.sales import pix_access_token, apply_mercadopago_status
+from src.routes.products import _save_sports_config, _sports_types, sports_materials
+from src.routes.sales import _create_sports_pix_sale, _create_sports_sale, sale
 from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
@@ -798,7 +801,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
         catalog_queries = [query for query in statements if "FROM products p" in query and "sports_product_config" in query]
         self.assertTrue(catalog_queries)
         self.assertTrue(all("photo_data" not in query for query in catalog_queries))
-        self.assertNotIn("Esportivo antigo", self.client.get("/sale?catalog=sports").get_data(as_text=True))
+        sports_sale_page = self.client.get("/sale?catalog=sports").get_data(as_text=True)
+        self.assertNotIn("Esportivo antigo", sports_sale_page)
+        self.assertIn('"size": "P"', sports_sale_page)
+        self.assertNotIn('"size": "GG"', sports_sale_page)
         blocked = self.client.post("/sale", data={
             "department": "sports", "player_id": str(self.player_id), "product_id": str(legacy_id),
             "quantity": "1", "payment_method": "Dinheiro", "notes": "",
@@ -817,6 +823,46 @@ class MercadoPagoFlowTest(unittest.TestCase):
             db.execute("UPDATE users SET role='client',player_id=? WHERE id=?", (self.player_id, self.user_id))
             db.commit()
         self.assertEqual(self.client.get("/material-esportivo").status_code, 302)
+
+    def test_sports_boolean_queries_and_parameters_are_postgres_compatible(self):
+        sources = "\n".join(inspect.getsource(function) for function in (
+            _sports_types, _save_sports_config, sports_materials,
+            _create_sports_sale, _create_sports_pix_sale, sale,
+        ))
+        for invalid in (
+            "sports_material_types WHERE id=? AND active=1",
+            "sports_product_variants SET active=0",
+            "variant.active=1",
+            "v.active=1",
+            "AND active=1 AND stock",
+        ):
+            self.assertNotIn(invalid, sources)
+
+        class Result:
+            lastrowid = 1
+
+            def fetchone(self):
+                return {"id": 1}
+
+        class Recorder:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, params=()):
+                self.calls.append((statement, params))
+                return Result()
+
+        recorder = Recorder()
+        _save_sports_config(
+            recorder, 10, 1,
+            [{"size": "G", "stock": 2, "min_stock": 0, "active": True}],
+            {"allow_custom_name": "1", "allow_custom_number": "", "allow_backorder": "1"},
+        )
+        config_params = next(params for sql, params in recorder.calls if "sports_product_config" in sql)
+        variant_params = next(params for sql, params in recorder.calls if "INSERT INTO sports_product_variants" in sql)
+        self.assertEqual(config_params[-3:], (True, False, True))
+        self.assertIs(variant_params[-1], True)
+        self.assertTrue(any("SET active=FALSE" in sql for sql, _ in recorder.calls))
 
     def test_sports_phase_c1_ready_backorder_snapshots_cancel_and_pix_block(self):
         with self.client.session_transaction() as session:
