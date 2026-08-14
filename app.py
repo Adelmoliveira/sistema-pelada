@@ -3,18 +3,17 @@ from datetime import timedelta
 from pathlib import Path
 from flask import Flask, g, redirect, request, session, url_for, flash, jsonify, render_template
 from flask_wtf.csrf import CSRFProtect, CSRFError
+from src.environment import configure_runtime_environment, environment_config
 
-# Carregar variáveis de ambiente do arquivo .env.local se existir (desenvolvimento)
+# Em modo local, carregue somente o arquivo local isolado. Na Vercel, as
+# variáveis continuam sendo fornecidas pelo ambiente do projeto.
 try:
     from dotenv import load_dotenv
-    env_file = Path(__file__).parent / ".env.local"
-    if env_file.exists():
-        load_dotenv(env_file)
 except ImportError:
-    pass
+    load_dotenv = None
+configure_runtime_environment(Path(__file__).parent, loader=load_dotenv)
 
 from src.db import database_error_category, get_db, is_transient_database_error, read_user_from_session
-from src.environment import environment_config
 from src.utils import money, brdate, cpfmask, local_today, month_year_label, service_medals
 from src.routes.auth import bp as auth_bp, home_endpoint
 from src.routes.players import bp as players_bp

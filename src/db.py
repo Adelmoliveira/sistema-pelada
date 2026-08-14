@@ -1079,7 +1079,11 @@ def run_postgres_migrations(database_url, migrations_dir=None):
     return applied
 
 def connect_db(app):
-    db_url = os.environ.get("DATABASE_URL") or app.config.get("DATABASE_URL")
+    local_mode = app.config.get("APP_ENV") == "local"
+    # The application config is the single source of truth after environment
+    # isolation. Respect an explicit ``None`` instead of falling back to a
+    # process variable that may have been introduced by another module.
+    db_url = None if local_mode else app.config.get("DATABASE_URL")
     if not db_url:
         # Desenvolvimento local: usa o SQLite já configurado pela aplicação.
         # Na Vercel o filesystem é temporário, portanto o Supabase continua

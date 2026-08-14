@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 bar.db
+bar_local.db
 bar.db.backup-*
 .env
 .env.local
