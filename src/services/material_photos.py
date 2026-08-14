@@ -18,6 +18,18 @@ def _jpeg_data_url(image, max_size, quality):
     return f"data:image/jpeg;base64,{encoded}"
 
 
+def _flatten_transparency(image):
+    has_alpha = image.mode in ("RGBA", "LA") or (
+        image.mode == "P" and "transparency" in image.info
+    )
+    if not has_alpha:
+        return image.convert("RGB")
+    rgba = image.convert("RGBA")
+    background = Image.new("RGB", rgba.size, "white")
+    background.paste(rgba, mask=rgba.getchannel("A"))
+    return background
+
+
 def process_material_photo(upload):
     if not upload or not upload.filename:
         return None
@@ -33,7 +45,7 @@ def process_material_photo(upload):
             image = ImageOps.exif_transpose(opened)
             if getattr(image, "is_animated", False):
                 image.seek(0)
-            image = image.convert("RGB")
+            image = _flatten_transparency(image)
             photo = _jpeg_data_url(image, (1200, 1200), 82)
             thumbnail = _jpeg_data_url(image, (180, 180), 76)
             return photo, thumbnail

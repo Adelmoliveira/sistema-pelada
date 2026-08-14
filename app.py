@@ -72,6 +72,20 @@ def handle_csrf_error(error):
     flash("Sessão expirada ou token inválido. Recarregue a página e tente novamente.", "danger")
     return redirect(request.referrer or url_for("auth.login"), code=303)
 
+
+@app.errorhandler(413)
+def handle_request_too_large(error):
+    if request.path.startswith("/infra/load-relation") or request.path.startswith("/infra/loans"):
+        message = "O envio deve ter no máximo 4 MB no total. Selecione menos fotos ou use arquivos menores."
+    else:
+        message = "O arquivo enviado excede o limite permitido. Use um arquivo menor."
+    if request.path.endswith("/check-auto") or request.accept_mimetypes.best == "application/json":
+        return jsonify(ok=False, error=message), 413
+    flash(message, "danger")
+    fallback = url_for("infra.load_relation") if request.path.startswith("/infra/load-relation") else url_for("auth.login")
+    return redirect(request.referrer or fallback, code=303)
+
+
 @app.errorhandler(405)
 def handle_method_not_allowed(error):
     if g.get("user") and request.method == "POST" and request.accept_mimetypes.accept_html:
