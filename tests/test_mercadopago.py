@@ -133,6 +133,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
             GMAIL_SMTP_USER="diretoriagpcta@gmail.com",
             GMAIL_APP_PASSWORD="app-password-test",
             CRON_SECRET="cron-secret-test",
+            APP_ENV="production",
+            IS_HOMOLOGATION=False,
+            EXTERNAL_PAYMENTS_ENABLED=True,
+            CRON_ENABLED=True,
         )
         initialize_sqlite_database(app.config["DATABASE"])
         with app.app_context():
@@ -3017,6 +3021,114 @@ class MercadoPagoFlowTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["image"].startswith("data:image/png;base64,"))
+
+    def test_homologation_environment_flags_and_banner(self):
+        from src.environment import environment_config
+
+        self.assertEqual(environment_config(" HOMOLOGATION "), {
+            "APP_ENV": "homologation",
+            "IS_HOMOLOGATION": True,
+            "EXTERNAL_PAYMENTS_ENABLED": False,
+            "CRON_ENABLED": False,
+        })
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        app.config.update(environment_config("homologation"))
+        page = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn("AMBIENTE DE HOMOLOGAÇÃO", page)
+        self.assertIn("Pix indisponível na homologação", page)
+        self.assertNotIn("<option>Pix</option>", page)
+        app.config.update(environment_config("production"))
+        production_page = self.client.get("/sale").get_data(as_text=True)
+        self.assertNotIn("AMBIENTE DE HOMOLOGAÇÃO", production_page)
+        self.assertIn("<option>Pix</option>", production_page)
+
+    def test_homologation_cron_is_noop_before_auth_or_database(self):
+        from src.environment import environment_config
+
+        app.config.update(environment_config("homologation"))
+        with patch("src.routes.finance.get_db") as get_db_mock, \
+             patch("src.routes.finance.send_transfer_window_notifications") as transfer_mock, \
+             patch("src.routes.finance.send_birthday_notifications") as birthday_mock, \
+             patch("src.routes.finance.dispatch_reminders") as dispatch_mock:
+            response = self.client.get("/cron/payment-reminders")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"status": "disabled", "environment": "homologation"})
+        get_db_mock.assert_not_called()
+        transfer_mock.assert_not_called()
+        birthday_mock.assert_not_called()
+        dispatch_mock.assert_not_called()
+
+    def test_homologation_blocks_all_pix_backends_without_external_calls_or_writes(self):
+        from src.environment import environment_config
+
+        app.config.update(environment_config("homologation"))
+        with app.app_context():
+            db = get_db()
+            before = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        with patch("src.routes.sales.create_pix_order") as create_mock, \
+             patch("src.routes.sales.get_order") as get_order_mock:
+            legacy = self.client.get("/pix/qrcode?amount_cents=300", headers=self.headers())
+            bar = self.client.post("/pix/mercadopago/orders", headers=self.headers(), json={
+                "player_id": self.player_id,
+                "items": [{"product_id": self.product_id, "quantity": 1}],
+            })
+            sports = self.client.post("/pix/mercadopago/orders", headers=self.headers(), json={
+                "department": "sports", "player_id": self.player_id, "items": [],
+            })
+            webhook = self.client.post("/webhooks/mercadopago", json={"data": {"id": "real-event"}})
+        self.assertEqual((legacy.status_code, bar.status_code, sports.status_code, webhook.status_code), (403, 403, 403, 200))
+        self.assertNotIn(app.config["PIX_KEY"], legacy.get_data(as_text=True))
+        create_mock.assert_not_called()
+        get_order_mock.assert_not_called()
+        with app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM sales").fetchone()[0], before)
+
+        with app.app_context():
+            db = get_db()
+            client_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("pix-bloqueado", "Pix Bloqueado", "hash", self.player_id),
+            ).lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+        with patch("src.routes.credits.create_pix_order") as topup_mock:
+            credits_page = self.client.get("/creditos/").get_data(as_text=True)
+            topup = self.client.post("/creditos/comprar", data={"amount_cents": 2000})
+        self.assertIn("Recarga Pix indisponível na homologação", credits_page)
+        self.assertEqual(topup.status_code, 403)
+        topup_mock.assert_not_called()
+
+    def test_homologation_keeps_cash_and_existing_credits_local(self):
+        from src.environment import environment_config
+
+        app.config.update(environment_config("homologation"))
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        cash = self.client.post("/sale", data={
+            "department": "bar", "sale_type": "player", "player_id": self.player_id,
+            "product_id": self.product_id, "quantity": 1, "payment_method": "Dinheiro", "notes": "",
+        })
+        self.assertEqual(cash.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            client_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("cliente-homolog", "Cliente Homolog", "hash", self.player_id),
+            ).lastrowid
+            db.execute("INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,?)", (self.player_id, 1000))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+        with patch("src.routes.sales.notify_low_balance"):
+            credit = self.client.post("/sale", data={
+                "department": "bar", "sale_type": "player", "player_id": self.player_id,
+                "product_id": self.product_id, "quantity": 1, "payment_method": "Créditos", "notes": "",
+            })
+        self.assertEqual(credit.status_code, 303)
+        with app.app_context():
+            self.assertEqual(get_db().execute("SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)).fetchone()[0], 700)
 
     def test_webhook_approves_order_and_api_failure_restores_stock(self):
         sale_id = self.create_order("ORD-WEBHOOK", 1)

@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="{{url_for('static',filename='style.css')}}">
 </head>
 <body>
+{% if is_homologation %}<div class="alert alert-warning rounded-0 text-center fw-bold py-2 mb-0" role="status">🧪 AMBIENTE DE HOMOLOGAÇÃO</div>{% endif %}
 {% if current_user and not (guest_mode|default(false)) %}
 {% set endpoint=request.endpoint or '' %}
 {% set client_sports_catalog_active=endpoint == 'sales.sale' and request.args.get('catalog') == 'sports' %}

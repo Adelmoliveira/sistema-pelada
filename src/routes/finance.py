@@ -959,6 +959,8 @@ def send_test_reminder():
 
 @bp.get("/cron/payment-reminders")
 def payment_reminders_cron():
+    if not current_app.config.get("CRON_ENABLED", True):
+        return jsonify(status="disabled", environment="homologation"), 200
     secret = current_app.config.get("CRON_SECRET") or ""
     authorization = request.headers.get("Authorization", "")
     expected = f"Bearer {secret}"

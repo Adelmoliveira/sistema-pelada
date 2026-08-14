@@ -78,6 +78,8 @@ def mercadopago_config():
     )
 
 def mercadopago_enabled():
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return False
     access_token, _ = mercadopago_config()
     return bool(access_token and current_app.config.get("MERCADOPAGO_WEBHOOK_SECRET"))
 
@@ -289,6 +291,10 @@ def _create_sports_pix_sale(db, body, access_token):
 def sale():
     db = get_db()
     if request.method == "POST":
+        if request.form.get("payment_method") == "Pix" and not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+            flash("Pix indisponível na homologação.", "warning")
+            catalog = "sports" if request.form.get("department") == "sports" else None
+            return redirect(url_for("sales.sale", catalog=catalog), code=303)
         if request.form.get("department") == "sports":
             try:
                 sale_id = _create_sports_sale(db)
@@ -499,6 +505,8 @@ def guest_event_sale(token):
         try:
             guest_name = request.form.get("guest_name", "").strip()
             method = request.form.get("payment_method", "").strip()
+            if method == "Pix" and not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+                raise ValueError("Pix indisponível na homologação.")
             if not guest_name:
                 raise ValueError("Informe seu nome para registrar o pedido.")
             if method == "Pix" and mercadopago_enabled():
@@ -1155,6 +1163,8 @@ def receipt(sale_id):
 
 @bp.get("/pix/qrcode")
 def pix_qrcode():
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return jsonify(error="Pix indisponível na homologação."), 403
     try:
         if not require_pix_access_token():
             raise BadData
@@ -1188,6 +1198,8 @@ def pix_qrcode():
 
 @bp.post("/pix/mercadopago/orders")
 def mercadopago_create_order():
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return jsonify(error="Pix indisponível na homologação."), 403
     if not require_pix_access_token():
         return jsonify(error="A autorização do Pix expirou. Recarregue a página e tente novamente."), 401
     access_token, _ = mercadopago_config()
@@ -1313,6 +1325,8 @@ def mercadopago_create_order():
 
 @bp.get("/pix/mercadopago/orders/<int:sale_id>/status")
 def mercadopago_order_status(sale_id):
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return jsonify(error="Pix indisponível na homologação."), 403
     if not require_pix_access_token():
         return jsonify(error="A autorização do Pix expirou. Recarregue a página."), 401
     access_token, _ = mercadopago_config()
@@ -1331,6 +1345,8 @@ def mercadopago_order_status(sale_id):
 
 @bp.post("/webhooks/mercadopago")
 def mercadopago_webhook():
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return jsonify(status="disabled", environment="homologation"), 200
     payload = request.get_json(silent=True) or {}
     notification_data = payload.get("data") or {}
     data_id = request.args.get("data.id") or notification_data.get("id")
