@@ -27,7 +27,6 @@ from src.routes.display import bp as display_bp
 from src.routes.reports import bp as reports_bp
 from src.routes.football import bp as football_bp
 from src.routes.events import bp as events_bp
-from src.environment import environment_config
 
 app = Flask(__name__)
 
@@ -51,6 +50,7 @@ app.config.update(
     GMAIL_SMTP_USER=os.environ.get("GMAIL_SMTP_USER"),
     GMAIL_APP_PASSWORD=os.environ.get("GMAIL_APP_PASSWORD"),
     CRON_SECRET=os.environ.get("CRON_SECRET"),
+    APP_ENV=(os.environ.get("APP_ENV") or "").strip().lower(),
     VAPID_PUBLIC_KEY=os.environ.get("VAPID_PUBLIC_KEY"),
     VAPID_PRIVATE_KEY=os.environ.get("VAPID_PRIVATE_KEY"),
     VAPID_SUBJECT=os.environ.get("VAPID_SUBJECT", "mailto:diretoriagpcta@gmail.com"),
@@ -60,7 +60,6 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=is_vercel,
 )
-app.config.update(environment_config())
 
 if is_vercel:
     app.logger.info(f"[VERCEL] DATABASE_URL configurada: {bool(app.config['DATABASE_URL'])}")
@@ -208,6 +207,7 @@ def load_user_and_protect_routes():
         "sales.mercadopago_webhook",
         "finance.payment_reminders_cron",
         "finance.weekly_tribute_cron",
+        "finance.process_notification_outbox_cron",
         "football.tribute_image",
     }:
         return None
@@ -310,7 +310,7 @@ def inject_user():
             unread_restock_notifications = 0
             pending_restock_requests = 0
     medals = service_medals(player["football_join_date"]) if player else []
-    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "unread_restock_notifications": unread_restock_notifications, "pending_restock_requests": pending_restock_requests, "service_medals": medals, "app_env": app.config["APP_ENV"], "is_homologation": app.config["IS_HOMOLOGATION"], "external_payments_enabled": app.config["EXTERNAL_PAYMENTS_ENABLED"]}
+    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "unread_restock_notifications": unread_restock_notifications, "pending_restock_requests": pending_restock_requests, "service_medals": medals}
 
 if __name__ == "__main__":
     app.run(debug=True)

@@ -72,85 +72,6 @@ CREATE TABLE IF NOT EXISTS products (
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE TABLE IF NOT EXISTS sports_material_types (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    code TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL UNIQUE,
-    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-INSERT OR IGNORE INTO sports_material_types(code,name,sort_order) VALUES
-('game_kit','Kit de jogo',10),
-('sweatshirt_kit','Kit moletom',20),
-('tracksuit_kit','Kit agasalho',30),
-('shirt','Camisa avulsa',40),
-('shorts','Calção avulso',50),
-('socks','Meião avulso',60),
-('polo','Camisa polo',70),
-('commemorative_coin','Moeda comemorativa',80);
-CREATE TABLE IF NOT EXISTS sports_product_config (
-    product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
-    type_id INTEGER NOT NULL REFERENCES sports_material_types(id),
-    allow_custom_name INTEGER NOT NULL DEFAULT 0 CHECK(allow_custom_name IN (0,1)),
-    allow_custom_number INTEGER NOT NULL DEFAULT 0 CHECK(allow_custom_number IN (0,1)),
-    allow_backorder INTEGER NOT NULL DEFAULT 0 CHECK(allow_backorder IN (0,1)),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS sports_product_variants (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    size TEXT NOT NULL,
-    stock INTEGER NOT NULL DEFAULT 0 CHECK(stock >= 0),
-    min_stock INTEGER NOT NULL DEFAULT 0 CHECK(min_stock >= 0),
-    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(product_id,size)
-);
-CREATE INDEX IF NOT EXISTS idx_sports_types_active ON sports_material_types(active,sort_order,name);
-CREATE INDEX IF NOT EXISTS idx_sports_variants_product ON sports_product_variants(product_id,active,size);
-CREATE INDEX IF NOT EXISTS idx_sports_variants_low_stock ON sports_product_variants(active,stock,min_stock);
-CREATE TABLE IF NOT EXISTS sports_sale_item_details (
-    sale_item_id INTEGER PRIMARY KEY REFERENCES sale_items(id) ON DELETE CASCADE,
-    variant_id INTEGER NOT NULL REFERENCES sports_product_variants(id),
-    variant_size TEXT NOT NULL,
-    custom_name TEXT NOT NULL DEFAULT '',
-    custom_number TEXT NOT NULL DEFAULT '',
-    order_mode TEXT NOT NULL CHECK(order_mode IN ('ready','backorder')),
-    fulfillment_status TEXT NOT NULL CHECK(fulfillment_status IN ('reserved','requested','in_production','available','delivered')),
-    stock_released_at TEXT,
-    delivered_at TEXT,
-    delivered_by INTEGER REFERENCES users(id),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_sports_sale_details_variant ON sports_sale_item_details(variant_id);
-CREATE INDEX IF NOT EXISTS idx_sports_sale_details_status ON sports_sale_item_details(fulfillment_status,order_mode);
-CREATE TABLE IF NOT EXISTS sports_order_status_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
-    from_status TEXT NOT NULL CHECK(from_status IN ('reserved','requested','in_production','available','delivered')),
-    to_status TEXT NOT NULL CHECK(to_status IN ('reserved','requested','in_production','available','delivered')),
-    changed_by INTEGER REFERENCES users(id),
-    notes TEXT NOT NULL DEFAULT '',
-    changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_sports_order_history_item_time ON sports_order_status_history(sale_item_id,changed_at,id);
-CREATE TABLE IF NOT EXISTS sports_stock_reservations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sale_item_id INTEGER NOT NULL UNIQUE REFERENCES sale_items(id) ON DELETE CASCADE,
-    variant_id INTEGER NOT NULL REFERENCES sports_product_variants(id),
-    quantity INTEGER NOT NULL CHECK(quantity > 0),
-    status TEXT NOT NULL DEFAULT 'reserved' CHECK(status IN ('reserved','consumed','released')),
-    expires_at TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_sports_reservations_status_expiry ON sports_stock_reservations(status,expires_at);
-CREATE INDEX IF NOT EXISTS idx_sports_reservations_variant ON sports_stock_reservations(variant_id);
 CREATE TABLE IF NOT EXISTS bar_restock_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     submitted_by INTEGER NOT NULL REFERENCES users(id),
@@ -290,14 +211,41 @@ CREATE TABLE IF NOT EXISTS bar_credit_audit (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_bar_credit_audit_player ON bar_credit_audit(player_id,created_at);
+CREATE TABLE IF NOT EXISTS sale_delivery_operations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+    delivered_by INTEGER REFERENCES users(id),
+    delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sale_delivery_operations_sale ON sale_delivery_operations(sale_id,delivered_at);
 CREATE TABLE IF NOT EXISTS sale_item_deliveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_operation_id INTEGER NOT NULL REFERENCES sale_delivery_operations(id) ON DELETE CASCADE,
     sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
     quantity INTEGER NOT NULL CHECK(quantity > 0),
     delivered_by INTEGER REFERENCES users(id),
     delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_item ON sale_item_deliveries(sale_item_id);
+CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_operation ON sale_item_deliveries(delivery_operation_id);
+CREATE TABLE IF NOT EXISTS notification_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_key TEXT NOT NULL UNIQUE,
+    event_type TEXT NOT NULL CHECK(event_type IN ('delivery_push','delivery_update_email','purchase_receipt_email')),
+    sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+    delivery_id INTEGER NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','sent','failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processing_started_at TEXT,
+    processed_at TEXT,
+    last_error TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_ready ON notification_outbox(status,available_at,id);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_sale ON notification_outbox(sale_id,delivery_id);
 CREATE TABLE IF NOT EXISTS sale_cancellations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sale_id INTEGER NOT NULL UNIQUE REFERENCES sales(id) ON DELETE CASCADE,
@@ -1403,93 +1351,44 @@ def migrate_maintenance_areas(connection):
     """)
     connection.execute("PRAGMA foreign_keys = ON")
 
-
-def repair_legacy_sale_items_foreign_key(connection):
-    """Repair only the known SQLite FK left by the legacy sales rebuild.
-
-    This helper is deliberately called only by ``init_sqlite``.  Normal
-    connections and HTTP requests must never execute this compatibility DDL.
-    """
-    table = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sale_items'"
+def migrate_sale_delivery_operations(connection):
+    table_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sale_delivery_operations'"
     ).fetchone()
-    if not table:
-        return False
-    foreign_keys = list(connection.execute("PRAGMA foreign_key_list(sale_items)"))
-    sale_targets = {row[2] for row in foreign_keys if row[3] == "sale_id"}
-    if sale_targets == {"sales"}:
-        return False
-    if sale_targets != {"sales_legacy_event_migration"}:
-        target = ", ".join(sorted(sale_targets)) or "nenhuma"
-        raise RuntimeError(
-            f"FK inesperada em sale_items.sale_id ({target}); reparo SQLite interrompido."
-        )
-
-    orphan_count = connection.execute(
-        """SELECT COUNT(*) FROM sale_items item
-           LEFT JOIN sales sale ON sale.id=item.sale_id WHERE sale.id IS NULL"""
-    ).fetchone()[0]
-    if orphan_count:
-        raise RuntimeError(
-            f"sale_items possui {orphan_count} registro(s) sem sales correspondente; reparo interrompido."
-        )
-    before_count = connection.execute("SELECT COUNT(*) FROM sale_items").fetchone()[0]
-    indexes = [row[0] for row in connection.execute(
-        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='sale_items' AND sql IS NOT NULL"
-    )]
-    triggers = [row[0] for row in connection.execute(
-        "SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='sale_items' AND sql IS NOT NULL"
-    )]
-
-    connection.commit()
-    connection.execute("PRAGMA foreign_keys = OFF")
-    try:
-        connection.execute("BEGIN")
-        connection.execute("""CREATE TABLE sale_items_fk_repair (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
-            product_id INTEGER NOT NULL REFERENCES products(id),
-            quantity INTEGER NOT NULL CHECK(quantity > 0),
-            unit_price_cents INTEGER NOT NULL,
-            unit_cost_cents INTEGER NOT NULL DEFAULT 0
-        )""")
-        columns = "id,sale_id,product_id,quantity,unit_price_cents,unit_cost_cents"
-        connection.execute(
-            f"INSERT INTO sale_items_fk_repair({columns}) SELECT {columns} FROM sale_items"
-        )
-        after_copy = connection.execute(
-            "SELECT COUNT(*) FROM sale_items_fk_repair"
-        ).fetchone()[0]
-        if after_copy != before_count:
-            raise RuntimeError("Contagem de sale_items divergiu durante o reparo SQLite.")
-        differences = connection.execute(f"""
-            SELECT COUNT(*) FROM (
-                SELECT {columns} FROM sale_items
-                EXCEPT SELECT {columns} FROM sale_items_fk_repair
-                UNION ALL
-                SELECT {columns} FROM sale_items_fk_repair
-                EXCEPT SELECT {columns} FROM sale_items
+    if not table_exists:
+        connection.execute("""
+            CREATE TABLE sale_delivery_operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+                delivered_by INTEGER REFERENCES users(id),
+                delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
-        """).fetchone()[0]
-        if differences:
-            raise RuntimeError("Dados de sale_items divergiram durante o reparo SQLite.")
-        connection.execute("DROP TABLE sale_items")
-        connection.execute("ALTER TABLE sale_items_fk_repair RENAME TO sale_items")
-        for statement in indexes + triggers:
-            connection.execute(statement)
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.execute("PRAGMA foreign_keys = ON")
+        """)
+    item_columns = {row[1] for row in connection.execute("PRAGMA table_info(sale_item_deliveries)").fetchall()}
+    if "delivery_operation_id" not in item_columns:
+        connection.execute("ALTER TABLE sale_item_deliveries ADD COLUMN delivery_operation_id INTEGER")
+        legacy_rows = connection.execute(
+            "SELECT id,sale_item_id,delivered_by,delivered_at FROM sale_item_deliveries ORDER BY id"
+        ).fetchall()
+        for row in legacy_rows:
+            sale_item = connection.execute("SELECT sale_id FROM sale_items WHERE id=?", (row["sale_item_id"],)).fetchone()
+            if not sale_item:
+                continue
+            operation_id = connection.execute(
+                "INSERT INTO sale_delivery_operations(sale_id,delivered_by,delivered_at) VALUES(?,?,?)",
+                (sale_item["sale_id"], row["delivered_by"], row["delivered_at"]),
+            ).lastrowid
+            connection.execute(
+                "UPDATE sale_item_deliveries SET delivery_operation_id=? WHERE id=?",
+                (operation_id, row["id"]),
+            )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_delivery_operations_sale ON sale_delivery_operations(sale_id,delivered_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_operation ON sale_item_deliveries(delivery_operation_id)")
+        connection.execute("UPDATE sale_item_deliveries SET delivery_operation_id = 0 WHERE delivery_operation_id IS NULL")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_delivery_operations_sale ON sale_delivery_operations(sale_id,delivered_at)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_operation ON sale_item_deliveries(delivery_operation_id)")
+    connection.commit()
 
-    violations = list(connection.execute("PRAGMA foreign_key_check"))
-    if violations:
-        raise RuntimeError(
-            f"PRAGMA foreign_key_check encontrou {len(violations)} violação(ões) após o reparo."
-        )
-    return True
 
 def init_sqlite(wrapper):
     conn = wrapper.conn
@@ -1497,12 +1396,7 @@ def init_sqlite(wrapper):
     migrate_payment_method(conn)
     migrate_credit_payment_method(conn)
     conn.executescript(SCHEMA)
-    sports_detail_columns = {row[1] for row in conn.execute("PRAGMA table_info(sports_sale_item_details)")}
-    if "delivered_at" not in sports_detail_columns:
-        conn.execute("ALTER TABLE sports_sale_item_details ADD COLUMN delivered_at TEXT")
-    if "delivered_by" not in sports_detail_columns:
-        conn.execute("ALTER TABLE sports_sale_item_details ADD COLUMN delivered_by INTEGER REFERENCES users(id)")
-    conn.commit()
+    migrate_sale_delivery_operations(conn)
     topup_columns = {row[1] for row in conn.execute("PRAGMA table_info(bar_credit_topups)")}
     if "refunded_at" not in topup_columns:
         conn.execute("ALTER TABLE bar_credit_topups ADD COLUMN refunded_at TEXT")
@@ -1769,7 +1663,6 @@ def init_sqlite(wrapper):
         conn.execute("DROP TABLE sales_legacy_event_migration")
         conn.execute("PRAGMA foreign_keys = ON")
         sale_columns = {row[1] for row in conn.execute("PRAGMA table_info(sales)")}
-    repair_legacy_sale_items_foreign_key(conn)
     for column, definition in {
         "event_id": "INTEGER REFERENCES bar_events(id)",
         "guest_name": "TEXT NOT NULL DEFAULT ''",

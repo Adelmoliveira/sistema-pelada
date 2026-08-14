@@ -1,11 +1,9 @@
 import base64
 import hashlib
 import hmac
-import inspect
 import json
 import os
 import re
-import sqlite3
 import sys
 import tempfile
 import time
@@ -34,15 +32,12 @@ from src.db import (
     init_postgres,
     init_sqlite,
     initialize_sqlite_database,
-    repair_legacy_sale_items_foreign_key,
     read_user_from_session,
     run_postgres_migrations,
 )
 from src.routes.auth import make_password_hash
 from src.routes.football import _sumula
-from src.routes.sales import pix_access_token, apply_mercadopago_status
-from src.routes.products import _save_sports_config, _sports_types, sports_materials
-from src.routes.sales import _create_sports_pix_sale, _create_sports_sale, sale
+from src.routes.sales import pix_access_token
 from src.services.mercadopago import validate_webhook_signature
 from src.services.mercadopago import MercadoPagoError
 from src.services.mercadopago import create_pix_order
@@ -138,10 +133,6 @@ class MercadoPagoFlowTest(unittest.TestCase):
             GMAIL_SMTP_USER="diretoriagpcta@gmail.com",
             GMAIL_APP_PASSWORD="app-password-test",
             CRON_SECRET="cron-secret-test",
-            APP_ENV="production",
-            IS_HOMOLOGATION=False,
-            EXTERNAL_PAYMENTS_ENABLED=True,
-            CRON_ENABLED=True,
         )
         initialize_sqlite_database(app.config["DATABASE"])
         with app.app_context():
@@ -235,6 +226,257 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 3)
             sale = db.execute("SELECT * FROM sales WHERE id=?", (expired_sale_id,)).fetchone()
             self.assertEqual(sale["payment_status"], "expired")
+
+    def test_delivery_creates_notification_outbox_events_for_delivery_operation(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (self.player_id, "Dinheiro", 300, 1, "approved"),
+            )
+            sale_id = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            db.execute(
+                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                (sale_id, self.product_id, 2, 300, 100),
+            )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        response = self.client.post(f"/orders/{sale_id}/deliver", headers={"Accept": "application/json"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["ok"])
+        with app.app_context():
+            rows = get_db().execute(
+                "SELECT event_key,delivery_id,event_type,status FROM notification_outbox WHERE sale_id=? ORDER BY id",
+                (sale_id,),
+            ).fetchall()
+            op_ids = {row["delivery_id"] for row in rows}
+        self.assertEqual({row["event_type"] for row in rows}, {"delivery_push", "delivery_update_email", "purchase_receipt_email"})
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(op_ids), 1)
+        self.assertTrue(all(row["event_key"].startswith(f"delivery:{next(iter(op_ids))}:") for row in rows))
+        self.assertTrue(all(row["status"] == "pending" for row in rows))
+
+    def test_partial_deliveries_generate_distinct_operations_and_event_keys(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (self.player_id, "Dinheiro", 300, 1, "approved"),
+            )
+            sale_id = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            item_id = db.execute(
+                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                (sale_id, self.product_id, 2, 300, 100),
+            ).lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        first = self.client.post(f"/orders/{sale_id}/deliver", json={"sale_item_id": item_id, "quantity": 1}, headers={"Accept": "application/json"})
+        second = self.client.post(f"/orders/{sale_id}/deliver", json={"sale_item_id": item_id, "quantity": 1}, headers={"Accept": "application/json"})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        with app.app_context():
+            rows = get_db().execute(
+                "SELECT delivery_id,event_key FROM notification_outbox WHERE sale_id=? ORDER BY delivery_id,id",
+                (sale_id,),
+            ).fetchall()
+            delivery_ids = {row["delivery_id"] for row in rows}
+            event_keys = [row["event_key"] for row in rows]
+        self.assertEqual(len(delivery_ids), 2)
+        self.assertEqual(len(event_keys), 6)
+        self.assertEqual(len(set(event_keys)), 6)
+
+    def test_retry_does_not_duplicate_events_for_same_operation(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (self.player_id, "Dinheiro", 200, 1, "approved"),
+            )
+            sale_id = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            db.execute(
+                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                (sale_id, self.product_id, 1, 200, 100),
+            )
+            operation_id = db.execute(
+                "INSERT INTO sale_delivery_operations(sale_id,delivered_by,delivered_at) VALUES(?,?,CURRENT_TIMESTAMP)",
+                (sale_id, self.user_id),
+            ).lastrowid
+            db.commit()
+            payload = {
+                "delivery_push": {"player_id": self.player_id, "kind": "pedido_retirada", "period": "retry"},
+                "delivery_update_email": {"sale_id": sale_id, "delivered_items": [], "remaining_items": []},
+                "purchase_receipt_email": {"sale_id": sale_id},
+            }
+            first_count = __import__("src.services.notification_outbox", fromlist=["enqueue_delivery_events"]).enqueue_delivery_events(db, sale_id, operation_id, payload)
+            second_count = __import__("src.services.notification_outbox", fromlist=["enqueue_delivery_events"]).enqueue_delivery_events(db, sale_id, operation_id, payload)
+            event_count = db.execute("SELECT COUNT(*) FROM notification_outbox WHERE sale_id=? AND delivery_id=?", (sale_id, operation_id)).fetchone()[0]
+        self.assertEqual(first_count, 3)
+        self.assertEqual(second_count, 0)
+        self.assertEqual(event_count, 3)
+
+    def test_total_delivery_with_multiple_items_uses_single_operation(self):
+        with app.app_context():
+            db = get_db()
+            product_b = db.execute("INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,?)", ("Cerveja", "Bebida", 450, 150, 5)).lastrowid
+            db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (self.player_id, "Dinheiro", 750, 1, "approved"),
+            )
+            sale_id = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)", (sale_id, self.product_id, 1, 300, 100))
+            db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)", (sale_id, product_b, 1, 450, 150))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        response = self.client.post(f"/orders/{sale_id}/deliver", headers={"Accept": "application/json"})
+        self.assertEqual(response.status_code, 200)
+        with app.app_context():
+            operation_count = get_db().execute("SELECT COUNT(*) FROM sale_delivery_operations WHERE sale_id=?", (sale_id,)).fetchone()[0]
+            delivery_ids = get_db().execute("SELECT DISTINCT delivery_id FROM notification_outbox WHERE sale_id=? ORDER BY delivery_id", (sale_id,)).fetchall()
+        self.assertEqual(operation_count, 1)
+        self.assertEqual(len(delivery_ids), 1)
+
+    def test_after_delivery_outbox_failure_rolls_back_sale(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (self.player_id, "Dinheiro", 300, 1, "approved"),
+            )
+            sale_id = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            db.execute(
+                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                (sale_id, self.product_id, 1, 300, 100),
+            )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with patch("src.services.notification_outbox.enqueue_delivery_events", side_effect=RuntimeError("boom")):
+            response = self.client.post(f"/orders/{sale_id}/deliver", headers={"Accept": "application/json"})
+        self.assertEqual(response.status_code, 500)
+        with app.app_context():
+            db = get_db()
+            sale = db.execute("SELECT paid,delivered_at FROM sales WHERE id=?", (sale_id,)).fetchone()
+            self.assertIsNone(sale["delivered_at"])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM sale_item_deliveries WHERE sale_item_id IN (SELECT id FROM sale_items WHERE sale_id=?)", (sale_id,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM sale_delivery_operations WHERE sale_id=?", (sale_id,)).fetchone()[0], 0)
+
+    def test_deliver_order_does_not_call_direct_notification_helpers(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (self.player_id, "Dinheiro", 200, 1, "approved"),
+            )
+            sale_id = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            db.execute(
+                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                (sale_id, self.product_id, 1, 200, 100),
+            )
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with patch("src.services.push_notifications.send_player_push_once", side_effect=AssertionError("direct push")), \
+             patch("src.services.purchase_receipts.send_delivery_update", side_effect=AssertionError("direct email")), \
+             patch("src.services.purchase_receipts.send_purchase_receipt", side_effect=AssertionError("direct receipt")):
+            response = self.client.post(f"/orders/{sale_id}/deliver", headers={"Accept": "application/json"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["receipt_status"], "queued")
+
+    def test_worker_processes_pending_outbox_events_and_marks_sent(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (self.player_id, "Dinheiro", 200, 1, "approved"),
+            )
+            sale_id = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            db.execute(
+                "INSERT INTO notification_outbox(event_key,event_type,sale_id,delivery_id,payload,status,attempts,available_at) VALUES(?,?,?,?,?,'pending',0,CURRENT_TIMESTAMP)",
+                (f"delivery:{sale_id}:delivery_push", "delivery_push", sale_id, sale_id, '{"player_id": 1, "kind": "pedido_retirada", "period": "99", "title": "Retirada confirmada", "body": "Teste", "url": "/minha-conta"}'),
+            )
+            db.commit()
+        with patch("src.services.notification_outbox.send_player_push_once", return_value={"sent": 1, "skipped": 0}) as push_mock:
+            response = self.client.get(
+                "/cron/process-notification-outbox",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["sent"], 1)
+        self.assertTrue(push_mock.called)
+
+    def test_worker_retry_and_failed_after_limit(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (self.player_id, "Dinheiro", 200, 1, "approved"),
+            )
+            sale_id = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            db.execute(
+                "INSERT INTO notification_outbox(event_key,event_type,sale_id,delivery_id,payload,status,attempts,available_at) VALUES(?,?,?,?,?,'pending',0,CURRENT_TIMESTAMP)",
+                (f"delivery:{sale_id}:retry_delivery_push", "delivery_push", sale_id, sale_id, '{"player_id": 1, "kind": "pedido_retirada", "period": "1", "title": "Retirada", "body": "Teste", "url": "/minha-conta"}'),
+            )
+            db.commit()
+        with patch("src.services.notification_outbox.send_player_push_once", side_effect=RuntimeError("temporary")):
+            response = self.client.get(
+                "/cron/process-notification-outbox",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        retry_event_key = f"delivery:{sale_id}:retry_delivery_push"
+        with app.app_context():
+            row = get_db().execute("SELECT status,attempts FROM notification_outbox WHERE event_key=?", (retry_event_key,)).fetchone()
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["attempts"], 1)
+
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE notification_outbox SET attempts=4, available_at=CURRENT_TIMESTAMP WHERE event_key=?", (retry_event_key,))
+            db.commit()
+        with patch("src.services.notification_outbox.send_player_push_once", side_effect=RuntimeError("temporary")):
+            response = self.client.get(
+                "/cron/process-notification-outbox",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        with app.app_context():
+            row = get_db().execute("SELECT status,attempts FROM notification_outbox WHERE event_key=?", (retry_event_key,)).fetchone()
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["attempts"], 5)
+
+    def test_unknown_event_type_fails_gracefully(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (self.player_id, "Dinheiro", 200, 1, "approved"),
+            )
+            sale_id = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            db.execute(
+                "INSERT INTO notification_outbox(event_key,event_type,sale_id,delivery_id,payload,status,attempts,available_at) VALUES(?,?,?,?,?,'pending',0,CURRENT_TIMESTAMP)",
+                ("delivery:unknown:test", "delivery_push", sale_id, sale_id, '{}'),
+            )
+            db.commit()
+        response = self.client.get(
+            "/cron/process-notification-outbox",
+            headers={"Authorization": "Bearer cron-secret-test"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("processed", response.get_json())
+
+    def test_notification_outbox_cron_requires_authentication(self):
+        response = self.client.get("/cron/process-notification-outbox")
+        self.assertEqual(response.status_code, 401)
+
+    def test_sqlite_bootstrap_includes_notification_outbox(self):
+        with app.app_context():
+            row = get_db().execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='notification_outbox'"
+            ).fetchone()
+        self.assertIsNotNone(row)
 
     def test_webhook_signature(self):
         data_id = "ORDABC123"
@@ -711,8 +953,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         sale_page = self.client.get("/sale").get_data(as_text=True)
         self.assertIn("Sanduíche natural", sale_page)
         self.assertIn("Foto de Sanduíche natural", sale_page)
-        self.assertIn('data-category="Alimentos"', sale_page)
-        self.assertNotIn('id="product-category"', sale_page)
+        self.assertIn('value="Alimentos"', sale_page)
 
         removed = self.client.post(
             f"/products/{product_id}/edit",
@@ -734,614 +975,6 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             product = get_db().execute("SELECT photo_data,thumbnail_data FROM products WHERE id=?", (product_id,)).fetchone()
             self.assertEqual((product["photo_data"], product["thumbnail_data"]), ("", ""))
-
-    def test_sports_phase_b_catalog_variants_personalization_and_legacy_safety(self):
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-        with app.app_context():
-            db = get_db()
-            game_kit = db.execute("SELECT id FROM sports_material_types WHERE code='game_kit'").fetchone()["id"]
-            coin = db.execute("SELECT id FROM sports_material_types WHERE code='commemorative_coin'").fetchone()["id"]
-
-        multi = self.client.post("/material-esportivo", data={
-            "name": "Kit Oficial Fase B", "type_id": str(game_kit), "price": "250,00",
-            "cost": "150,00", "active": "1", "allow_custom_name": "1",
-            "allow_custom_number": "1", "variant_size": ["P", "M", "G", "GG"],
-            "variant_stock": ["2", "5", "8", "4"],
-            "variant_min_stock": ["1", "2", "3", "2"],
-            "variant_active": ["1", "1", "1", "0"],
-        })
-        self.assertEqual(multi.status_code, 303)
-        single = self.client.post("/material-esportivo", data={
-            "name": "Moeda 50 anos", "type_id": str(coin), "price": "50,00",
-            "cost": "25,00", "active": "1", "coin_stock": "20", "coin_min_stock": "5",
-        })
-        self.assertEqual(single.status_code, 303)
-
-        with app.app_context():
-            db = get_db()
-            kit = db.execute(
-                """SELECT p.id,p.stock,c.allow_custom_name,c.allow_custom_number,c.allow_backorder
-                   FROM products p JOIN sports_product_config c ON c.product_id=p.id WHERE p.name=?""",
-                ("Kit Oficial Fase B",),
-            ).fetchone()
-            self.assertEqual(kit["stock"], 0)
-            self.assertEqual((kit["allow_custom_name"], kit["allow_custom_number"], kit["allow_backorder"]), (1, 1, 0))
-            variants = db.execute(
-                "SELECT size,stock,min_stock,active FROM sports_product_variants WHERE product_id=? ORDER BY id",
-                (kit["id"],),
-            ).fetchall()
-            self.assertEqual([(row["size"], row["stock"], row["min_stock"]) for row in variants],
-                             [("P", 2, 1), ("M", 5, 2), ("G", 8, 3), ("GG", 4, 2)])
-            self.assertEqual(variants[-1]["active"], 0)
-            coin_product = db.execute("SELECT id,stock FROM products WHERE name='Moeda 50 anos'").fetchone()
-            coin_variant = db.execute(
-                "SELECT size,stock,min_stock FROM sports_product_variants WHERE product_id=?",
-                (coin_product["id"],),
-            ).fetchone()
-            self.assertEqual((coin_variant["size"], coin_variant["stock"], coin_variant["min_stock"]), ("Único", 20, 5))
-            self.assertEqual(coin_product["stock"], 0)
-            legacy = db.execute(
-                "INSERT INTO products(name,category,price_cents,stock,photo_data,thumbnail_data) VALUES(?,?,?,?,?,?)",
-                ("Esportivo antigo", "Material Esportivo", 1000, 99, "ORIGINAL_SECRET", "data:image/png;base64,THUMB"),
-            )
-            db.commit()
-            legacy_id = legacy.lastrowid
-
-        statements = []
-        original_execute = DbWrapper.execute
-        def record_queries(connection, statement, params=()):
-            statements.append(statement)
-            return original_execute(connection, statement, params)
-        with patch.object(DbWrapper, "execute", new=record_queries):
-            listing = self.client.get("/material-esportivo").get_data(as_text=True)
-        self.assertIn("Esportivo antigo", listing)
-        self.assertIn("Configuração pendente", listing)
-        self.assertIn("data:image/png;base64,THUMB", listing)
-        self.assertNotIn("ORIGINAL_SECRET", listing)
-        catalog_queries = [query for query in statements if "FROM products p" in query and "sports_product_config" in query]
-        self.assertTrue(catalog_queries)
-        self.assertTrue(all("photo_data" not in query for query in catalog_queries))
-        sports_sale_page = self.client.get("/sale?catalog=sports").get_data(as_text=True)
-        self.assertNotIn("Esportivo antigo", sports_sale_page)
-        self.assertIn('"size": "P"', sports_sale_page)
-        self.assertNotIn('"size": "GG"', sports_sale_page)
-        blocked = self.client.post("/sale", data={
-            "department": "sports", "player_id": str(self.player_id), "product_id": str(legacy_id),
-            "quantity": "1", "payment_method": "Dinheiro", "notes": "",
-        })
-        self.assertEqual(blocked.status_code, 303)
-
-        new_type = self.client.post("/material-esportivo/tipos", data={"name": "Boné esportivo"})
-        self.assertEqual(new_type.status_code, 303)
-        with app.app_context():
-            self.assertIsNotNone(get_db().execute(
-                "SELECT 1 FROM sports_material_types WHERE code='bone_esportivo'"
-            ).fetchone())
-
-        with app.app_context():
-            db = get_db()
-            db.execute("UPDATE users SET role='client',player_id=? WHERE id=?", (self.player_id, self.user_id))
-            db.commit()
-        self.assertEqual(self.client.get("/material-esportivo").status_code, 302)
-
-    def test_sports_boolean_queries_and_parameters_are_postgres_compatible(self):
-        sources = "\n".join(inspect.getsource(function) for function in (
-            _sports_types, _save_sports_config, sports_materials,
-            _create_sports_sale, _create_sports_pix_sale, sale,
-        ))
-        for invalid in (
-            "sports_material_types WHERE id=? AND active=1",
-            "sports_product_variants SET active=0",
-            "variant.active=1",
-            "v.active=1",
-            "AND active=1 AND stock",
-        ):
-            self.assertNotIn(invalid, sources)
-
-        class Result:
-            lastrowid = 1
-
-            def fetchone(self):
-                return {"id": 1, "code": "game_kit"}
-
-        class Recorder:
-            def __init__(self):
-                self.calls = []
-
-            def execute(self, statement, params=()):
-                self.calls.append((statement, params))
-                return Result()
-
-        recorder = Recorder()
-        _save_sports_config(
-            recorder, 10, 1,
-            [{"size": "G", "stock": 2, "min_stock": 0, "active": True}],
-            {"allow_custom_name": "1", "allow_custom_number": "", "allow_backorder": "1"},
-        )
-        config_params = next(params for sql, params in recorder.calls if "sports_product_config" in sql)
-        variant_params = next(params for sql, params in recorder.calls if "INSERT INTO sports_product_variants" in sql)
-        self.assertEqual(config_params[-3:], (True, False, True))
-        self.assertIs(variant_params[-1], True)
-        self.assertTrue(any("SET active=FALSE" in sql for sql, _ in recorder.calls))
-
-    def test_commemorative_coin_uses_one_technical_variant_and_ignores_manual_customization(self):
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-        with app.app_context():
-            db = get_db()
-            coin_type = db.execute(
-                "SELECT id FROM sports_material_types WHERE code='commemorative_coin'"
-            ).fetchone()["id"]
-
-        created = self.client.post("/material-esportivo", data={
-            "name": "Moeda técnica", "type_id": str(coin_type), "price": "50,00",
-            "cost": "20,00", "active": "1", "coin_stock": "12", "coin_min_stock": "3",
-            "allow_custom_name": "1", "allow_custom_number": "1", "allow_backorder": "1",
-            "variant_size": ["P", "GG"], "variant_stock": ["99", "88"],
-            "variant_min_stock": ["9", "8"], "variant_active": ["1", "1"],
-        })
-        self.assertEqual(created.status_code, 303)
-        with app.app_context():
-            db = get_db()
-            product = db.execute(
-                """SELECT p.id,c.allow_custom_name,c.allow_custom_number,c.allow_backorder
-                   FROM products p JOIN sports_product_config c ON c.product_id=p.id
-                   WHERE p.name='Moeda técnica'"""
-            ).fetchone()
-            variants = db.execute(
-                "SELECT id,size,stock,min_stock,active FROM sports_product_variants WHERE product_id=?",
-                (product["id"],),
-            ).fetchall()
-            self.assertEqual(len(variants), 1)
-            self.assertEqual((variants[0]["size"], variants[0]["stock"], variants[0]["min_stock"], variants[0]["active"]),
-                             ("Único", 12, 3, 1))
-            self.assertEqual((product["allow_custom_name"], product["allow_custom_number"]), (0, 0))
-            self.assertEqual(product["allow_backorder"], 1)
-            product_id, variant_id = product["id"], variants[0]["id"]
-
-        edit_page = self.client.get(f"/material-esportivo/{product_id}/editar").get_data(as_text=True)
-        self.assertIn('name="coin_stock" value="12"', edit_page)
-        self.assertIn('name="coin_min_stock" value="3"', edit_page)
-        self.assertIn('id="regular-sports-stock" class="d-none"', edit_page)
-        self.assertIn('id="sports-personalization" class="d-none"', edit_page)
-
-        updated = self.client.post(f"/material-esportivo/{product_id}/editar", data={
-            "name": "Moeda técnica", "type_id": str(coin_type), "price": "50,00",
-            "cost": "20,00", "active": "1", "coin_stock": "9", "coin_min_stock": "2",
-            "allow_custom_name": "1", "allow_custom_number": "1", "allow_backorder": "1",
-            "variant_size": "X", "variant_stock": "100", "variant_min_stock": "10", "variant_active": "1",
-        })
-        self.assertEqual(updated.status_code, 303)
-        with app.app_context():
-            db = get_db()
-            variant = db.execute(
-                "SELECT id,size,stock,min_stock,active FROM sports_product_variants WHERE product_id=?",
-                (product_id,),
-            ).fetchone()
-            self.assertEqual((variant["id"], variant["size"], variant["stock"], variant["min_stock"], variant["active"]),
-                             (variant_id, "Único", 9, 2, 1))
-
-        sale_page = self.client.get("/sale?catalog=sports").get_data(as_text=True)
-        self.assertIn('"single_variant": true', sale_page)
-        self.assertIn("product.single_variant?choices[0]?.id", sale_page)
-        sold = self.client.post("/sale", data={
-            "department": "sports", "player_id": str(self.player_id), "payment_method": "Dinheiro",
-            "product_id": str(product_id), "variant_id": str(variant_id), "quantity": "2",
-            "custom_name": "", "custom_number": "", "order_mode": "ready",
-        })
-        self.assertEqual(sold.status_code, 303)
-        with app.app_context():
-            db = get_db()
-            self.assertEqual(db.execute(
-                "SELECT stock FROM sports_product_variants WHERE id=?", (variant_id,)
-            ).fetchone()["stock"], 7)
-            sale_id = db.execute("SELECT MAX(id) id FROM sales").fetchone()["id"]
-            detail = db.execute(
-                "SELECT variant_id,variant_size,custom_name,custom_number FROM sports_sale_item_details"
-                " WHERE sale_item_id=(SELECT id FROM sale_items WHERE sale_id=? LIMIT 1)", (sale_id,),
-            ).fetchone()
-            self.assertEqual((detail["variant_id"], detail["variant_size"], detail["custom_name"], detail["custom_number"]),
-                             (variant_id, "Único", "", ""))
-
-    def test_sports_type_changes_deactivate_old_variants_without_deleting_stock_history(self):
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-        with app.app_context():
-            db = get_db()
-            game_type = db.execute("SELECT id FROM sports_material_types WHERE code='game_kit'").fetchone()["id"]
-            coin_type = db.execute("SELECT id FROM sports_material_types WHERE code='commemorative_coin'").fetchone()["id"]
-        created = self.client.post("/material-esportivo", data={
-            "name": "Produto troca tipo", "type_id": str(game_type), "price": "80,00", "cost": "40,00",
-            "active": "1", "variant_size": "P", "variant_stock": "3",
-            "variant_min_stock": "1", "variant_active": "1",
-        })
-        self.assertEqual(created.status_code, 303)
-        with app.app_context():
-            product_id = get_db().execute("SELECT id FROM products WHERE name='Produto troca tipo'").fetchone()["id"]
-        to_coin = self.client.post(f"/material-esportivo/{product_id}/editar", data={
-            "name": "Produto troca tipo", "type_id": str(coin_type), "price": "80,00", "cost": "40,00",
-            "active": "1", "coin_stock": "7", "coin_min_stock": "2",
-        })
-        self.assertEqual(to_coin.status_code, 303)
-        with app.app_context():
-            rows = get_db().execute(
-                "SELECT size,stock,active FROM sports_product_variants WHERE product_id=? ORDER BY id", (product_id,)
-            ).fetchall()
-            self.assertEqual([(row["size"], row["stock"], row["active"]) for row in rows],
-                             [("P", 3, 0), ("Único", 7, 1)])
-        to_sizes = self.client.post(f"/material-esportivo/{product_id}/editar", data={
-            "name": "Produto troca tipo", "type_id": str(game_type), "price": "80,00", "cost": "40,00",
-            "active": "1", "variant_size": "M", "variant_stock": "4",
-            "variant_min_stock": "1", "variant_active": "1",
-        })
-        self.assertEqual(to_sizes.status_code, 303)
-        with app.app_context():
-            states = {row["size"]: (row["stock"], row["active"]) for row in get_db().execute(
-                "SELECT size,stock,active FROM sports_product_variants WHERE product_id=?", (product_id,)
-            ).fetchall()}
-            self.assertEqual(states, {"P": (3, 0), "Único": (7, 0), "M": (4, 1)})
-
-    def test_sports_non_id_primary_keys_use_explicit_returning(self):
-        class Cursor:
-            def __init__(self):
-                self.statement = ""
-
-            def execute(self, statement, _params=()):
-                self.statement = statement
-
-            def fetchone(self):
-                return (37,)
-
-        class Connection:
-            def __init__(self):
-                self.cursor_instance = Cursor()
-
-            def cursor(self):
-                return self.cursor_instance
-
-        connection = Connection()
-        result = DbWrapper(connection, is_postgres=True).execute(
-            "INSERT INTO sports_product_config(product_id,type_id) "
-            "VALUES(?,?) RETURNING product_id",
-            (37, 1),
-        )
-        self.assertEqual(result.lastrowid, 37)
-        self.assertIn("RETURNING product_id", connection.cursor_instance.statement)
-        self.assertNotIn("RETURNING id", connection.cursor_instance.statement)
-
-        sqlite_connection = sqlite3.connect(":memory:")
-        try:
-            sqlite_connection.execute(
-                "CREATE TABLE config(product_id INTEGER PRIMARY KEY, type_id INTEGER NOT NULL)"
-            )
-            returned = sqlite_connection.execute(
-                "INSERT INTO config(product_id,type_id) VALUES(?,?) RETURNING product_id",
-                (37, 1),
-            ).fetchone()
-            self.assertEqual(returned, (37,))
-        finally:
-            sqlite_connection.close()
-
-        config_source = inspect.getsource(_save_sports_config)
-        sale_sources = inspect.getsource(_create_sports_sale) + inspect.getsource(_create_sports_pix_sale)
-        self.assertIn("RETURNING product_id", config_source)
-        self.assertEqual(sale_sources.count("INSERT INTO sports_sale_item_details"), 2)
-        self.assertEqual(sale_sources.count("RETURNING sale_item_id"), 2)
-
-    def test_sports_product_creation_rolls_back_when_config_fails(self):
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-        with app.app_context():
-            type_id = get_db().execute(
-                "SELECT id FROM sports_material_types ORDER BY id LIMIT 1"
-            ).fetchone()["id"]
-
-        with patch("src.routes.products._save_sports_config", side_effect=RuntimeError("config failed")):
-            response = self.client.post("/material-esportivo", data={
-                "name": "Produto Rollback Esportivo",
-                "type_id": str(type_id),
-                "price": "10,00",
-                "cost": "5,00",
-                "active": "1",
-                "variant_size": "M",
-                "variant_stock": "1",
-                "variant_min_stock": "0",
-                "variant_active": "1",
-            })
-        self.assertEqual(response.status_code, 303)
-        with app.app_context():
-            db = get_db()
-            self.assertIsNone(db.execute(
-                "SELECT id FROM products WHERE name=?", ("Produto Rollback Esportivo",)
-            ).fetchone())
-            self.assertEqual(db.execute(
-                "SELECT COUNT(*) total FROM sports_product_variants"
-            ).fetchone()["total"], 0)
-
-    def test_sports_phase_c1_ready_backorder_snapshots_cancel_and_pix_block(self):
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-        with app.app_context():
-            db = get_db()
-            type_id = db.execute("SELECT id FROM sports_material_types ORDER BY id LIMIT 1").fetchone()["id"]
-            product = db.execute("INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,?)", ("Kit C1","Material Esportivo",12000,7000,999))
-            db.execute("INSERT INTO sports_product_config(product_id,type_id,allow_custom_name,allow_custom_number,allow_backorder) VALUES(?,?,1,1,1)", (product.lastrowid,type_id))
-            ready = db.execute("INSERT INTO sports_product_variants(product_id,size,stock,min_stock) VALUES(?,?,?,?)", (product.lastrowid,"G",1,0))
-            backorder = db.execute("INSERT INTO sports_product_variants(product_id,size,stock,min_stock) VALUES(?,?,?,?)", (product.lastrowid,"GG",0,0))
-            db.commit(); product_id=product.lastrowid; ready_id=ready.lastrowid; backorder_id=backorder.lastrowid
-        response = self.client.post("/sale", data={"department":"sports","player_id":str(self.player_id),"payment_method":"Dinheiro",
-            "product_id":[str(product_id),str(product_id)],"variant_id":[str(ready_id),str(backorder_id)],"quantity":["1","2"],
-            "custom_name":["ADELMO",""],"custom_number":["10",""],"order_mode":["ready","backorder"]})
-        self.assertEqual(response.status_code,303)
-        with app.app_context():
-            db=get_db(); sale=db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone();
-            details=db.execute("SELECT variant_size,custom_name,custom_number,order_mode,fulfillment_status FROM sports_sale_item_details d JOIN sale_items si ON si.id=d.sale_item_id WHERE si.sale_id=? ORDER BY si.id",(sale["id"],)).fetchall()
-            self.assertEqual([(d["variant_size"],d["order_mode"],d["fulfillment_status"]) for d in details],[("G","ready","reserved"),("GG","backorder","requested")])
-            self.assertEqual((details[0]["custom_name"],details[0]["custom_number"]),("ADELMO","10"))
-            self.assertEqual(db.execute("SELECT stock FROM sports_product_variants WHERE id=?",(ready_id,)).fetchone()["stock"],0)
-            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?",(product_id,)).fetchone()["stock"],999)
-            sale_id=sale["id"]
-        canceled=self.client.post(f"/orders/{sale_id}/cancel",json={"reason":"Teste cancelamento"})
-        self.assertEqual(canceled.status_code,200)
-        with app.app_context():
-            db=get_db(); self.assertEqual(db.execute("SELECT stock FROM sports_product_variants WHERE id=?",(ready_id,)).fetchone()["stock"],1)
-            self.assertTrue(db.execute("SELECT stock_released_at FROM sports_sale_item_details WHERE variant_id=?",(ready_id,)).fetchone()["stock_released_at"])
-        pix_order={"id":"SPORTS-PIX-1","status":"action_required","transactions":{"payments":[{"id":"PAY-SPORTS-1","payment_method":{"qr_code":"000201SPORTS"}}]}}
-        with patch("src.routes.sales.create_pix_order",return_value=pix_order) as create_order_mock:
-            pix=self.client.post("/pix/mercadopago/orders",json={"player_id":self.player_id,"department":"sports","items":[{"department":"sports","product_id":product_id,"quantity":1}]},headers={"X-Pix-Token":self.token})
-        self.assertEqual(pix.status_code,409); create_order_mock.assert_not_called()
-        with patch("src.routes.sales.create_pix_order",return_value=pix_order):
-            sports_pix=self.client.post("/pix/mercadopago/orders",json={"player_id":self.player_id,"department":"sports","items":[
-                {"department":"sports","product_id":product_id,"variant_id":ready_id,"quantity":1,"custom_name":"PIX","custom_number":"7","order_mode":"ready"},
-                {"department":"sports","product_id":product_id,"variant_id":backorder_id,"quantity":1,"custom_name":"","custom_number":"","order_mode":"backorder"}]},headers={"X-Pix-Token":self.token})
-        self.assertEqual(sports_pix.status_code,201)
-        pix_sale_id=sports_pix.get_json()["sale_id"]
-        with app.app_context():
-            db=get_db(); reservation=db.execute("SELECT r.status,r.quantity FROM sports_stock_reservations r JOIN sale_items si ON si.id=r.sale_item_id WHERE si.sale_id=?",(pix_sale_id,)).fetchall()
-            self.assertEqual([(r["status"],r["quantity"]) for r in reservation],[("reserved",1)])
-            self.assertEqual(db.execute("SELECT stock FROM sports_product_variants WHERE id=?",(ready_id,)).fetchone()["stock"],0)
-            sale=db.execute("SELECT * FROM sales WHERE id=?",(pix_sale_id,)).fetchone()
-            approved={"status":"processed","status_detail":"accredited","total_paid_amount":"240.00","transactions":{"payments":[{"id":"PAY-SPORTS-1"}]}}
-            apply_mercadopago_status(db,sale,approved); sale=db.execute("SELECT * FROM sales WHERE id=?",(pix_sale_id,)).fetchone(); apply_mercadopago_status(db,sale,approved)
-            self.assertEqual(db.execute("SELECT status FROM sports_stock_reservations").fetchone()["status"],"consumed")
-        with app.app_context():
-            before = get_db().execute("SELECT COUNT(*) total FROM sales").fetchone()["total"]
-        event_sports = self.client.post("/sale", data={"department":"sports","sale_type":"event","event_id":"1",
-            "guest_name":"Convidado","payment_method":"Dinheiro","product_id":str(product_id),"variant_id":str(ready_id),
-            "quantity":"1","custom_name":"","custom_number":"","order_mode":"ready"})
-        self.assertEqual(event_sports.status_code,303)
-        with app.app_context():
-            self.assertEqual(get_db().execute("SELECT COUNT(*) total FROM sales").fetchone()["total"],before)
-        page = self.client.get("/sale").get_data(as_text=True)
-        self.assertIn("sportsCatalogButton?.classList.toggle('d-none',isEvent)", page)
-        self.assertIn("if(isEvent&&catalogMode==='sports')selectCatalog('bar')", page)
-
-    def test_sports_material_phase_two_reuses_sales_without_schema_changes(self):
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-
-        with app.app_context():
-            sports_type_id = get_db().execute(
-                "SELECT id FROM sports_material_types WHERE code='shirt'"
-            ).fetchone()["id"]
-        created = self.client.post(
-            "/material-esportivo",
-            data={
-                "name": "Camisa comemorativa", "type_id": str(sports_type_id),
-                "price": "100,00", "cost": "60,00", "active": "1",
-                "variant_size": ["P", "M"], "variant_stock": ["2", "3"],
-                "variant_min_stock": ["1", "2"], "variant_active": ["1", "1"],
-            },
-        )
-        self.assertEqual(created.status_code, 303)
-        self.assertIn("material-esportivo", created.headers["Location"])
-        sports_catalog = self.client.get("/material-esportivo").get_data(as_text=True)
-        self.assertIn("Material Esportivo", sports_catalog)
-        self.assertIn("Camisa comemorativa", sports_catalog)
-        self.assertNotIn("Camisa comemorativa", self.client.get("/products").get_data(as_text=True))
-        self.assertNotIn("Água", sports_catalog)
-
-        with app.app_context():
-            db = get_db()
-            product = db.execute("SELECT id FROM products WHERE name=?", ("Camisa comemorativa",)).fetchone()
-            db.execute(
-                "UPDATE products SET photo_data=?,thumbnail_data=? WHERE id=?",
-                ("ORIGINAL_PHOTO_PAYLOAD", "data:image/png;base64,THUMB", product["id"]),
-            )
-            sale = db.execute(
-                """INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery)
-                   VALUES(?,'Pix',20000,1,'approved',1)""",
-                (self.player_id,),
-            )
-            item = db.execute(
-                """INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents)
-                   VALUES(?,?,2,10000,6000)""",
-                (sale.lastrowid, product["id"]),
-            )
-            db.commit()
-            sale_id = sale.lastrowid
-            sale_item_id = item.lastrowid
-
-        quick_sale = self.client.get("/sale").get_data(as_text=True)
-        self.assertIn('id="show-bar-products"', quick_sale)
-        self.assertIn('id="show-sports-products"', quick_sale)
-        self.assertIn("Camisa comemorativa", quick_sale)
-        self.assertIn("Bar Peladeiros", quick_sale)
-        self.assertIn("catalogMode='bar'", quick_sale)
-        self.assertNotIn("Todas as categorias", quick_sale)
-        self.assertNotIn('id="product-category"', quick_sale)
-        self.assertIn("gpcta-sale-cart-bar-v1", quick_sale)
-        self.assertIn("gpcta-sale-cart-sports-v1", quick_sale)
-        self.assertIn("saveCart();document.querySelectorAll('.sale-cart-row')", quick_sale)
-        self.assertIn("if(!initial){restoreCart();total()}", quick_sale)
-        self.assertIn("{initial:true}", self.client.get("/sale?catalog=sports").get_data(as_text=True))
-
-        with app.app_context():
-            db = get_db()
-            before_sales = db.execute("SELECT COUNT(*) total FROM sales").fetchone()["total"]
-            before_bar_stock = db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"]
-            before_sports_stock = db.execute("SELECT stock FROM products WHERE id=?", (product["id"],)).fetchone()["stock"]
-        mixed = self.client.post(
-            "/sale",
-            data={"department": "bar", "player_id": str(self.player_id), "product_id": [str(self.product_id), str(product["id"])],
-                  "quantity": ["1", "1"], "payment_method": "Dinheiro", "notes": ""},
-        )
-        self.assertEqual(mixed.status_code, 200)
-        self.assertIn("não podem estar no mesmo pedido", mixed.get_data(as_text=True))
-        with app.app_context():
-            db = get_db()
-            self.assertEqual(db.execute("SELECT COUNT(*) total FROM sales").fetchone()["total"], before_sales)
-            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], before_bar_stock)
-            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (product["id"],)).fetchone()["stock"], before_sports_stock)
-        with patch("src.routes.sales.create_pix_order") as create_order_mock:
-            mixed_pix = self.client.post(
-                "/pix/mercadopago/orders",
-                json={"player_id": self.player_id, "items": [
-                    {"department": "bar", "product_id": self.product_id, "quantity": 1},
-                    {"department": "bar", "product_id": product["id"], "quantity": 1},
-                ]}, headers={"X-Pix-Token": self.token},
-            )
-        self.assertEqual(mixed_pix.status_code, 400)
-        create_order_mock.assert_not_called()
-
-        report = self.client.get("/relatorios/material-esportivo").get_data(as_text=True)
-        self.assertIn("Camisa comemorativa", report)
-        self.assertIn("R$ 200,00", report)
-        self.assertIn("R$ 120,00", report)
-        self.assertIn("R$ 80,00", report)
-        self.assertNotIn("ORIGINAL_PHOTO_PAYLOAD", report)
-        self.assertNotIn("data:image/png;base64,THUMB", report)
-
-        sports_feed = self.client.get("/orders/feed?department=sports").get_json()
-        bar_feed = self.client.get("/orders/feed?department=bar").get_json()
-        self.assertEqual([order["id"] for order in sports_feed["pending"]], [sale_id])
-        self.assertNotIn(sale_id, [order["id"] for order in bar_feed["pending"]])
-        self.assertEqual(len(sports_feed["pending"][0]["items"]), 1)
-        self.assertEqual(sports_feed["pending"][0]["items"][0]["delivered_quantity"], 0)
-
-        partial_sports_delivery = self.client.post(
-            f"/orders/{sale_id}/deliver",
-            json={"sale_item_id": sale_item_id, "quantity": 1},
-            headers={"Accept": "application/json"},
-        )
-        self.assertEqual(partial_sports_delivery.status_code, 400)
-        self.assertIn("integralmente", partial_sports_delivery.get_json()["error"])
-        full_sports_delivery = self.client.post(
-            f"/orders/{sale_id}/deliver", json={}, headers={"Accept": "application/json"}
-        )
-        self.assertEqual(full_sports_delivery.status_code, 409)
-        self.assertIn("acompanhamento de Material Esportivo", full_sports_delivery.get_json()["error"])
-        delivered_sports_feed = self.client.get("/orders/feed?department=sports").get_json()
-        self.assertIn(sale_id, [order["id"] for order in delivered_sports_feed["pending"]])
-        self.assertNotIn(sale_id, [order["id"] for order in delivered_sports_feed["delivered"]])
-
-        sports_sale = self.client.post(
-            "/sale", data={"department": "sports", "player_id": str(self.player_id), "product_id": str(product["id"]),
-                           "quantity": "1", "payment_method": "Dinheiro", "notes": ""},
-        )
-        self.assertEqual(sports_sale.status_code, 303)
-
-        receipt = self.client.get(f"/sales/{sale_id}/receipt").get_data(as_text=True)
-        self.assertIn("data:image/png;base64,THUMB", receipt)
-        self.assertIn("0 entregue(s)", receipt)
-        self.assertIn("2 pendente(s)", receipt)
-        self.assertIn("MATERIAL ESPORTIVO", receipt)
-
-        with app.app_context():
-            db = get_db()
-            db.execute("UPDATE users SET role='client',player_id=? WHERE id=?", (self.player_id, self.user_id))
-            db.commit()
-        denied = self.client.get("/relatorios/material-esportivo")
-        self.assertIn(denied.status_code, (302, 403))
-        client_sports_catalog = self.client.get("/sale?catalog=sports").get_data(as_text=True)
-        self.assertNotIn('href="/sale?catalog=sports"', client_sports_catalog)
-        self.assertNotIn('<span>Material Esportivo</span>', client_sports_catalog)
-        self.assertIn('id="show-sports-products"', client_sports_catalog)
-        self.assertIn('>Material Esportivo</button>', client_sports_catalog)
-        self.assertIn("selectCatalog(new URLSearchParams(location.search).get('catalog')==='sports'?'sports':'bar'", client_sports_catalog)
-        self.assertEqual(self.client.get("/material-esportivo").status_code, 302)
-        self.assertEqual(self.client.get("/material-esportivo/vendas").status_code, 302)
-        history = self.client.get("/minhas-compras").get_data(as_text=True)
-        self.assertIn("data:image/png;base64,THUMB", history)
-        self.assertIn("Camisa comemorativa", history)
-        self.assertIn("MATERIAL ESPORTIVO", history)
-
-    def test_staff_sports_orders_default_to_reserved_without_affecting_manager_view(self):
-        with app.app_context():
-            db = get_db()
-            type_id = db.execute("SELECT id FROM sports_material_types ORDER BY id LIMIT 1").fetchone()["id"]
-            sports_product = db.execute(
-                "INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,0)",
-                ("Kit reservado staff", "Material Esportivo", 15000, 9000),
-            ).lastrowid
-            requested_product = db.execute(
-                "INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,0)",
-                ("Kit solicitado staff", "Material Esportivo", 16000, 9500),
-            ).lastrowid
-            bar_product = db.execute(
-                "INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,1)",
-                ("Produto exclusivo do Bar", "Bebida", 500, 200),
-            ).lastrowid
-            for product_id in (sports_product, requested_product):
-                db.execute("INSERT INTO sports_product_config(product_id,type_id) VALUES(?,?)", (product_id, type_id))
-            reserved_variant = db.execute(
-                "INSERT INTO sports_product_variants(product_id,size,stock) VALUES(?,?,1)",
-                (sports_product, "G"),
-            ).lastrowid
-            requested_variant = db.execute(
-                "INSERT INTO sports_product_variants(product_id,size,stock) VALUES(?,?,0)",
-                (requested_product, "GG"),
-            ).lastrowid
-            sale_id = db.execute(
-                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status) VALUES(?,'Dinheiro',31500,1,'approved')",
-                (self.player_id,),
-            ).lastrowid
-            reserved_item = db.execute(
-                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,1,15000,9000)",
-                (sale_id, sports_product),
-            ).lastrowid
-            requested_item = db.execute(
-                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,1,16000,9500)",
-                (sale_id, requested_product),
-            ).lastrowid
-            db.execute(
-                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,1,500,200)",
-                (sale_id, bar_product),
-            )
-            db.execute(
-                "INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,order_mode,fulfillment_status) VALUES(?,?,?,'ready','reserved')",
-                (reserved_item, reserved_variant, "G"),
-            )
-            db.execute(
-                "INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,order_mode,fulfillment_status) VALUES(?,?,?,'backorder','requested')",
-                (requested_item, requested_variant, "GG"),
-            )
-            db.execute("UPDATE users SET role='staff' WHERE id=?", (self.user_id,))
-            db.commit()
-
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-        staff_page = self.client.get("/material-esportivo/vendas").get_data(as_text=True)
-        self.assertIn("Kit reservado staff", staff_page)
-        self.assertIn("Reservado", staff_page)
-        self.assertNotIn("Kit solicitado staff", staff_page)
-        self.assertNotIn("Produto exclusivo do Bar", staff_page)
-        self.assertIn('value="reserved" selected', staff_page)
-
-        requested_page = self.client.get("/material-esportivo/vendas?status=requested").get_data(as_text=True)
-        self.assertIn("Kit solicitado staff", requested_page)
-        self.assertNotIn("Kit reservado staff", requested_page)
-
-        with app.app_context():
-            db = get_db()
-            db.execute("UPDATE users SET role='manager' WHERE id=?", (self.user_id,))
-            db.commit()
-        manager_page = self.client.get("/material-esportivo/vendas").get_data(as_text=True)
-        self.assertIn("Kit reservado staff", manager_page)
-        self.assertIn("Kit solicitado staff", manager_page)
-        self.assertNotIn("Produto exclusivo do Bar", manager_page)
-        self.assertIn('<option value="">Todas</option>', manager_page)
 
     def test_client_quick_sale_has_live_topbar_cart_indicator(self):
         with app.app_context():
@@ -3451,114 +3084,6 @@ class MercadoPagoFlowTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["image"].startswith("data:image/png;base64,"))
-
-    def test_homologation_environment_flags_and_banner(self):
-        from src.environment import environment_config
-
-        self.assertEqual(environment_config(" HOMOLOGATION "), {
-            "APP_ENV": "homologation",
-            "IS_HOMOLOGATION": True,
-            "EXTERNAL_PAYMENTS_ENABLED": False,
-            "CRON_ENABLED": False,
-        })
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-        app.config.update(environment_config("homologation"))
-        page = self.client.get("/sale").get_data(as_text=True)
-        self.assertIn("AMBIENTE DE HOMOLOGAÇÃO", page)
-        self.assertIn("Pix indisponível na homologação", page)
-        self.assertNotIn("<option>Pix</option>", page)
-        app.config.update(environment_config("production"))
-        production_page = self.client.get("/sale").get_data(as_text=True)
-        self.assertNotIn("AMBIENTE DE HOMOLOGAÇÃO", production_page)
-        self.assertIn("<option>Pix</option>", production_page)
-
-    def test_homologation_cron_is_noop_before_auth_or_database(self):
-        from src.environment import environment_config
-
-        app.config.update(environment_config("homologation"))
-        with patch("src.routes.finance.get_db") as get_db_mock, \
-             patch("src.routes.finance.send_transfer_window_notifications") as transfer_mock, \
-             patch("src.routes.finance.send_birthday_notifications") as birthday_mock, \
-             patch("src.routes.finance.dispatch_reminders") as dispatch_mock:
-            response = self.client.get("/cron/payment-reminders")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"status": "disabled", "environment": "homologation"})
-        get_db_mock.assert_not_called()
-        transfer_mock.assert_not_called()
-        birthday_mock.assert_not_called()
-        dispatch_mock.assert_not_called()
-
-    def test_homologation_blocks_all_pix_backends_without_external_calls_or_writes(self):
-        from src.environment import environment_config
-
-        app.config.update(environment_config("homologation"))
-        with app.app_context():
-            db = get_db()
-            before = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
-        with patch("src.routes.sales.create_pix_order") as create_mock, \
-             patch("src.routes.sales.get_order") as get_order_mock:
-            legacy = self.client.get("/pix/qrcode?amount_cents=300", headers=self.headers())
-            bar = self.client.post("/pix/mercadopago/orders", headers=self.headers(), json={
-                "player_id": self.player_id,
-                "items": [{"product_id": self.product_id, "quantity": 1}],
-            })
-            sports = self.client.post("/pix/mercadopago/orders", headers=self.headers(), json={
-                "department": "sports", "player_id": self.player_id, "items": [],
-            })
-            webhook = self.client.post("/webhooks/mercadopago", json={"data": {"id": "real-event"}})
-        self.assertEqual((legacy.status_code, bar.status_code, sports.status_code, webhook.status_code), (403, 403, 403, 200))
-        self.assertNotIn(app.config["PIX_KEY"], legacy.get_data(as_text=True))
-        create_mock.assert_not_called()
-        get_order_mock.assert_not_called()
-        with app.app_context():
-            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM sales").fetchone()[0], before)
-
-        with app.app_context():
-            db = get_db()
-            client_id = db.execute(
-                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
-                ("pix-bloqueado", "Pix Bloqueado", "hash", self.player_id),
-            ).lastrowid
-            db.commit()
-        with self.client.session_transaction() as session:
-            session["user_id"] = client_id
-        with patch("src.routes.credits.create_pix_order") as topup_mock:
-            credits_page = self.client.get("/creditos/").get_data(as_text=True)
-            topup = self.client.post("/creditos/comprar", data={"amount_cents": 2000})
-        self.assertIn("Recarga Pix indisponível na homologação", credits_page)
-        self.assertEqual(topup.status_code, 403)
-        topup_mock.assert_not_called()
-
-    def test_homologation_keeps_cash_and_existing_credits_local(self):
-        from src.environment import environment_config
-
-        app.config.update(environment_config("homologation"))
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-        cash = self.client.post("/sale", data={
-            "department": "bar", "sale_type": "player", "player_id": self.player_id,
-            "product_id": self.product_id, "quantity": 1, "payment_method": "Dinheiro", "notes": "",
-        })
-        self.assertEqual(cash.status_code, 303)
-        with app.app_context():
-            db = get_db()
-            client_id = db.execute(
-                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
-                ("cliente-homolog", "Cliente Homolog", "hash", self.player_id),
-            ).lastrowid
-            db.execute("INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,?)", (self.player_id, 1000))
-            db.commit()
-        with self.client.session_transaction() as session:
-            session["user_id"] = client_id
-        with patch("src.routes.sales.notify_low_balance"):
-            credit = self.client.post("/sale", data={
-                "department": "bar", "sale_type": "player", "player_id": self.player_id,
-                "product_id": self.product_id, "quantity": 1, "payment_method": "Créditos", "notes": "",
-            })
-        self.assertEqual(credit.status_code, 303)
-        with app.app_context():
-            self.assertEqual(get_db().execute("SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)).fetchone()[0], 700)
 
     def test_webhook_approves_order_and_api_failure_restores_stock(self):
         sale_id = self.create_order("ORD-WEBHOOK", 1)
@@ -5887,178 +5412,6 @@ NILSON"""
         self.assertEqual(first_path, second_path)
         self.assertEqual(row["name"], "Preservado")
 
-    def test_sqlite_repairs_legacy_sale_items_fk_preserving_data_and_is_idempotent(self):
-        database = str(Path(self.tempdir.name) / "legacy-sale-items-fk.db")
-        initialize_sqlite_database(database)
-        connection = sqlite3.connect(database)
-        connection.execute("PRAGMA foreign_keys=OFF")
-        product_id = connection.execute(
-            "INSERT INTO products(name,category,price_cents) VALUES('Produto legado','Outros',1000)"
-        ).lastrowid
-        sale_id = connection.execute(
-            "INSERT INTO sales(payment_method,total_cents) VALUES('Dinheiro',1000)"
-        ).lastrowid
-        connection.execute("DROP TABLE sale_items")
-        connection.execute("""CREATE TABLE sale_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sale_id INTEGER NOT NULL REFERENCES sales_legacy_event_migration(id) ON DELETE CASCADE,
-            product_id INTEGER NOT NULL REFERENCES products(id),
-            quantity INTEGER NOT NULL CHECK(quantity > 0),
-            unit_price_cents INTEGER NOT NULL,
-            unit_cost_cents INTEGER NOT NULL DEFAULT 0)""")
-        connection.execute("CREATE INDEX idx_items_sale ON sale_items(sale_id)")
-        expected = (41, sale_id, product_id, 3, 1000, 600)
-        connection.execute(
-            "INSERT INTO sale_items(id,sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?,?)",
-            expected,
-        )
-        connection.commit()
-        connection.close()
-
-        initialize_sqlite_database(database)
-        repaired = sqlite3.connect(database)
-        repaired_row = repaired.execute(
-            "SELECT id,sale_id,product_id,quantity,unit_price_cents,unit_cost_cents FROM sale_items"
-        ).fetchone()
-        fk_target = next(
-            row[2] for row in repaired.execute("PRAGMA foreign_key_list(sale_items)")
-            if row[3] == "sale_id"
-        )
-        self.assertEqual(repaired_row, expected)
-        self.assertEqual(repaired.execute("SELECT COUNT(*) FROM sale_items").fetchone()[0], 1)
-        self.assertEqual(fk_target, "sales")
-        self.assertEqual(list(repaired.execute("PRAGMA foreign_key_check")), [])
-        first_schema = repaired.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sale_items'"
-        ).fetchone()[0]
-        repaired.close()
-
-        initialize_sqlite_database(database)
-        second = sqlite3.connect(database)
-        self.assertEqual(
-            second.execute("SELECT id,sale_id,product_id,quantity,unit_price_cents,unit_cost_cents FROM sale_items").fetchone(),
-            expected,
-        )
-        self.assertEqual(
-            second.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='sale_items'").fetchone()[0],
-            first_schema,
-        )
-        second.close()
-
-    def test_sqlite_sale_items_fk_repair_noops_when_correct_and_rejects_unknown_target(self):
-        database = str(Path(self.tempdir.name) / "sale-items-fk-guard.db")
-        initialize_sqlite_database(database)
-        connection = sqlite3.connect(database)
-        schema_before = connection.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sale_items'"
-        ).fetchone()[0]
-        self.assertFalse(repair_legacy_sale_items_foreign_key(connection))
-        self.assertEqual(
-            connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='sale_items'").fetchone()[0],
-            schema_before,
-        )
-        connection.execute("PRAGMA foreign_keys=OFF")
-        connection.execute("DROP TABLE sale_items")
-        connection.execute("""CREATE TABLE sale_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sale_id INTEGER NOT NULL REFERENCES unexpected_sales(id) ON DELETE CASCADE,
-            product_id INTEGER NOT NULL REFERENCES products(id),
-            quantity INTEGER NOT NULL CHECK(quantity > 0),
-            unit_price_cents INTEGER NOT NULL,
-            unit_cost_cents INTEGER NOT NULL DEFAULT 0)""")
-        connection.commit()
-        with self.assertRaisesRegex(RuntimeError, "FK inesperada"):
-            repair_legacy_sale_items_foreign_key(connection)
-        connection.close()
-
-    def test_sports_phase_b_sqlite_schema_constraints_seeds_and_foreign_keys(self):
-        database = str(Path(self.tempdir.name) / "sports-phase-b.db")
-        initialize_sqlite_database(database)
-        initialize_sqlite_database(database)
-        config = type("Config", (), {"config": {"DATABASE_URL": None, "DATABASE": database}})()
-        connection = connect_db(config)
-        try:
-            tables = {row["name"] for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()}
-            self.assertTrue({
-                "sports_material_types", "sports_product_config", "sports_product_variants"
-            }.issubset(tables))
-            types = connection.execute(
-                "SELECT code,name FROM sports_material_types ORDER BY sort_order"
-            ).fetchall()
-            self.assertEqual(len(types), 8)
-            self.assertEqual(len({row["code"] for row in types}), 8)
-
-            product = connection.execute(
-                "INSERT INTO products(name,category,price_cents) VALUES(?,?,?)",
-                ("Produto FK", "Material Esportivo", 1000),
-            )
-            product_id = product.lastrowid
-            type_id = connection.execute(
-                "SELECT id FROM sports_material_types WHERE code='game_kit'"
-            ).fetchone()["id"]
-            connection.execute(
-                "INSERT INTO sports_product_config(product_id,type_id) VALUES(?,?)",
-                (product_id, type_id),
-            )
-            connection.execute(
-                "INSERT INTO sports_product_variants(product_id,size,stock,min_stock) VALUES(?,?,?,?)",
-                (product_id, "M", 2, 1),
-            )
-            with self.assertRaises(Exception):
-                connection.execute(
-                    "INSERT INTO sports_product_variants(product_id,size,stock,min_stock) VALUES(?,?,?,?)",
-                    (product_id, "M", 1, 0),
-                )
-            connection.rollback()
-
-            # Recreate after rollback so each CHECK is tested independently.
-            product = connection.execute(
-                "INSERT INTO products(name,category,price_cents) VALUES(?,?,?)",
-                ("Produto CHECK", "Material Esportivo", 1000),
-            )
-            check_product_id = product.lastrowid
-            with self.assertRaises(Exception):
-                connection.execute(
-                    "INSERT INTO sports_product_variants(product_id,size,stock,min_stock) VALUES(?,?,?,?)",
-                    (check_product_id, "P", -1, 0),
-                )
-            connection.rollback()
-            product = connection.execute(
-                "INSERT INTO products(name,category,price_cents) VALUES(?,?,?)",
-                ("Produto CHECK mínimo", "Material Esportivo", 1000),
-            )
-            with self.assertRaises(Exception):
-                connection.execute(
-                    "INSERT INTO sports_product_variants(product_id,size,stock,min_stock) VALUES(?,?,?,?)",
-                    (product.lastrowid, "G", 0, -1),
-                )
-            connection.rollback()
-
-            product = connection.execute(
-                "INSERT INTO products(name,category,price_cents) VALUES(?,?,?)",
-                ("Produto CASCADE", "Material Esportivo", 1000),
-            )
-            cascade_id = product.lastrowid
-            connection.execute(
-                "INSERT INTO sports_product_config(product_id,type_id) VALUES(?,?)",
-                (cascade_id, type_id),
-            )
-            connection.execute(
-                "INSERT INTO sports_product_variants(product_id,size) VALUES(?,?)",
-                (cascade_id, "Único"),
-            )
-            connection.execute("DELETE FROM products WHERE id=?", (cascade_id,))
-            self.assertIsNone(connection.execute(
-                "SELECT 1 FROM sports_product_config WHERE product_id=?", (cascade_id,)
-            ).fetchone())
-            self.assertIsNone(connection.execute(
-                "SELECT 1 FROM sports_product_variants WHERE product_id=?", (cascade_id,)
-            ).fetchone())
-        finally:
-            connection.close()
-
     def test_stage4_setup_and_migrations_never_run_during_requests(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
@@ -6185,98 +5538,6 @@ NILSON"""
         self.assertEqual(failed_connection.rollbacks, 1)
         self.assertTrue(failed_connection.closed)
         self.assertNotIn("003_pending.sql", failed_connection.applied)
-
-
-    def test_sports_phase_d_transitions_delivery_history_payments_and_permissions(self):
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-        with app.app_context():
-            db = get_db()
-            type_id = db.execute("SELECT id FROM sports_material_types ORDER BY id LIMIT 1").fetchone()["id"]
-            product_id = db.execute("INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,0)",
-                                    ("Kit Fase D", "Material Esportivo", 15000, 9000)).lastrowid
-            db.execute("INSERT INTO sports_product_config(product_id,type_id,allow_backorder) VALUES(?,?,1)", (product_id, type_id))
-            ready_variant = db.execute("INSERT INTO sports_product_variants(product_id,size,stock) VALUES(?,?,1)", (product_id, "G")).lastrowid
-            backorder_variant = db.execute("INSERT INTO sports_product_variants(product_id,size,stock) VALUES(?,?,0)", (product_id, "GG")).lastrowid
-            db.commit()
-
-        with app.app_context():
-            db = get_db()
-            sale_id = db.execute("INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status) VALUES(?,'Dinheiro',30000,0,'pending_cash')", (self.player_id,)).lastrowid
-            ready_item = db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,1,15000,9000)", (sale_id,product_id)).lastrowid
-            backorder_item = db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,1,15000,9000)", (sale_id,product_id)).lastrowid
-            db.execute("INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,custom_name,custom_number,order_mode,fulfillment_status) VALUES(?,?,?,'ADELMO','10','ready','reserved')", (ready_item,ready_variant,"G"))
-            db.execute("INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,order_mode,fulfillment_status) VALUES(?,?,?,'backorder','requested')", (backorder_item,backorder_variant,"GG"))
-            db.execute("UPDATE sports_product_variants SET stock=stock-1 WHERE id=?", (ready_variant,))
-            db.commit()
-            ready_stock = db.execute("SELECT stock FROM sports_product_variants WHERE id=?", (ready_variant,)).fetchone()["stock"]
-
-        invalid = self.client.post(f"/material-esportivo/vendas/{backorder_item}/status", json={"to_status":"available"})
-        self.assertEqual(invalid.status_code, 409)
-        for target in ("in_production", "available"):
-            response = self.client.post(f"/material-esportivo/vendas/{backorder_item}/status", json={"to_status":target})
-            self.assertEqual(response.status_code, 200)
-        delivered_backorder = self.client.post(f"/material-esportivo/vendas/{backorder_item}/status", json={"to_status":"delivered"})
-        self.assertEqual(delivered_backorder.status_code, 200)
-        delivered_ready = self.client.post(f"/material-esportivo/vendas/{ready_item}/status", json={"to_status":"delivered"})
-        self.assertEqual(delivered_ready.status_code, 200)
-        repeated = self.client.post(f"/material-esportivo/vendas/{ready_item}/status", json={"to_status":"delivered"})
-        self.assertEqual(repeated.status_code, 200)
-        self.assertTrue(repeated.get_json()["already_delivered"])
-        with app.app_context():
-            db = get_db()
-            sale_after = db.execute("SELECT paid,payment_status,paid_at FROM sales WHERE id=?", (sale_id,)).fetchone()
-            self.assertEqual((sale_after["paid"], sale_after["payment_status"]), (1, "approved"))
-            self.assertIsNotNone(sale_after["paid_at"])
-            delivered = db.execute("SELECT delivered_at,delivered_by FROM sports_sale_item_details WHERE sale_item_id=?", (ready_item,)).fetchone()
-            self.assertIsNotNone(delivered["delivered_at"])
-            self.assertEqual(delivered["delivered_by"], self.user_id)
-            self.assertEqual(db.execute("SELECT stock FROM sports_product_variants WHERE id=?", (ready_variant,)).fetchone()["stock"], ready_stock)
-            self.assertEqual(db.execute("SELECT stock FROM sports_product_variants WHERE id=?", (backorder_variant,)).fetchone()["stock"], 0)
-            history = db.execute("SELECT from_status,to_status FROM sports_order_status_history ORDER BY id").fetchall()
-            self.assertEqual([(r["from_status"],r["to_status"]) for r in history],
-                             [("requested","in_production"),("in_production","available"),("available","delivered"),("reserved","delivered")])
-            first_delivered_at = delivered["delivered_at"]
-            client_user = db.execute("INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
-                                     ("fase.d.client", "Cliente D", "hash", self.player_id)).lastrowid
-            db.commit()
-        with self.client.session_transaction() as session:
-            session["user_id"] = client_user
-        self.assertEqual(self.client.get("/material-esportivo/vendas").status_code, 302)
-        self.assertEqual(self.client.post(f"/material-esportivo/vendas/{ready_item}/status", json={"to_status":"delivered"}).status_code, 302)
-        purchases = self.client.get("/minhas-compras").get_data(as_text=True)
-        self.assertIn("Kit Fase D", purchases)
-        self.assertIn("Entregue", purchases)
-        receipt = self.client.get(f"/sales/{sale_id}/receipt").get_data(as_text=True)
-        self.assertIn("Tamanho G", receipt)
-        self.assertNotIn("photo_data", receipt)
-        with app.app_context():
-            self.assertEqual(get_db().execute("SELECT delivered_at FROM sports_sale_item_details WHERE sale_item_id=?", (ready_item,)).fetchone()["delivered_at"], first_delivered_at)
-
-    def test_sports_phase_d_pix_blocks_pending_and_released_and_rolls_back_history_failure(self):
-        with self.client.session_transaction() as session:
-            session["user_id"] = self.user_id
-        with app.app_context():
-            db = get_db()
-            type_id = db.execute("SELECT id FROM sports_material_types ORDER BY id LIMIT 1").fetchone()["id"]
-            product_id = db.execute("INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,0)", ("Camisa Pix D","Material Esportivo",10000,5000)).lastrowid
-            db.execute("INSERT INTO sports_product_config(product_id,type_id) VALUES(?,?)", (product_id,type_id))
-            variant_id = db.execute("INSERT INTO sports_product_variants(product_id,size,stock) VALUES(?,?,0)", (product_id,"M")).lastrowid
-            sale_id = db.execute("INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status) VALUES(?,'Pix',10000,0,'pending')", (self.player_id,)).lastrowid
-            item_id = db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,1,10000,5000)", (sale_id,product_id)).lastrowid
-            db.execute("INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,order_mode,fulfillment_status) VALUES(?,?,?,'ready','reserved')", (item_id,variant_id,"M"))
-            db.execute("INSERT INTO sports_stock_reservations(sale_item_id,variant_id,quantity,status) VALUES(?,?,1,'consumed')", (item_id,variant_id))
-            db.commit()
-        self.assertEqual(self.client.post(f"/material-esportivo/vendas/{item_id}/status", json={"to_status":"delivered"}).status_code, 409)
-        with app.app_context():
-            db=get_db(); db.execute("UPDATE sales SET paid=1,payment_status='approved' WHERE id=?",(sale_id,)); db.execute("UPDATE sports_stock_reservations SET status='released' WHERE sale_item_id=?",(item_id,)); db.commit()
-        self.assertEqual(self.client.post(f"/material-esportivo/vendas/{item_id}/status", json={"to_status":"delivered"}).status_code, 409)
-        with app.app_context():
-            db=get_db(); db.execute("UPDATE sports_stock_reservations SET status='consumed' WHERE sale_item_id=?",(item_id,)); db.execute("CREATE TRIGGER fail_sports_history BEFORE INSERT ON sports_order_status_history BEGIN SELECT RAISE(ABORT,'falha simulada'); END"); db.commit()
-        failed = self.client.post(f"/material-esportivo/vendas/{item_id}/status", json={"to_status":"delivered"})
-        self.assertEqual(failed.status_code, 500)
-        with app.app_context():
-            db=get_db(); detail=db.execute("SELECT fulfillment_status,delivered_at FROM sports_sale_item_details WHERE sale_item_id=?",(item_id,)).fetchone(); self.assertEqual(detail["fulfillment_status"],"reserved"); self.assertIsNone(detail["delivered_at"]); db.execute("DROP TRIGGER fail_sports_history"); db.commit()
 
 
 if __name__ == "__main__":
