@@ -754,8 +754,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(multi.status_code, 303)
         single = self.client.post("/material-esportivo", data={
             "name": "Moeda 50 anos", "type_id": str(coin), "price": "50,00",
-            "cost": "25,00", "active": "1", "variant_size": "Único",
-            "variant_stock": "20", "variant_min_stock": "5", "variant_active": "1",
+            "cost": "25,00", "active": "1", "coin_stock": "20", "coin_min_stock": "5",
         })
         self.assertEqual(single.status_code, 303)
 
@@ -844,7 +843,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             lastrowid = 1
 
             def fetchone(self):
-                return {"id": 1}
+                return {"id": 1, "code": "game_kit"}
 
         class Recorder:
             def __init__(self):
@@ -865,6 +864,123 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(config_params[-3:], (True, False, True))
         self.assertIs(variant_params[-1], True)
         self.assertTrue(any("SET active=FALSE" in sql for sql, _ in recorder.calls))
+
+    def test_commemorative_coin_uses_one_technical_variant_and_ignores_manual_customization(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            coin_type = db.execute(
+                "SELECT id FROM sports_material_types WHERE code='commemorative_coin'"
+            ).fetchone()["id"]
+
+        created = self.client.post("/material-esportivo", data={
+            "name": "Moeda técnica", "type_id": str(coin_type), "price": "50,00",
+            "cost": "20,00", "active": "1", "coin_stock": "12", "coin_min_stock": "3",
+            "allow_custom_name": "1", "allow_custom_number": "1", "allow_backorder": "1",
+            "variant_size": ["P", "GG"], "variant_stock": ["99", "88"],
+            "variant_min_stock": ["9", "8"], "variant_active": ["1", "1"],
+        })
+        self.assertEqual(created.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            product = db.execute(
+                """SELECT p.id,c.allow_custom_name,c.allow_custom_number,c.allow_backorder
+                   FROM products p JOIN sports_product_config c ON c.product_id=p.id
+                   WHERE p.name='Moeda técnica'"""
+            ).fetchone()
+            variants = db.execute(
+                "SELECT id,size,stock,min_stock,active FROM sports_product_variants WHERE product_id=?",
+                (product["id"],),
+            ).fetchall()
+            self.assertEqual(len(variants), 1)
+            self.assertEqual((variants[0]["size"], variants[0]["stock"], variants[0]["min_stock"], variants[0]["active"]),
+                             ("Único", 12, 3, 1))
+            self.assertEqual((product["allow_custom_name"], product["allow_custom_number"]), (0, 0))
+            self.assertEqual(product["allow_backorder"], 1)
+            product_id, variant_id = product["id"], variants[0]["id"]
+
+        edit_page = self.client.get(f"/material-esportivo/{product_id}/editar").get_data(as_text=True)
+        self.assertIn('name="coin_stock" value="12"', edit_page)
+        self.assertIn('name="coin_min_stock" value="3"', edit_page)
+        self.assertIn('id="regular-sports-stock" class="d-none"', edit_page)
+        self.assertIn('id="sports-personalization" class="d-none"', edit_page)
+
+        updated = self.client.post(f"/material-esportivo/{product_id}/editar", data={
+            "name": "Moeda técnica", "type_id": str(coin_type), "price": "50,00",
+            "cost": "20,00", "active": "1", "coin_stock": "9", "coin_min_stock": "2",
+            "allow_custom_name": "1", "allow_custom_number": "1", "allow_backorder": "1",
+            "variant_size": "X", "variant_stock": "100", "variant_min_stock": "10", "variant_active": "1",
+        })
+        self.assertEqual(updated.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            variant = db.execute(
+                "SELECT id,size,stock,min_stock,active FROM sports_product_variants WHERE product_id=?",
+                (product_id,),
+            ).fetchone()
+            self.assertEqual((variant["id"], variant["size"], variant["stock"], variant["min_stock"], variant["active"]),
+                             (variant_id, "Único", 9, 2, 1))
+
+        sale_page = self.client.get("/sale?catalog=sports").get_data(as_text=True)
+        self.assertIn('"single_variant": true', sale_page)
+        self.assertIn("product.single_variant?choices[0]?.id", sale_page)
+        sold = self.client.post("/sale", data={
+            "department": "sports", "player_id": str(self.player_id), "payment_method": "Dinheiro",
+            "product_id": str(product_id), "variant_id": str(variant_id), "quantity": "2",
+            "custom_name": "", "custom_number": "", "order_mode": "ready",
+        })
+        self.assertEqual(sold.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT stock FROM sports_product_variants WHERE id=?", (variant_id,)
+            ).fetchone()["stock"], 7)
+            sale_id = db.execute("SELECT MAX(id) id FROM sales").fetchone()["id"]
+            detail = db.execute(
+                "SELECT variant_id,variant_size,custom_name,custom_number FROM sports_sale_item_details"
+                " WHERE sale_item_id=(SELECT id FROM sale_items WHERE sale_id=? LIMIT 1)", (sale_id,),
+            ).fetchone()
+            self.assertEqual((detail["variant_id"], detail["variant_size"], detail["custom_name"], detail["custom_number"]),
+                             (variant_id, "Único", "", ""))
+
+    def test_sports_type_changes_deactivate_old_variants_without_deleting_stock_history(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            game_type = db.execute("SELECT id FROM sports_material_types WHERE code='game_kit'").fetchone()["id"]
+            coin_type = db.execute("SELECT id FROM sports_material_types WHERE code='commemorative_coin'").fetchone()["id"]
+        created = self.client.post("/material-esportivo", data={
+            "name": "Produto troca tipo", "type_id": str(game_type), "price": "80,00", "cost": "40,00",
+            "active": "1", "variant_size": "P", "variant_stock": "3",
+            "variant_min_stock": "1", "variant_active": "1",
+        })
+        self.assertEqual(created.status_code, 303)
+        with app.app_context():
+            product_id = get_db().execute("SELECT id FROM products WHERE name='Produto troca tipo'").fetchone()["id"]
+        to_coin = self.client.post(f"/material-esportivo/{product_id}/editar", data={
+            "name": "Produto troca tipo", "type_id": str(coin_type), "price": "80,00", "cost": "40,00",
+            "active": "1", "coin_stock": "7", "coin_min_stock": "2",
+        })
+        self.assertEqual(to_coin.status_code, 303)
+        with app.app_context():
+            rows = get_db().execute(
+                "SELECT size,stock,active FROM sports_product_variants WHERE product_id=? ORDER BY id", (product_id,)
+            ).fetchall()
+            self.assertEqual([(row["size"], row["stock"], row["active"]) for row in rows],
+                             [("P", 3, 0), ("Único", 7, 1)])
+        to_sizes = self.client.post(f"/material-esportivo/{product_id}/editar", data={
+            "name": "Produto troca tipo", "type_id": str(game_type), "price": "80,00", "cost": "40,00",
+            "active": "1", "variant_size": "M", "variant_stock": "4",
+            "variant_min_stock": "1", "variant_active": "1",
+        })
+        self.assertEqual(to_sizes.status_code, 303)
+        with app.app_context():
+            states = {row["size"]: (row["stock"], row["active"]) for row in get_db().execute(
+                "SELECT size,stock,active FROM sports_product_variants WHERE product_id=?", (product_id,)
+            ).fetchall()}
+            self.assertEqual(states, {"P": (3, 0), "Único": (7, 0), "M": (4, 1)})
 
     def test_sports_non_id_primary_keys_use_explicit_returning(self):
         class Cursor:

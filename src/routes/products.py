@@ -183,7 +183,34 @@ def products():
     )
 
 
-def _sports_variants_from_form(form):
+COIN_MATERIAL_TYPE_CODE = "commemorative_coin"
+COIN_TECHNICAL_SIZE = "Único"
+
+
+def _sports_material_type(db, type_id):
+    material_type = db.execute(
+        "SELECT id,code FROM sports_material_types WHERE id=? AND active", (type_id,)
+    ).fetchone()
+    if not material_type:
+        raise ValueError("Selecione um tipo de material válido.")
+    return material_type
+
+
+def _non_negative_stock(value, label):
+    value = int(value or 0)
+    if value < 0:
+        raise ValueError(f"{label} não pode ser negativo.")
+    return value
+
+
+def _sports_variants_from_form(form, material_type_code=None):
+    if material_type_code == COIN_MATERIAL_TYPE_CODE:
+        return [{
+            "size": COIN_TECHNICAL_SIZE,
+            "stock": _non_negative_stock(form.get("coin_stock"), "O estoque"),
+            "min_stock": _non_negative_stock(form.get("coin_min_stock"), "O estoque mínimo"),
+            "active": True,
+        }]
     sizes = form.getlist("variant_size")
     stocks = form.getlist("variant_stock")
     minimums = form.getlist("variant_min_stock")
@@ -218,11 +245,12 @@ def _sports_types(db, include_inactive=False):
 
 
 def _save_sports_config(db, product_id, type_id, variants, form):
-    material_type = db.execute(
-        "SELECT id FROM sports_material_types WHERE id=? AND active", (type_id,)
-    ).fetchone()
-    if not material_type:
-        raise ValueError("Selecione um tipo de material válido.")
+    material_type = _sports_material_type(db, type_id)
+    is_coin = material_type["code"] == COIN_MATERIAL_TYPE_CODE
+    if is_coin:
+        variant = variants[0]
+        variants = [{"size": COIN_TECHNICAL_SIZE, "stock": variant["stock"],
+                     "min_stock": variant["min_stock"], "active": True}]
     db.execute(
         """INSERT INTO sports_product_config
            (product_id,type_id,allow_custom_name,allow_custom_number,allow_backorder,updated_at)
@@ -232,8 +260,9 @@ def _save_sports_config(db, product_id, type_id, variants, form):
            allow_custom_number=excluded.allow_custom_number,
            allow_backorder=excluded.allow_backorder,updated_at=CURRENT_TIMESTAMP
            RETURNING product_id""",
-        (product_id, type_id, form.get("allow_custom_name") == "1",
-         form.get("allow_custom_number") == "1", form.get("allow_backorder") == "1"),
+        (product_id, type_id, False if is_coin else form.get("allow_custom_name") == "1",
+         False if is_coin else form.get("allow_custom_number") == "1",
+         form.get("allow_backorder") == "1"),
     )
     db.execute("UPDATE sports_product_variants SET active=FALSE,updated_at=CURRENT_TIMESTAMP WHERE product_id=?", (product_id,))
     for variant in variants:
@@ -252,8 +281,9 @@ def sports_materials():
     db = get_db()
     if request.method == "POST":
         try:
-            variants = _sports_variants_from_form(request.form)
             type_id = int(request.form.get("type_id") or 0)
+            material_type = _sports_material_type(db, type_id)
+            variants = _sports_variants_from_form(request.form, material_type["code"])
             processed_photo = process_material_photo(request.files.get("photo"))
             photo_data, thumbnail_data = processed_photo or ("", "")
             with db:
@@ -281,7 +311,7 @@ def sports_materials():
 
     items = db.execute(
         """SELECT p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
-                  config.product_id configured,type.name sports_type,
+                  config.product_id configured,type.name sports_type,type.code sports_type_code,
                   config.allow_custom_name,config.allow_custom_number,config.allow_backorder,
                   COALESCE(SUM(CASE WHEN variant.active THEN variant.stock ELSE 0 END),0) variant_stock,
                   COUNT(variant.id) variant_count
@@ -291,13 +321,14 @@ def sports_materials():
            LEFT JOIN sports_product_variants variant ON variant.product_id=p.id
            WHERE p.category=?
            GROUP BY p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
-                    config.product_id,type.name,config.allow_custom_name,
+                    config.product_id,type.name,type.code,config.allow_custom_name,
                     config.allow_custom_number,config.allow_backorder
            ORDER BY p.active DESC,p.name""",
         (SPORTS_MATERIAL_CATEGORY,),
     ).fetchall()
     return render_template(
         "sports_materials.html", products=items, sports_types=_sports_types(db),
+        coin_type_code=COIN_MATERIAL_TYPE_CODE,
     )
 
 
@@ -316,8 +347,9 @@ def edit_sports_material(product_id):
         return redirect(url_for("products.sports_materials"))
     if request.method == "POST":
         try:
-            variants = _sports_variants_from_form(request.form)
             type_id = int(request.form.get("type_id") or 0)
+            material_type = _sports_material_type(db, type_id)
+            variants = _sports_variants_from_form(request.form, material_type["code"])
             photo_data, thumbnail_data = product["photo_data"] or "", product["thumbnail_data"] or ""
             if request.form.get("remove_photo") == "1":
                 photo_data, thumbnail_data = "", ""
@@ -344,8 +376,14 @@ def edit_sports_material(product_id):
         """SELECT id,size,stock,min_stock,active FROM sports_product_variants
            WHERE product_id=? ORDER BY active DESC,id""", (product_id,),
     ).fetchall()
+    is_coin = any(type["id"] == product["type_id"] and type["code"] == COIN_MATERIAL_TYPE_CODE
+                  for type in _sports_types(db, include_inactive=True))
+    coin_variant = next((variant for variant in variants if variant["size"] == COIN_TECHNICAL_SIZE), None)
     return render_template("edit_sports_material.html", product=product, variants=variants,
-                           sports_types=_sports_types(db))
+                           sports_types=_sports_types(db), is_coin=is_coin,
+                           coin_variant=coin_variant,
+                           coin_type_code=COIN_MATERIAL_TYPE_CODE,
+                           coin_technical_size=COIN_TECHNICAL_SIZE)
 
 
 @bp.post("/material-esportivo/tipos")

@@ -446,7 +446,7 @@ def sale():
         product["group"] = SPORTS_MATERIAL_CATEGORY if product.get("category") == SPORTS_MATERIAL_CATEGORY else "Bebidas" if category in beverage_categories or "bebida" in category else "Salgados" if category in snack_categories or "salgad" in category else "Alimentos" if "alimento" in category else "Outros"
         product_data.append(product)
     sports_rows = db.execute("""SELECT p.id,p.name,p.category,p.price_cents,p.cost_cents,p.thumbnail_data,
-        t.name sports_type,c.allow_custom_name,c.allow_custom_number,c.allow_backorder,
+        t.name sports_type,t.code sports_type_code,c.allow_custom_name,c.allow_custom_number,c.allow_backorder,
         v.id variant_id,v.size variant_size,v.stock variant_stock
         FROM products p JOIN sports_product_config c ON c.product_id=p.id
         JOIN sports_material_types t ON t.id=c.type_id
@@ -457,6 +457,7 @@ def sale():
         product = sports.setdefault(row["id"], {"id":row["id"],"name":row["name"],"category":row["category"],
             "price_cents":row["price_cents"],"cost_cents":row["cost_cents"],"thumbnail_data":row["thumbnail_data"],
             "stock":sum([]),"min_stock":0,"sold_quantity":0,"group":SPORTS_MATERIAL_CATEGORY,"sports_type":row["sports_type"],
+            "single_variant":row["sports_type_code"] == "commemorative_coin",
             "allow_custom_name":bool(row["allow_custom_name"]),"allow_custom_number":bool(row["allow_custom_number"]),
             "allow_backorder":bool(row["allow_backorder"]),"variants":[]})
         product["variants"].append({"id":row["variant_id"],"size":row["variant_size"],"stock":row["variant_stock"]})
@@ -662,7 +663,7 @@ def sports_material_sales():
         params.extend((term, term, term))
     items = db.execute(
         f"""SELECT si.id sale_item_id,si.sale_id,si.quantity,si.unit_price_cents,
-                   p.name product_name,p.thumbnail_data,t.name material_type,
+                   p.name product_name,p.thumbnail_data,t.name material_type,t.code material_type_code,
                    COALESCE(pl.war_name,pl.name,'Peladeiro') player_name,
                    s.payment_method,s.payment_status,s.paid,s.created_at,
                    d.variant_size,d.custom_name,d.custom_number,d.order_mode,
@@ -1140,10 +1141,13 @@ def receipt(sale_id):
     items = db.execute(
         """SELECT i.id item_id,i.quantity,i.unit_price_cents,p.name product_name,
                   p.category product_category,p.thumbnail_data,d.variant_size,d.custom_name,d.custom_number,
+                  t.code material_type_code,
                   d.order_mode,d.fulfillment_status,d.delivered_at sports_delivered_at,
                   COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=i.id),0) delivered_quantity
            FROM sale_items i JOIN products p ON p.id=i.product_id
            LEFT JOIN sports_sale_item_details d ON d.sale_item_id=i.id
+           LEFT JOIN sports_product_config c ON c.product_id=p.id
+           LEFT JOIN sports_material_types t ON t.id=c.type_id
            WHERE i.sale_id=? ORDER BY i.id""",
         (sale_id,),
     ).fetchall()
