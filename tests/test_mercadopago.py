@@ -46,7 +46,9 @@ from src.services.cash_register import get_session, session_summary
 from src.services.monthly_sales_report import monthly_sales_data
 from src.services.stock_alerts import notify_low_stock
 from src.services.push_notifications import send_player_push
+from src.services.material_photos import MAX_UPLOAD_BYTES, process_material_photo
 from src.utils import alphabetical_key, brdate, local_today, month_bounds
+from werkzeug.datastructures import FileStorage
 from werkzeug.security import check_password_hash
 
 
@@ -1435,6 +1437,118 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 ).fetchone()["total"],
                 1,
             )
+
+    def test_photo_processor_preserves_dimensions_formats_metadata_and_transparency(self):
+        def upload(raw, filename):
+            return FileStorage(stream=BytesIO(raw), filename=filename)
+
+        def encoded_image(data_url):
+            self.assertTrue(data_url.startswith("data:image/jpeg;base64,"))
+            raw = base64.b64decode(data_url.split(",", 1)[1], validate=True)
+            image = Image.open(BytesIO(raw))
+            image.load()
+            return raw, image
+
+        large = Image.effect_noise((1600, 800), 45).convert("RGB")
+        large_buffer = BytesIO()
+        large.save(large_buffer, format="JPEG", quality=95)
+        original_bytes = large_buffer.getvalue()
+        photo, thumbnail = process_material_photo(upload(original_bytes, "grande.jpg"))
+        final_bytes, final = encoded_image(photo)
+        thumbnail_bytes, thumb = encoded_image(thumbnail)
+        self.assertEqual(final.size, (1200, 600))
+        self.assertEqual(thumb.size, (180, 90))
+        self.assertLess(len(final_bytes), len(original_bytes))
+        self.assertGreater(len(thumbnail_bytes), 0)
+
+        small_buffer = BytesIO()
+        Image.new("RGB", (320, 180), "navy").save(small_buffer, format="JPEG")
+        small_photo, _ = process_material_photo(upload(small_buffer.getvalue(), "pequena.jpg"))
+        _, small = encoded_image(small_photo)
+        self.assertEqual(small.size, (320, 180))
+
+        transparent = Image.new("RGBA", (40, 30), (0, 0, 0, 0))
+        transparent.paste((220, 20, 20, 255), (12, 8, 28, 22))
+        png_buffer = BytesIO()
+        transparent.save(png_buffer, format="PNG")
+        png_photo, _ = process_material_photo(upload(png_buffer.getvalue(), "alpha.png"))
+        _, flattened = encoded_image(png_photo)
+        self.assertTrue(all(channel >= 245 for channel in flattened.getpixel((2, 2))))
+        self.assertGreater(flattened.getpixel((20, 15))[0], 180)
+
+        webp_buffer = BytesIO()
+        Image.new("RGB", (90, 60), "green").save(webp_buffer, format="WEBP")
+        webp_photo, _ = process_material_photo(upload(webp_buffer.getvalue(), "entrada.webp"))
+        _, webp_result = encoded_image(webp_photo)
+        self.assertEqual((webp_result.format, webp_result.size), ("JPEG", (90, 60)))
+
+        exif = Image.Exif()
+        exif[274] = 6
+        exif[270] = "metadata must not persist"
+        oriented_buffer = BytesIO()
+        Image.new("RGB", (60, 30), "orange").save(oriented_buffer, format="JPEG", exif=exif)
+        oriented_photo, _ = process_material_photo(upload(oriented_buffer.getvalue(), "orientada.jpg"))
+        _, oriented = encoded_image(oriented_photo)
+        self.assertEqual(oriented.size, (30, 60))
+        self.assertEqual(len(oriented.getexif()), 0)
+
+    def test_photo_processor_rejects_invalid_corrupt_oversized_and_excessive_pixels(self):
+        def upload(raw, filename):
+            return FileStorage(stream=BytesIO(raw), filename=filename)
+
+        for raw, filename in ((b"not-an-image", "fake.jpg"), (b"\xff\xd8corrupt", "corrupt.jpg")):
+            with self.subTest(filename=filename), self.assertRaisesRegex(ValueError, "inv\u00e1lida|corrompida"):
+                process_material_photo(upload(raw, filename))
+        with self.assertRaisesRegex(ValueError, "4 MB"):
+            process_material_photo(upload(b"x" * (MAX_UPLOAD_BYTES + 1), "large.jpg"))
+        pixels = BytesIO()
+        Image.new("RGB", (5000, 4001), "white").save(pixels, format="PNG")
+        with self.assertRaisesRegex(ValueError, "resolu\u00e7\u00e3o"):
+            process_material_photo(upload(pixels.getvalue(), "pixels.png"))
+
+    def test_load_entry_photo_failure_is_atomic_and_large_request_is_friendly(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        with app.app_context():
+            db = get_db()
+            material_id = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES(?,?)",
+                ("Carga at\u00f4mica", "FCG-ATOM"),
+            ).lastrowid
+            db.commit()
+
+        valid = BytesIO()
+        Image.new("RGB", (640, 480), "blue").save(valid, format="JPEG")
+        invalid = self.client.post(
+            "/infra/load-relation/new",
+            data={
+                "material_id": str(material_id),
+                "area_code": "BAR",
+                "photos": [(BytesIO(valid.getvalue()), "ok.jpg"), (BytesIO(b"invalid"), "bad.jpg")],
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(invalid.status_code, 200)
+        self.assertIn("foto enviada \u00e9 inv\u00e1lida", invalid.get_data(as_text=True))
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entries").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM load_entry_photos").fetchone()[0], 0)
+
+        oversized = self.client.post(
+            "/infra/load-relation/new",
+            data={
+                "material_id": str(material_id),
+                "area_code": "BAR",
+                "photos": (BytesIO(b"x" * (4 * 1024 * 1024)), "too-large.jpg"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertEqual(oversized.status_code, 200)
+        self.assertIn("no m\u00e1ximo 4 MB no total", oversized.get_data(as_text=True))
+        with app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM load_entries").fetchone()[0], 0)
 
     def test_material_crud_with_optimized_photo(self):
         with self.client.session_transaction() as session:
