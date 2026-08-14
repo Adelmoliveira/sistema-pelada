@@ -3,6 +3,7 @@ import uuid
 from datetime import date, timedelta
 
 from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, send_file, url_for
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
@@ -16,6 +17,7 @@ from src.utils import alphabetical_key, local_today
 
 bp = Blueprint("infra", __name__, url_prefix="/infra")
 MAX_LOAD_PHOTOS = 6
+MAX_LOAD_REQUEST_BYTES = 4 * 1024 * 1024
 LOAD_AREAS = {
     "BAR": "Bar",
     "COZ": "Cozinha",
@@ -164,6 +166,10 @@ def process_load_photos(uploads):
     return [process_material_photo(upload) for upload in uploads]
 
 
+def limit_load_upload_request():
+    request.max_content_length = MAX_LOAD_REQUEST_BYTES
+
+
 def load_entry_rows(db, query="", area_code="", status="", location="", responsible="", due="", material_id=None):
     sql = """SELECT le.*,m.description material_description,m.load_sheet material_fcg,
                     (SELECT COUNT(*) FROM load_entry_photos lp WHERE lp.load_entry_id=le.id) photo_count,
@@ -253,6 +259,8 @@ def new_material():
             return redirect(url_for("infra.materials"))
         except ValueError as exc:
             flash(str(exc), "danger")
+        except RequestEntityTooLarge:
+            raise
         except Exception as exc:
             current_app.logger.error(f"Erro ao cadastrar material: {exc}")
             flash("Erro interno ao cadastrar o material.", "danger")
@@ -596,6 +604,8 @@ def load_qr_codes_pdf():
 @bp.route("/load-relation/new", methods=["GET", "POST"])
 @roles_allowed("manager", "infra")
 def new_load_entry():
+    if request.method == "POST":
+        limit_load_upload_request()
     db = get_db()
     materials = material_options(db)
     if request.method == "POST":
@@ -623,6 +633,8 @@ def new_load_entry():
             return redirect(url_for("infra.load_entry_detail", entry_id=entry_id))
         except ValueError as exc:
             flash(str(exc), "danger")
+        except RequestEntityTooLarge:
+            raise
         except Exception as exc:
             current_app.logger.error(f"Erro ao cadastrar carga: {exc}")
             flash("Erro interno ao cadastrar a carga.", "danger")
@@ -800,6 +812,7 @@ def check_load_entry(entry_id):
 @roles_allowed("manager", "infra", "staff")
 def check_load_entry_auto(entry_id):
     """Atomically store QR conference evidence and register the conference."""
+    limit_load_upload_request()
     db = get_db()
     try:
         try:
@@ -864,6 +877,9 @@ def check_load_entry_auto(entry_id):
     except ValueError as exc:
         db.rollback()
         return jsonify(ok=False, error=str(exc)), 400
+    except RequestEntityTooLarge:
+        db.rollback()
+        raise
     except Exception:
         db.rollback()
         current_app.logger.exception("Erro na conferência automática da carga %s", entry_id)
@@ -911,6 +927,8 @@ def discharge_load_entry(entry_id):
 @bp.route("/load-relation/<int:entry_id>/edit", methods=["GET", "POST"])
 @roles_allowed("manager", "infra")
 def edit_load_entry(entry_id):
+    if request.method == "POST":
+        limit_load_upload_request()
     db = get_db()
     entry = db.execute("SELECT * FROM load_entries WHERE id=?", (entry_id,)).fetchone()
     if not entry:
@@ -957,6 +975,8 @@ def edit_load_entry(entry_id):
             return redirect(url_for("infra.load_entry_detail", entry_id=entry_id))
         except ValueError as exc:
             flash(str(exc), "danger")
+        except RequestEntityTooLarge:
+            raise
         except Exception as exc:
             current_app.logger.error(f"Erro ao editar carga {entry_id}: {exc}")
             flash("Erro interno ao atualizar a carga.", "danger")
@@ -993,6 +1013,8 @@ def delete_load_entry(entry_id):
 @bp.route("/loans", methods=["GET", "POST"])
 @roles_allowed("manager", "infra")
 def loans():
+    if request.method == "POST":
+        limit_load_upload_request()
     db = get_db()
     if request.method == "POST":
         try:
@@ -1059,6 +1081,9 @@ def loans():
         except ValueError as exc:
             db.rollback()
             flash(str(exc), "danger")
+        except RequestEntityTooLarge:
+            db.rollback()
+            raise
         except Exception:
             db.rollback()
             current_app.logger.exception("Erro ao registrar empréstimo de carga")
@@ -1118,6 +1143,7 @@ def loan_detail(loan_id):
 @bp.post("/loans/<int:loan_id>/return")
 @roles_allowed("manager", "infra")
 def return_loan(loan_id):
+    limit_load_upload_request()
     db = get_db()
     loan = db.execute("SELECT * FROM load_loans WHERE id=?", (loan_id,)).fetchone()
     if not loan or loan["status"] not in ("open", "partial"):
@@ -1163,6 +1189,8 @@ def return_loan(loan_id):
         flash("Devolução registrada.", "success")
     except ValueError as exc:
         db.rollback(); flash(str(exc), "danger")
+    except RequestEntityTooLarge:
+        db.rollback(); raise
     except Exception:
         db.rollback(); current_app.logger.exception("Erro ao devolver empréstimo %s", loan_id)
         flash("Não foi possível registrar a devolução.", "danger")
