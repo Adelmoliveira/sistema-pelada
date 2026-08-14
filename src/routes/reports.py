@@ -9,6 +9,7 @@ from src.services.reports_pdf import build_membership_report_pdf, build_sale_det
 from src.services.stock_report_pdf import stock_report_data
 from src.routes.maintenance import CATEGORIES, MAINTENANCE_AREAS, PRIORITIES, STATUSES
 from src.utils import local_today
+from src.catalog import SPORTS_MATERIAL_CATEGORY
 
 bp = Blueprint("reports", __name__, url_prefix="/relatorios")
 
@@ -80,7 +81,14 @@ def memberships_pdf():
 
 
 def _sales_data(db, start, end, player_id="", payment_method=""):
-    conditions, params = ["s.paid=1", "date(COALESCE(s.paid_at,s.created_at)) BETWEEN ? AND ?"], [start, end]
+    conditions = [
+        "s.paid=1",
+        "date(COALESCE(s.paid_at,s.created_at)) BETWEEN ? AND ?",
+        "NOT EXISTS (SELECT 1 FROM sale_items department_item JOIN products department_product "
+        "ON department_product.id=department_item.product_id WHERE department_item.sale_id=s.id "
+        "AND department_product.category=?)",
+    ]
+    params = [start, end, SPORTS_MATERIAL_CATEGORY]
     if player_id:
         conditions.append("s.player_id=?")
         params.append(int(player_id))
@@ -163,6 +171,67 @@ def stock_report():
     page_rows = rows[(page - 1) * per_page:page * per_page]
     low_stock = db.execute("SELECT name,stock,min_stock FROM products WHERE active=1 AND stock<=min_stock ORDER BY stock,LOWER(name)").fetchall()
     return render_template("report_stock.html", rows=page_rows, total_rows=len(rows), low_stock=low_stock, start=start, end=end, page=page, pages=pages)
+
+
+@bp.get("/material-esportivo")
+@roles_allowed("manager")
+def sports_material_report():
+    """Product-level sports sales and stock report without image payloads."""
+    db = get_db()
+    start, end = _period()
+    product_id = request.args.get("product_id", "").strip()
+    params = [start, end, SPORTS_MATERIAL_CATEGORY]
+    product_filter = ""
+    if product_id:
+        try:
+            params.append(int(product_id))
+            product_filter = " AND p.id=?"
+        except ValueError:
+            product_id = ""
+    rows = db.execute(
+        f"""SELECT p.id,p.name,p.category,p.stock,p.min_stock,
+                   COALESCE(SUM(CASE WHEN s.id IS NOT NULL THEN i.quantity ELSE 0 END),0) quantity_sold,
+                   COALESCE(SUM(CASE WHEN s.id IS NOT NULL THEN i.quantity*i.unit_price_cents ELSE 0 END),0) revenue_cents,
+                   COALESCE(SUM(CASE WHEN s.id IS NOT NULL THEN i.quantity*i.unit_cost_cents ELSE 0 END),0) cost_cents,
+                   MAX(CASE WHEN s.id IS NOT NULL THEN COALESCE(s.paid_at,s.created_at) END) last_sale_at
+            FROM products p
+            LEFT JOIN sale_items i ON i.product_id=p.id
+            LEFT JOIN sales s ON s.id=i.sale_id AND s.paid=1
+              AND date(COALESCE(s.paid_at,s.created_at)) BETWEEN ? AND ?
+            WHERE p.category=?{product_filter}
+            GROUP BY p.id,p.name,p.category,p.stock,p.min_stock
+            ORDER BY quantity_sold DESC,LOWER(p.name)""",
+        tuple(params),
+    ).fetchall()
+    data = []
+    for row in rows:
+        item = dict(row)
+        item["profit_cents"] = int(item["revenue_cents"] or 0) - int(item["cost_cents"] or 0)
+        data.append(item)
+    products = db.execute(
+        "SELECT id,name FROM products WHERE category=? ORDER BY LOWER(name)",
+        (SPORTS_MATERIAL_CATEGORY,),
+    ).fetchall()
+    pending_orders = db.execute(
+        """SELECT COUNT(DISTINCT s.id) total
+           FROM sales s JOIN sale_items i ON i.sale_id=s.id JOIN products p ON p.id=i.product_id
+           WHERE p.category=? AND s.ready_for_delivery=1 AND s.delivered_at IS NULL
+             AND (s.paid=1 OR s.payment_status='pending_cash')""",
+        (SPORTS_MATERIAL_CATEGORY,),
+    ).fetchone()["total"]
+    summary = {
+        "quantity": sum(int(row["quantity_sold"] or 0) for row in data),
+        "revenue": sum(int(row["revenue_cents"] or 0) for row in data),
+        "cost": sum(int(row["cost_cents"] or 0) for row in data),
+        "profit": sum(int(row["profit_cents"] or 0) for row in data),
+        "low_stock": sum(int(row["stock"] or 0) <= int(row["min_stock"] or 0) for row in data),
+        "without_movement": sum(int(row["quantity_sold"] or 0) == 0 for row in data),
+        "pending_orders": int(pending_orders or 0),
+    }
+    return render_template(
+        "report_sports_material.html", rows=data, products=products, summary=summary,
+        start=start, end=end, product_id=product_id, category=SPORTS_MATERIAL_CATEGORY,
+    )
 
 
 @bp.get("/manutencao")

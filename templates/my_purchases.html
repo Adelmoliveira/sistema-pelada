@@ -1,40 +1,23 @@
 {% extends 'base.html' %}
 {% block title %}Minhas compras · PELADEIROS GPCTA{% endblock %}
+{% macro order_items(sale) %}
+  <div class="d-flex flex-wrap gap-2 mt-3">
+  {% for item in sale['items'] %}
+    <div class="d-flex align-items-center gap-2 border rounded p-2">
+      {% if item.thumbnail_data %}<img src="{{item.thumbnail_data}}" alt="" width="44" height="44" class="rounded" style="object-fit:cover">{% endif %}
+      <div><strong class="d-block">{{item.product_name}}</strong>{% if item.fulfillment_status %}<small class="text-muted">Tamanho {{item.variant_size}} · {{'Pronta entrega' if item.order_mode == 'ready' else 'Encomenda'}}</small>{% if item.custom_name or item.custom_number %}<small class="d-block text-muted">{{item.custom_name}}{% if item.custom_number %} · nº {{item.custom_number}}{% endif %}</small>{% endif %}<span class="badge text-bg-light border mt-1">{{{'reserved':'Reservado','requested':'Solicitado','in_production':'Em produção','available':'Disponível para retirada','delivered':'Entregue'}[item.fulfillment_status]}}</span>{% if item.sports_delivered_at %}<small class="d-block text-muted mt-1">Entregue em {{item.sports_delivered_at|brdate}}</small>{% endif %}{% else %}<small class="text-muted">{{item.delivered_quantity}}/{{item.quantity}} entregue(s)</small>{% endif %}</div>
+    </div>
+  {% endfor %}
+  </div>
+{% endmacro %}
+{% macro order_row(sale, delivered=false) %}
+<div class="list-group-item p-4"><div class="d-flex flex-wrap justify-content-between align-items-start gap-3"><div><div class="d-flex flex-wrap align-items-center gap-2"><strong>Pedido #{{sale.id}}</strong><span class="badge {{'text-bg-primary' if sale.department == 'MATERIAL ESPORTIVO' else 'text-bg-dark'}}">{{sale.department}}</span><span class="badge text-bg-{{sale.display_status_class}}">{{sale.display_status_label}}</span></div><div class="text-muted small mt-1">{{(sale.delivered_at or sale.paid_at or sale.created_at)|brdate}} · {{sale.payment_method}}</div>{{order_items(sale)}}</div><div class="text-end"><div class="fs-5 fw-semibold">{{sale.total_cents|money}}</div>{% if delivered or sale.paid or sale.payment_status == 'approved' %}<a class="btn btn-sm btn-outline-primary mt-2" target="_blank" href="{{url_for('sales.receipt',sale_id=sale.id)}}">Ver comprovante</a>{% endif %}</div></div></div>
+{% endmacro %}
 {% block content %}
-<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
-  <div><h1 class="h3 mb-1">Minhas compras</h1><p class="text-muted mb-0">Acompanhe seus pedidos, pagamentos e retiradas.</p></div>
-  <a class="btn btn-outline-primary" href="{{url_for('sales.sale')}}">Nova compra</a>
-</div>
-
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4"><div><h1 class="h3 mb-1">Minhas compras</h1><p class="text-muted mb-0">Acompanhe seus pedidos, pagamentos e retiradas.</p></div><a class="btn btn-outline-primary" href="{{url_for('sales.sale')}}">Nova compra</a></div>
 {% set delivered_sales = sales|selectattr('display_status', 'equalto', 'ENTREGUE')|list %}
 {% set pickup_sales = sales|rejectattr('display_status', 'equalto', 'ENTREGUE')|list %}
-
-<div class="mb-4"><h2 class="h5 mb-0">Histórico de pedidos</h2></div>
-
-<div id="pending-orders" class="card shadow-sm mb-4"><div class="card-body p-0">
-  <div class="p-4 border-bottom"><h2 class="h5 mb-0">Pedidos aguardando retirada</h2><p class="text-muted small mb-0 mt-1">Pedidos pagos e ainda não entregues pela atendente.</p></div>
-  <div class="list-group list-group-flush">
-    {% for sale in pickup_sales %}
-    <div class="list-group-item p-4">
-      <div class="d-flex flex-wrap justify-content-between align-items-start gap-3"><div><div class="d-flex flex-wrap align-items-center gap-2"><strong>Pedido #{{sale.id}}</strong><span class="badge text-bg-{{sale.display_status_class}}">{{sale.display_status_label}}</span></div><div class="text-muted small mt-1">{{(sale.paid_at or sale.created_at)|brdate}} · {{sale.payment_method}}</div>{% if sale.items_summary %}<div class="mt-2">{{sale.items_summary}}</div>{% endif %}</div><div class="text-end"><div class="fs-5 fw-semibold">{{sale.total_cents|money}}</div>{% if sale.paid or sale.payment_status == 'approved' %}<a class="btn btn-sm btn-outline-primary mt-2" target="_blank" href="{{url_for('sales.receipt',sale_id=sale.id)}}">Ver comprovante</a>{% endif %}</div></div>
-    </div>
-    {% else %}<div class="p-4 text-muted">Nenhum pedido aguardando retirada.</div>{% endfor %}
-  </div>
-</div></div>
-
-<div class="card shadow-sm"><div class="card-body p-0">
-  <div class="p-4 border-bottom"><h2 class="h5 mb-0">Pedidos retirados</h2><p class="text-muted small mb-0 mt-1">Pedidos já entregues pela atendente.</p></div>
-  <div class="list-group list-group-flush">
-    {% for sale in delivered_sales %}
-    <div class="list-group-item p-4">
-      <div class="d-flex flex-wrap justify-content-between align-items-start gap-3"><div><div class="d-flex flex-wrap align-items-center gap-2"><strong>Pedido #{{sale.id}}</strong><span class="badge text-bg-secondary">Entregue</span></div><div class="text-muted small mt-1">{{(sale.delivered_at or sale.paid_at or sale.created_at)|brdate}} · {{sale.payment_method}}</div>{% if sale.items_summary %}<div class="mt-2">{{sale.items_summary}}</div>{% endif %}</div><div class="text-end"><div class="fs-5 fw-semibold">{{sale.total_cents|money}}</div><a class="btn btn-sm btn-outline-primary mt-2" target="_blank" href="{{url_for('sales.receipt',sale_id=sale.id)}}">Ver comprovante</a></div></div>
-    </div>
-    {% else %}<div class="p-4 text-muted">Nenhum pedido retirado.</div>{% endfor %}
-  </div>
-</div></div>
-
-<div class="card shadow-sm mt-4 border-primary"><div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
-  <div><h2 class="h5 mb-1">Total consumido no bar</h2><p class="text-muted small mb-0">Soma de todos os pedidos pagos.</p></div>
-  <div class="fs-3 fw-bold text-primary">{{total_consumed_cents|money}}</div>
-</div></div>
+<div id="pending-orders" class="card shadow-sm mb-4"><div class="card-body p-0"><div class="p-4 border-bottom"><h2 class="h5 mb-0">Pedidos aguardando retirada</h2><p class="text-muted small mb-0 mt-1">Pedidos pagos e ainda não entregues pela atendente.</p></div><div class="list-group list-group-flush">{% for sale in pickup_sales %}{{order_row(sale)}}{% else %}<div class="p-4 text-muted">Nenhum pedido aguardando retirada.</div>{% endfor %}</div></div></div>
+<div class="card shadow-sm"><div class="card-body p-0"><div class="p-4 border-bottom"><h2 class="h5 mb-0">Pedidos retirados</h2><p class="text-muted small mb-0 mt-1">Pedidos já entregues pela atendente.</p></div><div class="list-group list-group-flush">{% for sale in delivered_sales %}{{order_row(sale,true)}}{% else %}<div class="p-4 text-muted">Nenhum pedido retirado.</div>{% endfor %}</div></div></div>
+<div class="card shadow-sm mt-4 border-primary"><div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3"><div><h2 class="h5 mb-1">Total consumido</h2><p class="text-muted small mb-0">Soma de todos os pedidos pagos no Bar e em Material Esportivo.</p></div><div class="fs-3 fw-bold text-primary">{{total_consumed_cents|money}}</div></div></div>
 {% endblock %}
