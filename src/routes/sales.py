@@ -647,9 +647,10 @@ def orders():
 @roles_allowed("manager", "staff")
 def sports_material_sales():
     db = get_db()
-    status = request.args.get("status", "").strip()
+    default_status = "reserved" if g.user["role"] == "staff" else ""
+    status = request.args.get("status", default_status).strip()
     if status not in {"", *SPORTS_FULFILLMENT_LABELS}:
-        status = ""
+        status = default_status
     search = request.args.get("q", "").strip()[:100]
     where, params = ["p.category=?"], [SPORTS_MATERIAL_CATEGORY]
     if status:

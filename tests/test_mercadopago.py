@@ -1139,9 +1139,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
         denied = self.client.get("/relatorios/material-esportivo")
         self.assertIn(denied.status_code, (302, 403))
         client_sports_catalog = self.client.get("/sale?catalog=sports").get_data(as_text=True)
-        self.assertIn('href="/sale?catalog=sports"', client_sports_catalog)
-        self.assertIn('<span>Material Esportivo</span>', client_sports_catalog)
-        self.assertIn('class="sidebar-module sidebar-direct sale-link active" href="/sale?catalog=sports"', client_sports_catalog)
+        self.assertNotIn('href="/sale?catalog=sports"', client_sports_catalog)
+        self.assertNotIn('<span>Material Esportivo</span>', client_sports_catalog)
+        self.assertIn('id="show-sports-products"', client_sports_catalog)
+        self.assertIn('>Material Esportivo</button>', client_sports_catalog)
         self.assertIn("selectCatalog(new URLSearchParams(location.search).get('catalog')==='sports'?'sports':'bar'", client_sports_catalog)
         self.assertEqual(self.client.get("/material-esportivo").status_code, 302)
         self.assertEqual(self.client.get("/material-esportivo/vendas").status_code, 302)
@@ -1149,6 +1150,82 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("data:image/png;base64,THUMB", history)
         self.assertIn("Camisa comemorativa", history)
         self.assertIn("MATERIAL ESPORTIVO", history)
+
+    def test_staff_sports_orders_default_to_reserved_without_affecting_manager_view(self):
+        with app.app_context():
+            db = get_db()
+            type_id = db.execute("SELECT id FROM sports_material_types ORDER BY id LIMIT 1").fetchone()["id"]
+            sports_product = db.execute(
+                "INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,0)",
+                ("Kit reservado staff", "Material Esportivo", 15000, 9000),
+            ).lastrowid
+            requested_product = db.execute(
+                "INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,0)",
+                ("Kit solicitado staff", "Material Esportivo", 16000, 9500),
+            ).lastrowid
+            bar_product = db.execute(
+                "INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,1)",
+                ("Produto exclusivo do Bar", "Bebida", 500, 200),
+            ).lastrowid
+            for product_id in (sports_product, requested_product):
+                db.execute("INSERT INTO sports_product_config(product_id,type_id) VALUES(?,?)", (product_id, type_id))
+            reserved_variant = db.execute(
+                "INSERT INTO sports_product_variants(product_id,size,stock) VALUES(?,?,1)",
+                (sports_product, "G"),
+            ).lastrowid
+            requested_variant = db.execute(
+                "INSERT INTO sports_product_variants(product_id,size,stock) VALUES(?,?,0)",
+                (requested_product, "GG"),
+            ).lastrowid
+            sale_id = db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status) VALUES(?,'Dinheiro',31500,1,'approved')",
+                (self.player_id,),
+            ).lastrowid
+            reserved_item = db.execute(
+                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,1,15000,9000)",
+                (sale_id, sports_product),
+            ).lastrowid
+            requested_item = db.execute(
+                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,1,16000,9500)",
+                (sale_id, requested_product),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,1,500,200)",
+                (sale_id, bar_product),
+            )
+            db.execute(
+                "INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,order_mode,fulfillment_status) VALUES(?,?,?,'ready','reserved')",
+                (reserved_item, reserved_variant, "G"),
+            )
+            db.execute(
+                "INSERT INTO sports_sale_item_details(sale_item_id,variant_id,variant_size,order_mode,fulfillment_status) VALUES(?,?,?,'backorder','requested')",
+                (requested_item, requested_variant, "GG"),
+            )
+            db.execute("UPDATE users SET role='staff' WHERE id=?", (self.user_id,))
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        staff_page = self.client.get("/material-esportivo/vendas").get_data(as_text=True)
+        self.assertIn("Kit reservado staff", staff_page)
+        self.assertIn("Reservado", staff_page)
+        self.assertNotIn("Kit solicitado staff", staff_page)
+        self.assertNotIn("Produto exclusivo do Bar", staff_page)
+        self.assertIn('value="reserved" selected', staff_page)
+
+        requested_page = self.client.get("/material-esportivo/vendas?status=requested").get_data(as_text=True)
+        self.assertIn("Kit solicitado staff", requested_page)
+        self.assertNotIn("Kit reservado staff", requested_page)
+
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE users SET role='manager' WHERE id=?", (self.user_id,))
+            db.commit()
+        manager_page = self.client.get("/material-esportivo/vendas").get_data(as_text=True)
+        self.assertIn("Kit reservado staff", manager_page)
+        self.assertIn("Kit solicitado staff", manager_page)
+        self.assertNotIn("Produto exclusivo do Bar", manager_page)
+        self.assertIn('<option value="">Todas</option>', manager_page)
 
     def test_client_quick_sale_has_live_topbar_cart_indicator(self):
         with app.app_context():
