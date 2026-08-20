@@ -153,8 +153,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.client = app.test_client()
 
     def tearDown(self):
-        # Windows can briefly retain a just-closed SQLite file handle. Retry
-        # only the fixture cleanup; application connections are still closed
+        # Windows can briefly retain a just-closed SQLite file handle. Force a
+        # garbage collection to run so any pending sqlite finalizers close
+        # file handles before attempting to remove temporary directories.
+        import gc
+        gc.collect()
+        # Only retry fixture cleanup; application connections are still closed
         # by Flask's teardown on every request/app context.
         for attempt in range(3):
             try:
@@ -989,7 +993,8 @@ class MercadoPagoFlowTest(unittest.TestCase):
         sale_page = self.client.get("/sale").get_data(as_text=True)
         self.assertIn("Sanduíche natural", sale_page)
         self.assertIn("Foto de Sanduíche natural", sale_page)
-        self.assertIn('value="Alimentos"', sale_page)
+        # UI uses product cards with data-group rather than a select option for categories
+        self.assertIn('data-group="Alimentos"', sale_page)
 
         removed = self.client.post(
             f"/products/{product_id}/edit",

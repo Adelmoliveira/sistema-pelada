@@ -429,7 +429,11 @@ def pix():
 @bp.get("/orders")
 @roles_allowed("manager", "staff")
 def orders():
-    return render_template("orders.html")
+    # Ensure templates always receive a department value. Default to 'bar'.
+    department = request.args.get('department', 'bar')
+    if department not in ('bar', 'sports'):
+        department = 'bar'
+    return render_template("orders.html", department=department)
 
 @bp.get("/orders/delivered")
 @roles_allowed("manager", "staff")
