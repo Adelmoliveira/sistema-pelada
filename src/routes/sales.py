@@ -517,17 +517,17 @@ def delivery_order_data(db, sale, items_for_sales=None):
                JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
             (sale["id"],),
         ).fetchall()
+        item_data_rows = []
+        for item in items:
+            item_keys = getattr(item, "keys", None)
+            if callable(item_keys):
+                item_keys = item_keys()
+            item_data_rows.append({key: item[key] for key in set(item_keys or ())})
+        items = item_data_rows
     # Compatibilidade com pedidos antigos: antes da retirada parcial, os
     # detalhes em sale_item_deliveries não eram gravados. Um pedido com
     # delivered_at preenchido, mas sem nenhum detalhe, foi integralmente
     # entregue e não deve exibir itens pendentes.
-    item_data_rows = []
-    for item in items:
-        item_keys = getattr(item, "keys", None)
-        if callable(item_keys):
-            item_keys = item_keys()
-        item_data_rows.append({key: item[key] for key in set(item_keys or ())})
-    items = item_data_rows
     if sale.get("delivered_at") and items and not any(int(item.get("delivered_quantity") or 0) > 0 for item in items):
         items = [dict(item, delivered_quantity=item.get("quantity")) for item in items]
     item_data = [{
@@ -602,19 +602,24 @@ def orders_feed():
     if all_sale_ids:
         placeholders = ",".join("?" for _ in all_sale_ids)
         items_rows = db.execute(
-            f"""SELECT si.id, si.sale_id, si.quantity, p.name,
+            f"""SELECT si.id, si.sale_id, si.quantity, p.id, p.name,
                          COALESCE(SUM(sid.quantity), 0) AS delivered_quantity
                   FROM sale_items si
                   JOIN products p ON p.id=si.product_id
                   LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
                   WHERE si.sale_id IN ({placeholders})
-                  GROUP BY si.id
+                  GROUP BY si.id, si.sale_id, si.quantity, p.id, p.name
                   ORDER BY si.sale_id, si.id""",
             tuple(all_sale_ids),
         ).fetchall()
         for row in items_rows:
-            sid = int(row['sale_id'])
-            items_for_sales.setdefault(sid, []).append(row)
+            sale_id = int(row['sale_id'])
+            items_for_sales.setdefault(sale_id, []).append({
+                "id": row["id"],
+                "quantity": row["quantity"],
+                "name": row["name"],
+                "delivered_quantity": int(row["delivered_quantity"] or 0),
+            })
 
     return jsonify(
         pending=[delivery_order_data(db, sale, items_for_sales) for sale in pending],
