@@ -16,6 +16,10 @@
     {
       "path": "/cron/payment-reminders",
       "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/cron/process-notification-outbox",
+      "schedule": "0 13 * * *"
     }
   ]
 }
