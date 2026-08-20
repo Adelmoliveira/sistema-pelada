@@ -136,6 +136,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             CRON_SECRET="cron-secret-test",
         )
         initialize_sqlite_database(app.config["DATABASE"])
+        self.create_sports_schema()
         with app.app_context():
             db = get_db()
             db.execute("INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'manager')", ("teste", "Teste", "hash"))
@@ -171,6 +172,163 @@ class MercadoPagoFlowTest(unittest.TestCase):
 
     def headers(self):
         return {"Accept": "application/json", "X-Pix-Token": self.token}
+
+    def create_sports_schema(self):
+        with app.app_context():
+            db = get_db()
+            db.conn.executescript("""
+                CREATE TABLE sports_material_types (
+                    id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE sports_product_config (
+                    product_id INTEGER PRIMARY KEY, type_id INTEGER NOT NULL,
+                    allow_custom_name INTEGER NOT NULL DEFAULT 0,
+                    allow_custom_number INTEGER NOT NULL DEFAULT 0,
+                    allow_backorder INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE sports_product_variants (
+                    id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL, size TEXT NOT NULL,
+                    stock INTEGER NOT NULL DEFAULT 0, min_stock INTEGER NOT NULL DEFAULT 0,
+                    active INTEGER NOT NULL DEFAULT 1, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE sports_sale_item_details (
+                    sale_item_id INTEGER PRIMARY KEY, variant_id INTEGER NOT NULL,
+                    variant_size TEXT NOT NULL, custom_name TEXT NOT NULL DEFAULT '',
+                    custom_number TEXT NOT NULL DEFAULT '', order_mode TEXT NOT NULL,
+                    fulfillment_status TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            db.execute("INSERT INTO sports_material_types(id,code,name) VALUES(1,'shirt','Camisa avulsa')")
+            db.execute("""INSERT INTO sports_material_types(id,code,name)
+                          VALUES(2,'commemorative_coin','Moeda comemorativa')""")
+            db.commit()
+
+    def create_sports_product(self, name, type_id=1, size="M", stock=5,
+                              active=1, allow_name=0, allow_number=0, allow_backorder=0):
+        with app.app_context():
+            db = get_db()
+            product = db.execute(
+                """INSERT INTO products(name,category,price_cents,cost_cents,stock,active)
+                   VALUES(?,'Material Esportivo',2000,1000,0,?)""",
+                (name, active),
+            )
+            db.execute(
+                """INSERT INTO sports_product_config
+                   (product_id,type_id,allow_custom_name,allow_custom_number,allow_backorder)
+                   VALUES(?,?,?,?,?)""",
+                (product.lastrowid, type_id, allow_name, allow_number, allow_backorder),
+            )
+            variant = db.execute(
+                """INSERT INTO sports_product_variants(product_id,size,stock,min_stock,active)
+                   VALUES(?,?,?,1,1)""",
+                (product.lastrowid, size, stock),
+            )
+            db.commit()
+            return product.lastrowid, variant.lastrowid
+
+    def login_manager(self):
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+    def sports_sale_form(self, product_id, variant_id, **overrides):
+        form = {
+            "department": "sports", "sale_type": "player",
+            "player_id": str(self.player_id), "payment_method": "Dinheiro",
+            "product_id": [str(product_id)], "variant_id": [str(variant_id)],
+            "quantity": ["1"], "custom_name": [""], "custom_number": [""],
+            "order_mode": ["ready"],
+        }
+        form.update(overrides)
+        return form
+
+    def test_sports_catalog_restores_sized_coin_and_bar_products(self):
+        shirt_id, _ = self.create_sports_product("Camisa Teste", size="M", stock=5)
+        coin_id, _ = self.create_sports_product("Moeda Teste", type_id=2, size="Único", stock=5)
+        self.login_manager()
+
+        response = self.client.get("/sale?catalog=sports")
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Camisa Teste", html)
+        self.assertIn("Moeda Teste", html)
+        self.assertIn('"single_variant": true', html)
+        self.assertIn('"size": "\\u00danico"', html)
+        self.assertIn('data-group="Material Esportivo"', html)
+        self.assertIn("Água", html)
+        self.assertIn('data-group="Bebidas"', html)
+        self.assertNotEqual(shirt_id, coin_id)
+
+    def test_sports_ready_sale_debits_only_variant_stock(self):
+        product_id, variant_id = self.create_sports_product("Camisa Estoque", stock=5)
+        self.login_manager()
+
+        response = self.client.post("/sale", data=self.sports_sale_form(product_id, variant_id))
+        self.assertEqual(response.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT stock FROM sports_product_variants WHERE id=?", (variant_id,)).fetchone()["stock"], 4)
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (product_id,)).fetchone()["stock"], 0)
+            detail = db.execute("SELECT variant_id,order_mode,fulfillment_status FROM sports_sale_item_details").fetchone()
+            self.assertEqual((detail["variant_id"], detail["order_mode"], detail["fulfillment_status"]),
+                             (variant_id, "ready", "reserved"))
+
+    def test_sports_rejects_inactive_variant_and_zero_ready_stock(self):
+        inactive_product, inactive_variant = self.create_sports_product("Camisa Inativa", stock=5)
+        zero_product, zero_variant = self.create_sports_product("Camisa Zerada", stock=0)
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE sports_product_variants SET active=0 WHERE id=?", (inactive_variant,))
+            db.commit()
+        self.login_manager()
+
+        self.client.post("/sale", data=self.sports_sale_form(inactive_product, inactive_variant))
+        self.client.post("/sale", data=self.sports_sale_form(zero_product, zero_variant))
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT COUNT(*) total FROM sports_sale_item_details").fetchone()["total"], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) total FROM sales").fetchone()["total"], 0)
+
+    def test_sports_backorder_and_personalization_follow_configuration(self):
+        blocked_id, blocked_variant = self.create_sports_product("Sem Encomenda", stock=0)
+        allowed_id, allowed_variant = self.create_sports_product(
+            "Com Encomenda", stock=0, allow_name=1, allow_number=1, allow_backorder=1)
+        self.login_manager()
+
+        self.client.post("/sale", data=self.sports_sale_form(
+            blocked_id, blocked_variant, order_mode=["backorder"], custom_name=["Nome"]));
+        self.client.post("/sale", data=self.sports_sale_form(
+            allowed_id, allowed_variant, order_mode=["backorder"],
+            custom_name=["  Nome   Teste  "], custom_number=["10"]));
+        with app.app_context():
+            db = get_db()
+            details = db.execute("SELECT * FROM sports_sale_item_details").fetchall()
+            self.assertEqual(len(details), 1)
+            self.assertEqual(details[0]["custom_name"], "Nome Teste")
+            self.assertEqual(details[0]["custom_number"], "10")
+            self.assertEqual(details[0]["fulfillment_status"], "requested")
+            self.assertEqual(db.execute("SELECT stock FROM sports_product_variants WHERE id=?", (allowed_variant,)).fetchone()["stock"], 0)
+
+    @patch("src.routes.sales.create_pix_order")
+    def test_homologation_sports_pix_remains_blocked(self, create_order_mock):
+        response = self.client.post(
+            "/pix/mercadopago/orders", headers=self.headers(),
+            json={"department": "sports", "player_id": self.player_id,
+                  "items": [{"product_id": self.product_id, "variant_id": 45, "quantity": 1}]},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("Material Esportivo", response.get_json()["error"])
+        create_order_mock.assert_not_called()
+
+    def test_bar_sale_still_uses_products_stock(self):
+        self.login_manager()
+        response = self.client.post("/sale", data={
+            "department": "bar", "sale_type": "player", "player_id": self.player_id,
+            "payment_method": "Dinheiro", "product_id": [self.product_id], "quantity": ["1"],
+        })
+        self.assertEqual(response.status_code, 303)
+        with app.app_context():
+            self.assertEqual(get_db().execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 4)
 
     def create_order(self, order_id, quantity):
         response_data = {
