@@ -197,6 +197,47 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.get_json())
         return response.get_json()["sale_id"]
 
+    def test_orders_template_uses_sale_item_id_from_feed_and_restores_button_on_error(self):
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "orders.html"
+        source = template_path.read_text(encoding="utf-8")
+        self.assertIn('data-item-id="${item.id}"', source)
+        self.assertNotIn('data-item-id="${index}"', source)
+        self.assertNotIn('data-item-id="${item.id+1}"', source)
+        self.assertIn("button.disabled=false;button.textContent=original;", source)
+
+    def test_orders_feed_keeps_sale_item_id_distinct_from_product_id(self):
+        sale_item_id = 45
+        with app.app_context():
+            db = get_db()
+            sale_id = db.execute(
+                """INSERT INTO sales(
+                       player_id,payment_method,total_cents,paid,payment_status,
+                       ready_for_delivery,paid_at
+                   ) VALUES(?, 'Dinheiro', 300, 0, 'pending_cash', 1, CURRENT_TIMESTAMP)""",
+                (self.player_id,),
+            ).lastrowid
+            self.assertNotEqual(sale_item_id, self.product_id)
+            db.execute(
+                """INSERT INTO sale_items(
+                       id,sale_id,product_id,quantity,unit_price_cents,unit_cost_cents
+                   ) VALUES(?,?,?,?,?,?)""",
+                (sale_item_id, sale_id, self.product_id, 1, 300, 100),
+            )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        feed = self.client.get("/orders/feed", headers={"Accept": "application/json"})
+
+        self.assertEqual(feed.status_code, 200)
+        order = next(item for item in feed.get_json()["pending"] if item["id"] == sale_id)
+        self.assertEqual(order["items"][0]["id"], sale_item_id)
+
+        route_source = (Path(__file__).resolve().parents[1] / "src" / "routes" / "sales.py").read_text(encoding="utf-8")
+        self.assertIn("si.id AS sale_item_id", route_source)
+        self.assertIn("p.id AS product_id", route_source)
+        self.assertIn('"id": row["sale_item_id"]', route_source)
+
     def test_payment_approval_and_expiration_are_idempotent(self):
         sale_id = self.create_order("ORD-APPROVED", 2)
         with app.app_context():

@@ -602,7 +602,7 @@ def orders_feed():
     if all_sale_ids:
         placeholders = ",".join("?" for _ in all_sale_ids)
         items_rows = db.execute(
-            f"""SELECT si.id, si.sale_id, si.quantity, p.id, p.name,
+            f"""SELECT si.id AS sale_item_id, si.sale_id, si.quantity, p.id AS product_id, p.name,
                          COALESCE(SUM(sid.quantity), 0) AS delivered_quantity
                   FROM sale_items si
                   JOIN products p ON p.id=si.product_id
@@ -615,7 +615,7 @@ def orders_feed():
         for row in items_rows:
             sale_id = int(row['sale_id'])
             items_for_sales.setdefault(sale_id, []).append({
-                "id": row["id"],
+                "id": row["sale_item_id"],
                 "quantity": row["quantity"],
                 "name": row["name"],
                 "delivered_quantity": int(row["delivered_quantity"] or 0),
