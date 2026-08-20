@@ -496,7 +496,7 @@ def pending_delivery_pdf():
         download_name="pedidos-aguardando-retirada.pdf",
     )
 
-def delivery_order_data(db, sale):
+def delivery_order_data(db, sale, items_for_sales=None):
     # Normalize rows before reading optional columns.  sqlite3.Row and the
     # PostgreSQL adapters do not expose ``keys`` in exactly the same way; in
     # particular, iterating over ``row.keys`` (without calling it) raises
@@ -507,13 +507,16 @@ def delivery_order_data(db, sale):
         sale_keys = sale_keys()
     sale_keys = set(sale_keys or ())
     sale = {key: sale[key] for key in sale_keys}
-    items = db.execute(
-        """SELECT si.id,si.quantity,p.name,
-                  COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=si.id),0) delivered_quantity
-           FROM sale_items si
-           JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
-        (sale["id"],),
-    ).fetchall()
+    if items_for_sales and sale.get("id") in items_for_sales:
+        items = items_for_sales[sale.get("id")]
+    else:
+        items = db.execute(
+            """SELECT si.id,si.quantity,p.name,
+                      COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=si.id),0) delivered_quantity
+               FROM sale_items si
+               JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
+            (sale["id"],),
+        ).fetchall()
     # Compatibilidade com pedidos antigos: antes da retirada parcial, os
     # detalhes em sale_item_deliveries não eram gravados. Um pedido com
     # delivered_at preenchido, mas sem nenhum detalhe, foi integralmente
@@ -592,10 +595,31 @@ def orders_feed():
         f"{select} WHERE s.payment_status='canceled' AND sc.canceled_at IS NOT NULL{payment_clause} ORDER BY sc.canceled_at DESC LIMIT 20",
         payment_params,
     ).fetchall()
+
+    # Batch-fetch sale_items for all sales to avoid N+1 queries
+    all_sale_ids = [int(s['id']) for s in list(pending) + list(delivered) + list(canceled)]
+    items_for_sales = {}
+    if all_sale_ids:
+        placeholders = ",".join("?" for _ in all_sale_ids)
+        items_rows = db.execute(
+            f"""SELECT si.id, si.sale_id, si.quantity, p.name,
+                         COALESCE(SUM(sid.quantity), 0) AS delivered_quantity
+                  FROM sale_items si
+                  JOIN products p ON p.id=si.product_id
+                  LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
+                  WHERE si.sale_id IN ({placeholders})
+                  GROUP BY si.id
+                  ORDER BY si.sale_id, si.id""",
+            tuple(all_sale_ids),
+        ).fetchall()
+        for row in items_rows:
+            sid = int(row['sale_id'])
+            items_for_sales.setdefault(sid, []).append(row)
+
     return jsonify(
-        pending=[delivery_order_data(db, sale) for sale in pending],
-        delivered=[delivery_order_data(db, sale) for sale in delivered],
-        canceled=[delivery_order_data(db, sale) for sale in canceled],
+        pending=[delivery_order_data(db, sale, items_for_sales) for sale in pending],
+        delivered=[delivery_order_data(db, sale, items_for_sales) for sale in delivered],
+        canceled=[delivery_order_data(db, sale, items_for_sales) for sale in canceled],
         payment_method=payment_method,
     )
 
