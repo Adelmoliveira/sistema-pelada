@@ -19,6 +19,19 @@ from src.catalog import SPORTS_MATERIAL_CATEGORY
 
 bp = Blueprint("sales", __name__)
 PIX_TOKEN_MAX_AGE = 60 * 60
+SPORTS_FULFILLMENT_TRANSITIONS = {
+    ("ready", "reserved"): "delivered",
+    ("backorder", "requested"): "in_production",
+    ("backorder", "in_production"): "available",
+    ("backorder", "available"): "delivered",
+}
+SPORTS_FULFILLMENT_LABELS = {
+    "reserved": "Reservado",
+    "requested": "Solicitado",
+    "in_production": "Em produção",
+    "available": "Disponível para retirada",
+    "delivered": "Entregue",
+}
 
 def pix_access_token(user):
     serializer = URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="pix-qrcode")
@@ -552,6 +565,151 @@ def orders():
     if department not in ('bar', 'sports'):
         department = 'bar'
     return render_template("orders.html", department=department)
+
+@bp.get("/material-esportivo/vendas")
+@roles_allowed("manager", "staff")
+def sports_material_sales():
+    db = get_db()
+    default_status = "reserved" if g.user["role"] == "staff" else ""
+    status = request.args.get("status", default_status).strip()
+    if status not in {"", *SPORTS_FULFILLMENT_LABELS}:
+        status = default_status
+    search = request.args.get("q", "").strip()[:100]
+    where = ["p.category=?"]
+    params = [SPORTS_MATERIAL_CATEGORY]
+    if status:
+        where.append("d.fulfillment_status=?")
+        params.append(status)
+    if search:
+        where.append("""(LOWER(p.name) LIKE LOWER(?)
+                         OR LOWER(COALESCE(pl.name,'')) LIKE LOWER(?)
+                         OR LOWER(COALESCE(pl.war_name,'')) LIKE LOWER(?))""")
+        term = f"%{search}%"
+        params.extend((term, term, term))
+    items = db.execute(
+        f"""SELECT si.id sale_item_id,si.sale_id,si.quantity,si.unit_price_cents,
+                   p.name product_name,p.thumbnail_data,t.name material_type,t.code material_type_code,
+                   COALESCE(pl.war_name,pl.name,'Peladeiro') player_name,
+                   s.payment_method,s.payment_status,s.paid,s.created_at,
+                   d.variant_size,d.custom_name,d.custom_number,d.order_mode,
+                   d.fulfillment_status,d.delivered_at,u.name delivered_by_name,
+                   r.status reservation_status
+            FROM sports_sale_item_details d
+            JOIN sale_items si ON si.id=d.sale_item_id
+            JOIN sales s ON s.id=si.sale_id
+            JOIN products p ON p.id=si.product_id
+            JOIN sports_product_config config ON config.product_id=p.id
+            JOIN sports_material_types t ON t.id=config.type_id
+            LEFT JOIN players pl ON pl.id=s.player_id
+            LEFT JOIN users u ON u.id=d.delivered_by
+            LEFT JOIN sports_stock_reservations r ON r.sale_item_id=si.id
+            WHERE {' AND '.join(where)}
+            ORDER BY CASE d.fulfillment_status
+                       WHEN 'available' THEN 1 WHEN 'reserved' THEN 2
+                       WHEN 'in_production' THEN 3 WHEN 'requested' THEN 4 ELSE 5 END,
+                     s.created_at DESC,si.id DESC""",
+        tuple(params),
+    ).fetchall()
+    rows = []
+    for item in items:
+        row = dict(item)
+        row["fulfillment_label"] = SPORTS_FULFILLMENT_LABELS[row["fulfillment_status"]]
+        row["next_status"] = SPORTS_FULFILLMENT_TRANSITIONS.get(
+            (row["order_mode"], row["fulfillment_status"])
+        )
+        row["next_label"] = {
+            "in_production": "Iniciar produção",
+            "available": "Marcar como disponível",
+            "delivered": "Registrar entrega",
+        }.get(row["next_status"])
+        rows.append(row)
+    return render_template(
+        "sports_orders.html", items=rows, status=status, search=search,
+        status_labels=SPORTS_FULFILLMENT_LABELS,
+    )
+
+@bp.post("/material-esportivo/vendas/<int:sale_item_id>/status")
+@roles_allowed("manager", "staff")
+def update_sports_fulfillment(sale_item_id):
+    payload = request.get_json(silent=True) or request.form
+    target = str(payload.get("to_status") or "").strip()
+    notes = " ".join(str(payload.get("notes") or "").split())[:500]
+    db = get_db()
+    item = db.execute(
+        """SELECT d.sale_item_id,d.order_mode,d.fulfillment_status,d.delivered_at,d.delivered_by,
+                  s.id sale_id,s.payment_method,s.payment_status,s.paid,r.status reservation_status
+           FROM sports_sale_item_details d
+           JOIN sale_items si ON si.id=d.sale_item_id
+           JOIN sales s ON s.id=si.sale_id
+           LEFT JOIN sports_stock_reservations r ON r.sale_item_id=d.sale_item_id
+           WHERE d.sale_item_id=?""",
+        (sale_item_id,),
+    ).fetchone()
+    if not item:
+        return jsonify(error="Item esportivo não encontrado."), 404
+    current = item["fulfillment_status"]
+    expected = SPORTS_FULFILLMENT_TRANSITIONS.get((item["order_mode"], current))
+    if current == "delivered" and target == "delivered":
+        return jsonify(ok=True, already_delivered=True, sale_item_id=sale_item_id)
+    if not target or target != expected:
+        return jsonify(error="Transição operacional não permitida."), 409
+    payment_status = (item["payment_status"] or "").lower()
+    is_delivery = target == "delivered"
+    if payment_status in {"failed", "expired", "canceled", "refunded"}:
+        return jsonify(error="O estado do pagamento bloqueia esta operação."), 409
+    if item["payment_method"] == "Pix" and (not item["paid"] or payment_status != "approved"):
+        return jsonify(error="A entrega aguarda a aprovação do Pix."), 409
+    if is_delivery and item["reservation_status"] == "released":
+        return jsonify(error="A reserva deste item foi liberada e ele não pode ser entregue."), 409
+    if item["payment_method"] != "Dinheiro" and (not item["paid"] or payment_status != "approved"):
+        return jsonify(error="O pagamento ainda não foi confirmado."), 409
+    try:
+        with db:
+            if is_delivery and item["payment_method"] == "Dinheiro" and payment_status == "pending_cash" and not item["paid"]:
+                paid = db.execute(
+                    """UPDATE sales SET paid=1,payment_status='approved',paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP)
+                       WHERE id=? AND paid=0 AND payment_status='pending_cash'""",
+                    (item["sale_id"],),
+                )
+                if paid.rowcount != 1:
+                    raise RuntimeError("pagamento em dinheiro mudou durante a entrega")
+            if is_delivery:
+                updated = db.execute(
+                    """UPDATE sports_sale_item_details
+                       SET fulfillment_status=?,delivered_at=CURRENT_TIMESTAMP,delivered_by=?,updated_at=CURRENT_TIMESTAMP
+                       WHERE sale_item_id=? AND fulfillment_status=? AND delivered_at IS NULL""",
+                    (target, g.user["id"], sale_item_id, current),
+                )
+            else:
+                updated = db.execute(
+                    """UPDATE sports_sale_item_details SET fulfillment_status=?,updated_at=CURRENT_TIMESTAMP
+                       WHERE sale_item_id=? AND fulfillment_status=?""",
+                    (target, sale_item_id, current),
+                )
+            if updated.rowcount != 1:
+                raise ValueError("concurrent_transition")
+            db.execute(
+                """INSERT INTO sports_order_status_history
+                   (sale_item_id,from_status,to_status,changed_by,notes) VALUES(?,?,?,?,?)""",
+                (sale_item_id, current, target, g.user["id"], notes),
+            )
+    except ValueError as exc:
+        if str(exc) == "concurrent_transition":
+            latest = db.execute(
+                "SELECT fulfillment_status FROM sports_sale_item_details WHERE sale_item_id=?",
+                (sale_item_id,),
+            ).fetchone()
+            if latest and latest["fulfillment_status"] == "delivered" and target == "delivered":
+                return jsonify(ok=True, already_delivered=True, sale_item_id=sale_item_id)
+            return jsonify(error="O item foi atualizado por outro operador. Recarregue a página."), 409
+        raise
+    except Exception as exc:
+        current_app.logger.error(
+            "SPORTS_FULFILLMENT_ERROR sale_item_id=%s user_id=%s exception_type=%s",
+            sale_item_id, g.user["id"], type(exc).__name__,
+        )
+        return jsonify(error="Não foi possível atualizar o pedido esportivo."), 500
+    return jsonify(ok=True, sale_item_id=sale_item_id, from_status=current, to_status=target)
 
 @bp.get("/orders/delivered")
 @roles_allowed("manager", "staff")

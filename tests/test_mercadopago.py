@@ -196,7 +196,20 @@ class MercadoPagoFlowTest(unittest.TestCase):
                     sale_item_id INTEGER PRIMARY KEY, variant_id INTEGER NOT NULL,
                     variant_size TEXT NOT NULL, custom_name TEXT NOT NULL DEFAULT '',
                     custom_number TEXT NOT NULL DEFAULT '', order_mode TEXT NOT NULL,
-                    fulfillment_status TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    fulfillment_status TEXT NOT NULL, delivered_at TEXT, delivered_by INTEGER,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE sports_stock_reservations (
+                    id INTEGER PRIMARY KEY, sale_item_id INTEGER NOT NULL UNIQUE,
+                    variant_id INTEGER NOT NULL, quantity INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'reserved', expires_at TEXT,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE sports_order_status_history (
+                    id INTEGER PRIMARY KEY, sale_item_id INTEGER NOT NULL,
+                    from_status TEXT NOT NULL, to_status TEXT NOT NULL,
+                    changed_by INTEGER, notes TEXT NOT NULL DEFAULT '',
+                    changed_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
             """)
             db.execute("INSERT INTO sports_material_types(id,code,name) VALUES(1,'shirt','Camisa avulsa')")
@@ -329,6 +342,108 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         with app.app_context():
             self.assertEqual(get_db().execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 4)
+
+    def test_sports_orders_menu_respects_manager_staff_and_client_roles(self):
+        self.login_manager()
+        manager_html = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn("Cadastro de Material Esportivo", manager_html)
+        self.assertIn("Pedidos de Material Esportivo", manager_html)
+        self.assertIn("Relatório de Material Esportivo", manager_html)
+
+        with app.app_context():
+            db = get_db()
+            staff_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES('staff-sports','Staff','hash','staff')"
+            ).lastrowid
+            client_id = db.execute(
+                """INSERT INTO users(username,name,password_hash,role,player_id)
+                   VALUES('client-sports','Cliente','hash','client',?)""",
+                (self.player_id,),
+            ).lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        staff_html = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn("Pedidos de Material Esportivo", staff_html)
+        self.assertIn("Cadastro de Material Esportivo", staff_html)
+        self.assertNotIn("Relatório de Material Esportivo", staff_html)
+        self.assertEqual(self.client.get("/material-esportivo/vendas").status_code, 200)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+        client_html = self.client.get("/sale").get_data(as_text=True)
+        self.assertNotIn("Pedidos de Material Esportivo", client_html)
+        self.assertNotIn("Cadastro de Material Esportivo", client_html)
+        self.assertNotIn("Relatório de Material Esportivo", client_html)
+        self.assertIn("Compra rápida", client_html)
+        self.assertIn("Material Esportivo", client_html)
+        self.assertNotEqual(self.client.get("/material-esportivo/vendas").status_code, 200)
+
+    def test_sports_orders_staff_defaults_reserved_manager_sees_all_and_excludes_bar(self):
+        reserved_product, reserved_variant = self.create_sports_product("Camisa Reservada", stock=2)
+        requested_product, requested_variant = self.create_sports_product(
+            "Camisa Solicitada", stock=0, allow_backorder=1)
+        self.login_manager()
+        self.client.post("/sale", data=self.sports_sale_form(reserved_product, reserved_variant))
+        self.client.post("/sale", data=self.sports_sale_form(
+            requested_product, requested_variant, order_mode=["backorder"]))
+        self.client.post("/sale", data={
+            "department": "bar", "sale_type": "player", "player_id": self.player_id,
+            "payment_method": "Dinheiro", "product_id": [self.product_id], "quantity": ["1"],
+        })
+
+        manager_page = self.client.get("/material-esportivo/vendas")
+        manager_html = manager_page.get_data(as_text=True)
+        self.assertEqual(manager_page.status_code, 200)
+        self.assertIn("Camisa Reservada", manager_html)
+        self.assertIn("Camisa Solicitada", manager_html)
+        self.assertNotIn("Água", manager_html)
+
+        with app.app_context():
+            db = get_db()
+            staff_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES('staff-filter','Staff','hash','staff')"
+            ).lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        staff_html = self.client.get("/material-esportivo/vendas").get_data(as_text=True)
+        self.assertIn("Camisa Reservada", staff_html)
+        self.assertNotIn("Camisa Solicitada", staff_html)
+        self.assertIn('value="reserved" selected', staff_html)
+
+    def test_sports_fulfillment_updates_only_selected_item_and_records_history(self):
+        first_product, first_variant = self.create_sports_product("Camisa Um", stock=2)
+        second_product, second_variant = self.create_sports_product("Camisa Dois", stock=2)
+        self.login_manager()
+        self.client.post("/sale", data=self.sports_sale_form(first_product, first_variant))
+        self.client.post("/sale", data=self.sports_sale_form(second_product, second_variant))
+        with app.app_context():
+            db = get_db()
+            details = db.execute(
+                """SELECT d.sale_item_id,si.product_id FROM sports_sale_item_details d
+                   JOIN sale_items si ON si.id=d.sale_item_id ORDER BY d.sale_item_id"""
+            ).fetchall()
+            target_id = next(row["sale_item_id"] for row in details if row["product_id"] == first_product)
+            other_id = next(row["sale_item_id"] for row in details if row["product_id"] == second_product)
+
+        response = self.client.post(
+            f"/material-esportivo/vendas/{target_id}/status",
+            json={"to_status": "delivered"},
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT fulfillment_status FROM sports_sale_item_details WHERE sale_item_id=?", (target_id,)
+            ).fetchone()["fulfillment_status"], "delivered")
+            self.assertEqual(db.execute(
+                "SELECT fulfillment_status FROM sports_sale_item_details WHERE sale_item_id=?", (other_id,)
+            ).fetchone()["fulfillment_status"], "reserved")
+            history = db.execute(
+                "SELECT from_status,to_status FROM sports_order_status_history WHERE sale_item_id=?", (target_id,)
+            ).fetchone()
+            self.assertEqual((history["from_status"], history["to_status"]), ("reserved", "delivered"))
 
     def create_order(self, order_id, quantity):
         response_data = {
