@@ -8,14 +8,40 @@ CREATE TABLE IF NOT EXISTS sale_delivery_operations (
 CREATE INDEX IF NOT EXISTS idx_sale_delivery_operations_sale
     ON sale_delivery_operations (sale_id, delivered_at);
 
-CREATE TABLE IF NOT EXISTS sale_item_deliveries (
-    id BIGSERIAL PRIMARY KEY,
-    delivery_operation_id BIGINT NOT NULL REFERENCES sale_delivery_operations(id) ON DELETE CASCADE,
-    sale_item_id BIGINT NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
-    quantity INTEGER NOT NULL CHECK (quantity > 0),
-    delivered_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
-    delivered_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'sale_item_deliveries'
+          AND column_name = 'delivery_operation_id'
+    ) THEN
+        ALTER TABLE sale_item_deliveries
+            ADD COLUMN delivery_operation_id BIGINT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.constraint_column_usage ccu
+          ON tc.constraint_name = ccu.constraint_name
+         AND tc.table_schema = ccu.table_schema
+        WHERE tc.table_schema = 'public'
+          AND tc.table_name = 'sale_item_deliveries'
+          AND tc.constraint_type = 'FORE KEY'
+          AND ccu.column_name = 'delivery_operation_id'
+    ) THEN
+        ALTER TABLE sale_item_deliveries
+            ADD CONSTRAINT sale_item_deliveries_delivery_operation_id_fkey
+            FOREIGN KEY (delivery_operation_id)
+            REFERENCES sale_delivery_operations(id)
+            ON DELETE CASCADE;
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_item
     ON sale_item_deliveries (sale_item_id);

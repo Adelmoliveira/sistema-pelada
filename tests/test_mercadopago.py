@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import time
@@ -477,6 +478,41 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='notification_outbox'"
             ).fetchone()
         self.assertIsNotNone(row)
+
+    def test_sqlite_migrates_legacy_sale_item_deliveries_without_backfill(self):
+        legacy_path = str(Path(self.tempdir.name) / "legacy_delivery.db")
+        with sqlite3.connect(legacy_path) as conn:
+            conn.execute("CREATE TABLE users(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, password_required INTEGER NOT NULL DEFAULT 1, role TEXT NOT NULL DEFAULT 'manager', active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+            conn.execute("CREATE TABLE players(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1)")
+            conn.execute("CREATE TABLE products(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, category TEXT NOT NULL, price_cents INTEGER NOT NULL, cost_cents INTEGER NOT NULL, stock INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+            conn.execute("CREATE TABLE sales(id INTEGER PRIMARY KEY AUTOINCREMENT, player_id INTEGER NOT NULL REFERENCES players(id), payment_method TEXT NOT NULL, total_cents INTEGER NOT NULL, paid INTEGER NOT NULL DEFAULT 0, payment_status TEXT NOT NULL DEFAULT 'approved', ready_for_delivery INTEGER NOT NULL DEFAULT 0, delivered_at TEXT, delivered_by INTEGER, notes TEXT DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+            conn.execute("CREATE TABLE sale_items(id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER NOT NULL REFERENCES sales(id), product_id INTEGER NOT NULL REFERENCES products(id), quantity INTEGER NOT NULL, unit_price_cents INTEGER NOT NULL, unit_cost_cents INTEGER NOT NULL DEFAULT 0)")
+            conn.execute("CREATE TABLE sale_item_deliveries(id INTEGER PRIMARY KEY AUTOINCREMENT, sale_item_id INTEGER NOT NULL REFERENCES sale_items(id), quantity INTEGER NOT NULL, delivered_by INTEGER, delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+            conn.execute("INSERT INTO users(username,name,password_hash,password_required,role,active,created_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)", ("legacy", "Legacy", "hash", 1, "manager", 1))
+            conn.execute("INSERT INTO players(name,email,active) VALUES(?, ?, 1)", ("Jogador", "jogador@example.com"))
+            conn.execute("INSERT INTO products(name,category,price_cents,cost_cents,stock,active,created_at) VALUES(?,?,?,?,?,1,CURRENT_TIMESTAMP)", ("Cerveja", "Bebida", 500, 200, 10))
+            conn.execute("INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery,created_at) VALUES(?,?,?,?,?,1,CURRENT_TIMESTAMP)", (1, "Dinheiro", 500, 1, "approved"))
+            conn.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)", (1, 1, 2, 500, 200))
+            conn.execute("INSERT INTO sale_item_deliveries(sale_item_id,quantity,delivered_by,delivered_at) VALUES(?,?,?,?)", (1, 1, None, "2024-01-01T12:00:00"))
+            conn.commit()
+        initialize_sqlite_database(legacy_path)
+        with sqlite3.connect(legacy_path) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(sale_item_deliveries)").fetchall()}
+            self.assertIn("delivery_operation_id", columns)
+            legacy_value = conn.execute("SELECT delivery_operation_id FROM sale_item_deliveries WHERE id=1").fetchone()[0]
+            self.assertIsNone(legacy_value)
+            sale_id = conn.execute("SELECT sale_id FROM sale_items WHERE id=1").fetchone()[0]
+            conn.execute("INSERT INTO sale_delivery_operations(sale_id,delivered_by,delivered_at) VALUES(?,?,CURRENT_TIMESTAMP)", (sale_id, None))
+            operation_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                "INSERT INTO sale_item_deliveries(sale_item_id,quantity,delivery_operation_id,delivered_by,delivered_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
+                (1, 1, operation_id, None),
+            )
+            row = conn.execute(
+                "SELECT delivery_operation_id FROM sale_item_deliveries WHERE id=?",
+                (2,),
+            ).fetchone()
+            self.assertEqual(row[0], operation_id)
 
     def test_webhook_signature(self):
         data_id = "ORDABC123"

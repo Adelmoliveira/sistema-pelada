@@ -1364,29 +1364,18 @@ def migrate_sale_delivery_operations(connection):
                 delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
-    item_columns = {row[1] for row in connection.execute("PRAGMA table_info(sale_item_deliveries)").fetchall()}
-    if "delivery_operation_id" not in item_columns:
-        connection.execute("ALTER TABLE sale_item_deliveries ADD COLUMN delivery_operation_id INTEGER")
-        legacy_rows = connection.execute(
-            "SELECT id,sale_item_id,delivered_by,delivered_at FROM sale_item_deliveries ORDER BY id"
-        ).fetchall()
-        for row in legacy_rows:
-            sale_item = connection.execute("SELECT sale_id FROM sale_items WHERE id=?", (row["sale_item_id"],)).fetchone()
-            if not sale_item:
-                continue
-            operation_id = connection.execute(
-                "INSERT INTO sale_delivery_operations(sale_id,delivered_by,delivered_at) VALUES(?,?,?)",
-                (sale_item["sale_id"], row["delivered_by"], row["delivered_at"]),
-            ).lastrowid
+    item_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sale_item_deliveries'"
+    ).fetchone()
+    if item_exists:
+        item_columns = {row[1] for row in connection.execute("PRAGMA table_info(sale_item_deliveries)").fetchall()}
+        if "delivery_operation_id" not in item_columns:
             connection.execute(
-                "UPDATE sale_item_deliveries SET delivery_operation_id=? WHERE id=?",
-                (operation_id, row["id"]),
+                "ALTER TABLE sale_item_deliveries ADD COLUMN delivery_operation_id INTEGER REFERENCES sale_delivery_operations(id) ON DELETE CASCADE"
             )
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_delivery_operations_sale ON sale_delivery_operations(sale_id,delivered_at)")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_operation ON sale_item_deliveries(delivery_operation_id)")
-        connection.execute("UPDATE sale_item_deliveries SET delivery_operation_id = 0 WHERE delivery_operation_id IS NULL")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_delivery_operations_sale ON sale_delivery_operations(sale_id,delivered_at)")
-    connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_operation ON sale_item_deliveries(delivery_operation_id)")
+    if item_exists:
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_operation ON sale_item_deliveries(delivery_operation_id)")
     connection.commit()
 
 
@@ -1395,6 +1384,7 @@ def init_sqlite(wrapper):
     migrate_user_roles(conn)
     migrate_payment_method(conn)
     migrate_credit_payment_method(conn)
+    migrate_sale_delivery_operations(conn)
     conn.executescript(SCHEMA)
     migrate_sale_delivery_operations(conn)
     topup_columns = {row[1] for row in conn.execute("PRAGMA table_info(bar_credit_topups)")}
