@@ -13,6 +13,7 @@ except ImportError:
     pass
 
 from src.db import database_error_category, get_db, is_transient_database_error, read_user_from_session
+from src.environment import environment_config
 from src.utils import money, brdate, cpfmask, local_today, month_year_label, service_medals
 from src.routes.auth import bp as auth_bp, home_endpoint
 from src.routes.players import bp as players_bp
@@ -50,7 +51,6 @@ app.config.update(
     GMAIL_SMTP_USER=os.environ.get("GMAIL_SMTP_USER"),
     GMAIL_APP_PASSWORD=os.environ.get("GMAIL_APP_PASSWORD"),
     CRON_SECRET=os.environ.get("CRON_SECRET"),
-    APP_ENV=(os.environ.get("APP_ENV") or "").strip().lower(),
     VAPID_PUBLIC_KEY=os.environ.get("VAPID_PUBLIC_KEY"),
     VAPID_PRIVATE_KEY=os.environ.get("VAPID_PRIVATE_KEY"),
     VAPID_SUBJECT=os.environ.get("VAPID_SUBJECT", "mailto:diretoriagpcta@gmail.com"),
@@ -60,6 +60,7 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=is_vercel,
 )
+app.config.update(environment_config())
 
 if is_vercel:
     app.logger.info(f"[VERCEL] DATABASE_URL configurada: {bool(app.config['DATABASE_URL'])}")
@@ -310,7 +311,7 @@ def inject_user():
             unread_restock_notifications = 0
             pending_restock_requests = 0
     medals = service_medals(player["football_join_date"]) if player else []
-    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "unread_restock_notifications": unread_restock_notifications, "pending_restock_requests": pending_restock_requests, "service_medals": medals}
+    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "unread_restock_notifications": unread_restock_notifications, "pending_restock_requests": pending_restock_requests, "service_medals": medals, "is_homologation": app.config.get("IS_HOMOLOGATION", False)}
 
 if __name__ == "__main__":
     app.run(debug=True)

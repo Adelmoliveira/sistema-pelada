@@ -72,6 +72,8 @@ def require_pix_access_token():
     return False
 
 def mercadopago_config():
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return None, None
     return (
         current_app.config.get("MERCADOPAGO_ACCESS_TOKEN"),
         current_app.config.get("MERCADOPAGO_POS_ID"),
@@ -1149,6 +1151,8 @@ def pix_qrcode():
 def mercadopago_create_order():
     if not require_pix_access_token():
         return jsonify(error="A autorização do Pix expirou. Recarregue a página e tente novamente."), 401
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return jsonify(error="Pagamento Pix indisponível na homologação."), 403
     body = request.get_json(silent=True) or {}
     if body.get("department") == "sports" or any(
             item.get("department") == "sports" or item.get("variant_id")

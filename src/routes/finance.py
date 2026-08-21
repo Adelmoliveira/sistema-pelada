@@ -986,6 +986,8 @@ def payment_reminders_cron():
     expected = f"Bearer {secret}"
     if not secret or not hmac.compare_digest(authorization, expected):
         return jsonify(error="Não autorizado."), 401
+    if not current_app.config.get("CRON_ENABLED", True):
+        return jsonify(error="Cron de lembretes indisponível na homologação."), 403
 
     db = get_db()
     settings = get_reminder_settings(db)

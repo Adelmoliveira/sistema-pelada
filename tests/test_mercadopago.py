@@ -36,6 +36,7 @@ from src.db import (
     read_user_from_session,
     run_postgres_migrations,
 )
+from src.environment import environment_config
 from src.routes.auth import make_password_hash
 from src.routes.football import _sumula
 from src.routes.sales import pix_access_token
@@ -332,6 +333,59 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertIn("Material Esportivo", response.get_json()["error"])
         create_order_mock.assert_not_called()
+
+    def test_environment_config_wires_homologation_safeguards_and_banner(self):
+        homologation = environment_config("homologation")
+        self.assertEqual(homologation, {
+            "APP_ENV": "homologation",
+            "IS_HOMOLOGATION": True,
+            "EXTERNAL_PAYMENTS_ENABLED": False,
+            "CRON_ENABLED": False,
+        })
+        self.login_manager()
+        with patch.dict(app.config, homologation):
+            page = self.client.get("/sale")
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("AMBIENTE DE HOMOLOGAÇÃO", page.get_data(as_text=True))
+
+    @patch("src.routes.sales.create_pix_order")
+    def test_homologation_blocks_external_sales_pix(self, create_order_mock):
+        with patch.dict(app.config, environment_config("homologation")):
+            response = self.client.post(
+                "/pix/mercadopago/orders",
+                headers=self.headers(),
+                json={"player_id": self.player_id,
+                      "items": [{"product_id": self.product_id, "quantity": 1}]},
+            )
+        self.assertEqual(response.status_code, 403)
+        create_order_mock.assert_not_called()
+
+    def test_homologation_blocks_external_credit_topup(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE users SET role='client',player_id=? WHERE id=?", (self.player_id, self.user_id))
+            db.commit()
+        self.login_manager()
+        with patch.dict(app.config, environment_config("homologation")):
+            response = self.client.post("/creditos/comprar", json={"amount_cents": 1000})
+        self.assertEqual(response.status_code, 403)
+
+    def test_production_environment_enables_external_payments_and_hides_banner(self):
+        production = environment_config("production")
+        self.assertEqual(production, {
+            "APP_ENV": "production",
+            "IS_HOMOLOGATION": False,
+            "EXTERNAL_PAYMENTS_ENABLED": True,
+            "CRON_ENABLED": True,
+        })
+        self.login_manager()
+        with patch.dict(app.config, production):
+            page = self.client.get("/sale")
+            self.assertEqual(page.status_code, 200)
+            self.assertNotIn("AMBIENTE DE HOMOLOGAÇÃO", page.get_data(as_text=True))
+            from src.routes.sales import mercadopago_enabled
+            with app.test_request_context():
+                self.assertTrue(mercadopago_enabled())
 
     def test_bar_sale_still_uses_products_stock(self):
         self.login_manager()
@@ -726,6 +780,36 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.get_json()["sent"], 1)
         self.assertTrue(push_mock.called)
 
+    def test_homologation_outbox_worker_runs_without_external_dispatch(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,ready_for_delivery) VALUES(?,?,?,?,?,1)",
+                (self.player_id, "Dinheiro", 200, 1, "approved"),
+            )
+            sale_id = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            event_key = f"delivery:{sale_id}:homologation_delivery_push"
+            db.execute(
+                "INSERT INTO notification_outbox(event_key,event_type,sale_id,delivery_id,payload,status,attempts,available_at) VALUES(?,?,?,?,?,'pending',0,CURRENT_TIMESTAMP)",
+                (event_key, "delivery_push", sale_id, sale_id, '{}'),
+            )
+            db.commit()
+        homologation = environment_config("homologation")
+        with patch.dict(app.config, homologation), \
+             patch.dict(os.environ, {"APP_ENV": "homologation"}), \
+             patch("src.services.notification_outbox.send_player_push_once") as push_mock:
+            response = self.client.get(
+                "/cron/process-notification-outbox",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        push_mock.assert_not_called()
+        with app.app_context():
+            row = get_db().execute(
+                "SELECT status,last_error FROM notification_outbox WHERE event_key=?", (event_key,)
+            ).fetchone()
+        self.assertEqual((row["status"], row["last_error"]), ("sent", "APP_ENV=homologation"))
+
     def test_worker_retry_and_failed_after_limit(self):
         with app.app_context():
             db = get_db()
@@ -789,6 +873,16 @@ class MercadoPagoFlowTest(unittest.TestCase):
     def test_notification_outbox_cron_requires_authentication(self):
         response = self.client.get("/cron/process-notification-outbox")
         self.assertEqual(response.status_code, 401)
+
+    def test_homologation_blocks_payment_reminders_but_not_outbox_route(self):
+        with patch.dict(app.config, environment_config("homologation")), \
+             patch("src.routes.finance.dispatch_reminders") as dispatch_mock:
+            response = self.client.get(
+                "/cron/payment-reminders",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 403)
+        dispatch_mock.assert_not_called()
 
     def test_sqlite_bootstrap_includes_notification_outbox(self):
         with app.app_context():
