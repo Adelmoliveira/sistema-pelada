@@ -32,7 +32,7 @@ BEGIN
          AND tc.table_schema = ccu.table_schema
         WHERE tc.table_schema = 'public'
           AND tc.table_name = 'sale_item_deliveries'
-          AND tc.constraint_type = 'FORE KEY'
+          AND tc.constraint_type = 'FOREIGN KEY'
           AND ccu.column_name = 'delivery_operation_id'
     ) THEN
         ALTER TABLE sale_item_deliveries
