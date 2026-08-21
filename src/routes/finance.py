@@ -975,7 +975,7 @@ def process_notification_outbox_cron():
     if not _cron_authorized():
         return jsonify(error="Não autorizado."), 401
     from src.services.notification_outbox import process_notification_outbox
-    result = process_notification_outbox(get_db(), batch_size=10)
+    result = process_notification_outbox(get_db())
     return jsonify(ok=True, **result)
 
 

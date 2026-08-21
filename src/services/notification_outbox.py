@@ -7,7 +7,7 @@ from flask import current_app
 from src.services.purchase_receipts import send_delivery_update, send_purchase_receipt
 from src.services.push_notifications import send_player_push_once
 
-OUTBOX_BATCH_SIZE = 10
+OUTBOX_BATCH_SIZE = 50
 OUTBOX_MAX_ATTEMPTS = 5
 OUTBOX_EVENT_TYPES = (
     "delivery_push",

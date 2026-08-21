@@ -874,6 +874,17 @@ class MercadoPagoFlowTest(unittest.TestCase):
         response = self.client.get("/cron/process-notification-outbox")
         self.assertEqual(response.status_code, 401)
 
+    def test_notification_outbox_cron_uses_service_default_batch_size(self):
+        result = {"processed": 0, "sent": 0, "retried": 0, "failed": 0}
+        with patch("src.services.notification_outbox.process_notification_outbox", return_value=result) as worker:
+            response = self.client.get(
+                "/cron/process-notification-outbox",
+                headers={"Authorization": "Bearer cron-secret-test"},
+            )
+        self.assertEqual(response.status_code, 200)
+        worker.assert_called_once()
+        self.assertEqual(worker.call_args.kwargs, {})
+
     def test_homologation_blocks_payment_reminders_but_not_outbox_route(self):
         with patch.dict(app.config, environment_config("homologation")), \
              patch("src.routes.finance.dispatch_reminders") as dispatch_mock:
