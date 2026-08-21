@@ -346,7 +346,9 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with patch.dict(app.config, homologation):
             page = self.client.get("/sale")
             self.assertEqual(page.status_code, 200)
-            self.assertIn("AMBIENTE DE HOMOLOGAÇÃO", page.get_data(as_text=True))
+            page_text = page.get_data(as_text=True)
+            self.assertIn("AMBIENTE DE HOMOLOGAÇÃO", page_text)
+            self.assertIn("Pix indisponível na homologação", page_text)
 
     @patch("src.routes.sales.create_pix_order")
     def test_homologation_blocks_external_sales_pix(self, create_order_mock):
@@ -382,7 +384,10 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with patch.dict(app.config, production):
             page = self.client.get("/sale")
             self.assertEqual(page.status_code, 200)
-            self.assertNotIn("AMBIENTE DE HOMOLOGAÇÃO", page.get_data(as_text=True))
+            page_text = page.get_data(as_text=True)
+            self.assertNotIn("AMBIENTE DE HOMOLOGAÇÃO", page_text)
+            self.assertNotIn("Pix indisponível na homologação", page_text)
+            self.assertIn("<option>Pix</option>", page_text)
             from src.routes.sales import mercadopago_enabled
             with app.test_request_context():
                 self.assertTrue(mercadopago_enabled())
