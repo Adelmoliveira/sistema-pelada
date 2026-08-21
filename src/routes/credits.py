@@ -139,6 +139,8 @@ def manage_refund(topup_id):
 @bp.post("/comprar")
 @roles_allowed("client")
 def purchase():
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return jsonify(error="Recarga Pix indisponível na homologação."), 403
     raw_amount = request.form.get("amount_cents") or (request.get_json(silent=True) or {}).get("amount_cents")
     try:
         amount_cents = int(raw_amount)
@@ -148,7 +150,7 @@ def purchase():
         return jsonify(error="Escolha um dos valores disponíveis para recarga."), 400
     if amount_cents > max_topup_amount():
         return jsonify(error="O valor máximo de uma recarga é limitado por segurança."), 400
-    access_token = current_app.config.get("MERCADOPAGO_ACCESS_TOKEN")
+    access_token = current_app.config.get("MERCADOPAGO_ACCESS_TOKEN") if current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True) else None
     if not access_token:
         return jsonify(error="A integração com Mercado Pago ainda não foi configurada."), 503
     db = get_db()
@@ -201,7 +203,7 @@ def status(topup_id):
     topup = db.execute("SELECT * FROM bar_credit_topups WHERE id=? AND player_id=?", (topup_id, _player_id())).fetchone()
     if not topup:
         return jsonify(error="Recarga não encontrada."), 404
-    access_token = current_app.config.get("MERCADOPAGO_ACCESS_TOKEN")
+    access_token = current_app.config.get("MERCADOPAGO_ACCESS_TOKEN") if current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True) else None
     if topup["payment_status"] == "pending" and topup["mercadopago_order_id"] and access_token:
         try:
             order = get_order(access_token, topup["mercadopago_order_id"])

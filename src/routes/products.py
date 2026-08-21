@@ -1,6 +1,8 @@
 from datetime import date, timedelta
 from io import BytesIO
 import base64
+import re
+import unicodedata
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, g, send_file, abort
 from werkzeug.utils import secure_filename
@@ -12,13 +14,14 @@ from src.services.stock_report_pdf import build_stock_report_pdf, stock_report_d
 from src.services.stock_alerts import notify_low_stock
 from src.services.material_photos import process_material_photo
 from src.utils import local_today
+from src.catalog import SPORTS_MATERIAL_CATEGORY
 
 bp = Blueprint("products", __name__)
 
 PRODUCT_CATEGORIES = (
     "Cerveja", "Refrigerante", "Água Mineral com gás",
     "Água Mineral sem gás", "Energético", "Suco", "Isotônico",
-    "Salgadinho", "Alimentos", "Outros",
+    "Salgadinho", "Alimentos", SPORTS_MATERIAL_CATEGORY, "Outros",
 )
 
 RESTOCK_STATUS_LABELS = {
@@ -122,6 +125,8 @@ def products():
             category = request.form.get("category", "")
             if category not in PRODUCT_CATEGORIES:
                 raise ValueError("Selecione uma categoria válida.")
+            if category == SPORTS_MATERIAL_CATEGORY:
+                raise ValueError("Use o cadastro próprio de Material Esportivo.")
             processed_photo = process_material_photo(request.files.get("photo"))
             photo_data, thumbnail_data = processed_photo or ("", "")
             units_per_case = int(request.form.get("units_per_case") or 0)
@@ -166,10 +171,239 @@ def products():
 
     items = db.execute(
         """SELECT id,name,category,package_type,units_per_case,price_cents,cost_cents,
-                  stock,min_stock,supplier_email,thumbnail_data,expiry_date,active,created_at
-           FROM products ORDER BY active DESC,category,name"""
+                   stock,min_stock,supplier_email,thumbnail_data,expiry_date,active,created_at
+            FROM products WHERE category<>?
+            ORDER BY active DESC,category,name""",
+        (SPORTS_MATERIAL_CATEGORY,),
     ).fetchall()
-    return render_template("products.html", products=items, product_categories=PRODUCT_CATEGORIES)
+    return render_template(
+        "products.html", products=items,
+        product_categories=tuple(category for category in PRODUCT_CATEGORIES if category != SPORTS_MATERIAL_CATEGORY),
+        catalog="bar", form_action=url_for("products.products"),
+    )
+
+
+COIN_MATERIAL_TYPE_CODE = "commemorative_coin"
+COIN_TECHNICAL_SIZE = "Único"
+
+
+def _sports_material_type(db, type_id):
+    material_type = db.execute(
+        "SELECT id,code FROM sports_material_types WHERE id=? AND active", (type_id,)
+    ).fetchone()
+    if not material_type:
+        raise ValueError("Selecione um tipo de material válido.")
+    return material_type
+
+
+def _non_negative_stock(value, label):
+    value = int(value or 0)
+    if value < 0:
+        raise ValueError(f"{label} não pode ser negativo.")
+    return value
+
+
+def _sports_variants_from_form(form, material_type_code=None):
+    if material_type_code == COIN_MATERIAL_TYPE_CODE:
+        return [{
+            "size": COIN_TECHNICAL_SIZE,
+            "stock": _non_negative_stock(form.get("coin_stock"), "O estoque"),
+            "min_stock": _non_negative_stock(form.get("coin_min_stock"), "O estoque mínimo"),
+            "active": True,
+        }]
+    sizes = form.getlist("variant_size")
+    stocks = form.getlist("variant_stock")
+    minimums = form.getlist("variant_min_stock")
+    active_values = form.getlist("variant_active")
+    variants = []
+    seen = set()
+    for size, stock, minimum, active in zip(sizes, stocks, minimums, active_values):
+        size = " ".join(size.strip().split())
+        if not size:
+            continue
+        key = size.casefold()
+        if key in seen:
+            raise ValueError(f"O tamanho {size} foi informado mais de uma vez.")
+        seen.add(key)
+        stock = int(stock or 0)
+        minimum = int(minimum or 0)
+        if stock < 0:
+            raise ValueError(f"O estoque do tamanho {size} não pode ser negativo.")
+        if minimum < 0:
+            raise ValueError(f"O estoque mínimo do tamanho {size} não pode ser negativo.")
+        variants.append({"size": size, "stock": stock, "min_stock": minimum, "active": active == "1"})
+    if not variants:
+        raise ValueError("Cadastre ao menos um tamanho para o material esportivo.")
+    return variants
+
+
+def _sports_types(db, include_inactive=False):
+    where = "" if include_inactive else "WHERE active"
+    return db.execute(
+        f"SELECT id,code,name,active,sort_order FROM sports_material_types {where} ORDER BY sort_order,name"
+    ).fetchall()
+
+
+def _save_sports_config(db, product_id, type_id, variants, form):
+    material_type = _sports_material_type(db, type_id)
+    is_coin = material_type["code"] == COIN_MATERIAL_TYPE_CODE
+    if is_coin:
+        variant = variants[0]
+        variants = [{"size": COIN_TECHNICAL_SIZE, "stock": variant["stock"],
+                     "min_stock": variant["min_stock"], "active": True}]
+    db.execute(
+        """INSERT INTO sports_product_config
+           (product_id,type_id,allow_custom_name,allow_custom_number,allow_backorder,updated_at)
+           VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+           ON CONFLICT(product_id) DO UPDATE SET type_id=excluded.type_id,
+           allow_custom_name=excluded.allow_custom_name,
+           allow_custom_number=excluded.allow_custom_number,
+           allow_backorder=excluded.allow_backorder,updated_at=CURRENT_TIMESTAMP
+           RETURNING product_id""",
+        (product_id, type_id, False if is_coin else form.get("allow_custom_name") == "1",
+         False if is_coin else form.get("allow_custom_number") == "1",
+         form.get("allow_backorder") == "1"),
+    )
+    db.execute("UPDATE sports_product_variants SET active=FALSE,updated_at=CURRENT_TIMESTAMP WHERE product_id=?", (product_id,))
+    for variant in variants:
+        db.execute(
+            """INSERT INTO sports_product_variants(product_id,size,stock,min_stock,active)
+               VALUES(?,?,?,?,?) ON CONFLICT(product_id,size) DO UPDATE SET
+               stock=excluded.stock,min_stock=excluded.min_stock,active=excluded.active,
+               updated_at=CURRENT_TIMESTAMP""",
+            (product_id, variant["size"], variant["stock"], variant["min_stock"], variant["active"]),
+        )
+
+
+@bp.route("/material-esportivo", methods=["GET", "POST"])
+@roles_allowed("manager", "staff")
+def sports_materials():
+    db = get_db()
+    if request.method == "POST":
+        try:
+            type_id = int(request.form.get("type_id") or 0)
+            material_type = _sports_material_type(db, type_id)
+            variants = _sports_variants_from_form(request.form, material_type["code"])
+            processed_photo = process_material_photo(request.files.get("photo"))
+            photo_data, thumbnail_data = processed_photo or ("", "")
+            with db:
+                created = db.execute(
+                    """INSERT INTO products
+                       (name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,
+                        supplier_email,photo_data,thumbnail_data,expiry_date,active)
+                       VALUES(?,?, '',0,?,?,0,0,'',?,?,'',?)""",
+                    (request.form["name"].strip(), SPORTS_MATERIAL_CATEGORY,
+                     cents(request.form["price"]), cents(request.form.get("cost", "0")),
+                     photo_data, thumbnail_data, int(request.form.get("active") == "1")),
+                )
+                _save_sports_config(db, created.lastrowid, type_id, variants, request.form)
+            flash("Material esportivo cadastrado.", "success")
+            return redirect(url_for("products.sports_materials"), code=303)
+        except ValueError as exc:
+            flash(str(exc), "danger")
+        except Exception as exc:
+            current_app.logger.error("SPORTS_PRODUCT_CREATE_ERROR exception_type=%s", type(exc).__name__)
+            if "unique" in str(exc).lower() and "name" in str(exc).lower():
+                flash("Já existe um produto cadastrado com esse nome.", "danger")
+            else:
+                flash("Não foi possível cadastrar o material esportivo.", "danger")
+        return redirect(url_for("products.sports_materials"), code=303)
+
+    items = db.execute(
+        """SELECT p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
+                  config.product_id configured,type.name sports_type,type.code sports_type_code,
+                  config.allow_custom_name,config.allow_custom_number,config.allow_backorder,
+                  COALESCE(SUM(CASE WHEN variant.active THEN variant.stock ELSE 0 END),0) variant_stock,
+                  COUNT(variant.id) variant_count
+           FROM products p
+           LEFT JOIN sports_product_config config ON config.product_id=p.id
+           LEFT JOIN sports_material_types type ON type.id=config.type_id
+           LEFT JOIN sports_product_variants variant ON variant.product_id=p.id
+           WHERE p.category=?
+           GROUP BY p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
+                    config.product_id,type.name,type.code,config.allow_custom_name,
+                    config.allow_custom_number,config.allow_backorder
+           ORDER BY p.active DESC,p.name""",
+        (SPORTS_MATERIAL_CATEGORY,),
+    ).fetchall()
+    return render_template(
+        "sports_materials.html", products=items, sports_types=_sports_types(db),
+        coin_type_code=COIN_MATERIAL_TYPE_CODE,
+    )
+
+
+@bp.route("/material-esportivo/<int:product_id>/editar", methods=["GET", "POST"])
+@roles_allowed("manager", "staff")
+def edit_sports_material(product_id):
+    db = get_db()
+    product = db.execute(
+        """SELECT p.id,p.name,p.price_cents,p.cost_cents,p.photo_data,p.thumbnail_data,p.active,
+                  config.type_id,config.allow_custom_name,config.allow_custom_number,config.allow_backorder
+           FROM products p LEFT JOIN sports_product_config config ON config.product_id=p.id
+           WHERE p.id=? AND p.category=?""", (product_id, SPORTS_MATERIAL_CATEGORY),
+    ).fetchone()
+    if not product:
+        flash("Material esportivo não encontrado.", "warning")
+        return redirect(url_for("products.sports_materials"))
+    if request.method == "POST":
+        try:
+            type_id = int(request.form.get("type_id") or 0)
+            material_type = _sports_material_type(db, type_id)
+            variants = _sports_variants_from_form(request.form, material_type["code"])
+            photo_data, thumbnail_data = product["photo_data"] or "", product["thumbnail_data"] or ""
+            if request.form.get("remove_photo") == "1":
+                photo_data, thumbnail_data = "", ""
+            processed_photo = process_material_photo(request.files.get("photo"))
+            if processed_photo:
+                photo_data, thumbnail_data = processed_photo
+            with db:
+                db.execute(
+                    """UPDATE products SET name=?,price_cents=?,cost_cents=?,photo_data=?,thumbnail_data=?,
+                       active=?,package_type='',units_per_case=0,stock=0,min_stock=0 WHERE id=?""",
+                    (request.form["name"].strip(), cents(request.form["price"]),
+                     cents(request.form.get("cost", "0")), photo_data, thumbnail_data,
+                     int(request.form.get("active") == "1"), product_id),
+                )
+                _save_sports_config(db, product_id, type_id, variants, request.form)
+            flash("Material esportivo atualizado.", "success")
+            return redirect(url_for("products.sports_materials"), code=303)
+        except ValueError as exc:
+            flash(str(exc), "danger")
+        except Exception as exc:
+            current_app.logger.error("SPORTS_PRODUCT_UPDATE_ERROR product_id=%s exception_type=%s", product_id, type(exc).__name__)
+            flash("Não foi possível atualizar o material esportivo.", "danger")
+    variants = db.execute(
+        """SELECT id,size,stock,min_stock,active FROM sports_product_variants
+           WHERE product_id=? ORDER BY active DESC,id""", (product_id,),
+    ).fetchall()
+    is_coin = any(type["id"] == product["type_id"] and type["code"] == COIN_MATERIAL_TYPE_CODE
+                  for type in _sports_types(db, include_inactive=True))
+    coin_variant = next((variant for variant in variants if variant["size"] == COIN_TECHNICAL_SIZE), None)
+    return render_template("edit_sports_material.html", product=product, variants=variants,
+                           sports_types=_sports_types(db), is_coin=is_coin,
+                           coin_variant=coin_variant,
+                           coin_type_code=COIN_MATERIAL_TYPE_CODE,
+                           coin_technical_size=COIN_TECHNICAL_SIZE)
+
+
+@bp.post("/material-esportivo/tipos")
+@roles_allowed("manager")
+def create_sports_material_type():
+    name = " ".join(request.form.get("name", "").split())
+    if len(name) < 2:
+        flash("Informe o nome do novo tipo.", "danger")
+        return redirect(url_for("products.sports_materials"), code=303)
+    code = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii").lower()
+    code = re.sub(r"[^a-z0-9]+", "_", code).strip("_")
+    try:
+        db = get_db()
+        order = db.execute("SELECT COALESCE(MAX(sort_order),0)+10 next_order FROM sports_material_types").fetchone()["next_order"]
+        db.execute("INSERT INTO sports_material_types(code,name,sort_order) VALUES(?,?,?)", (code, name, order))
+        db.commit()
+        flash("Tipo de material adicionado.", "success")
+    except Exception:
+        flash("Esse tipo já existe ou não pôde ser cadastrado.", "danger")
+    return redirect(url_for("products.sports_materials"), code=303)
 
 @bp.post("/products/<int:product_id>/toggle")
 @roles_allowed("manager", "staff")
@@ -187,7 +421,7 @@ def toggle_product(product_id):
         except Exception as exc:
             current_app.logger.error(f"Erro ao alternar atividade do produto {product_id}: {exc}")
             flash("Erro interno ao atualizar status do produto.", "danger")
-    return redirect(url_for("products.products"))
+    return redirect(url_for("products.sports_materials") if product and product["category"] == SPORTS_MATERIAL_CATEGORY else url_for("products.products"))
 
 @bp.route("/products/<int:product_id>/edit", methods=["GET", "POST"])
 @roles_allowed("manager", "staff")
@@ -197,10 +431,13 @@ def edit_product(product_id):
     if not product:
         flash("Produto não encontrado.", "warning")
         return redirect(url_for("products.products"))
+    if product["category"] == SPORTS_MATERIAL_CATEGORY:
+        return redirect(url_for("products.edit_sports_material", product_id=product_id), code=303)
     
     if request.method == "POST":
         try:
-            category = request.form.get("category", "")
+            original_is_sports = product["category"] == SPORTS_MATERIAL_CATEGORY
+            category = SPORTS_MATERIAL_CATEGORY if original_is_sports else request.form.get("category", "")
             if category not in PRODUCT_CATEGORIES:
                 raise ValueError("Selecione uma categoria válida.")
             photo_data = product["photo_data"] or ""
@@ -248,7 +485,7 @@ def edit_product(product_id):
             db.commit()
             notify_low_stock(db, [product_id])
             flash("Produto atualizado.", "success")
-            return redirect(url_for("products.products"))
+            return redirect(url_for("products.sports_materials") if original_is_sports else url_for("products.products"))
         except ValueError as exc:
             flash(str(exc), "danger")
         except Exception as exc:
@@ -258,7 +495,8 @@ def edit_product(product_id):
             else:
                 flash("Erro interno ao atualizar produto.", "danger")
         product = db.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
-    return render_template("edit_product.html", product=product, product_categories=PRODUCT_CATEGORIES)
+    categories = (SPORTS_MATERIAL_CATEGORY,) if product["category"] == SPORTS_MATERIAL_CATEGORY else tuple(category for category in PRODUCT_CATEGORIES if category != SPORTS_MATERIAL_CATEGORY)
+    return render_template("edit_product.html", product=product, product_categories=categories)
 
 @bp.route("/stock", methods=["GET", "POST"])
 @roles_allowed("manager", "staff")
@@ -267,7 +505,7 @@ def stock():
     if request.method == "POST":
         try:
             pid = int(request.form["product_id"])
-            product = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+            product = db.execute("SELECT * FROM products WHERE id=? AND category<>?", (pid, SPORTS_MATERIAL_CATEGORY)).fetchone()
             if not product:
                 raise ValueError("Produto inválido.")
             
@@ -327,7 +565,8 @@ def stock():
     product_rows = db.execute(
         """SELECT id,name,category,package_type,units_per_case,price_cents,cost_cents,
                   stock,min_stock,supplier_email,expiry_date,active,created_at
-           FROM products WHERE active=1 ORDER BY stock,name"""
+           FROM products WHERE active=1 AND category<>? ORDER BY stock,name""",
+        (SPORTS_MATERIAL_CATEGORY,),
     ).fetchall()
     alert_rows = [dict(row) for row in product_rows]
     sales = db.execute(
@@ -351,7 +590,11 @@ def stock():
         weekly_average = stats["prior"] / 4
         if stats["recent"] >= 5 and stats["recent"] > weekly_average * 2:
             product["recent_usage"] = stats["recent"]; stock_alerts["unusual"].append(product)
-    history_total = db.execute("SELECT COUNT(*) total FROM restocks").fetchone()["total"]
+    history_total = db.execute(
+        """SELECT COUNT(*) total FROM restocks r JOIN products p ON p.id=r.product_id
+           WHERE p.category<>?""",
+        (SPORTS_MATERIAL_CATEGORY,),
+    ).fetchone()["total"]
     try:
         history_page = max(1, int(request.args.get("history_page", 1)))
     except (TypeError, ValueError):
@@ -369,13 +612,16 @@ def stock():
             SELECT MAX(c2.id) FROM restock_corrections c2 WHERE c2.restock_id=r.id
         )
         LEFT JOIN users u ON u.id=c.created_by
+        WHERE p.category<>?
         ORDER BY r.id DESC LIMIT ? OFFSET ?""",
-        (6, history_offset),
+        (SPORTS_MATERIAL_CATEGORY, 6, history_offset),
     ).fetchall()
     adjustments = db.execute(
         """SELECT a.*,p.name product_name,u.name user_name FROM stock_adjustments a
         JOIN products p ON p.id=a.product_id LEFT JOIN users u ON u.id=a.user_id
+        WHERE p.category<>?
         ORDER BY a.id DESC LIMIT 30"""
+        , (SPORTS_MATERIAL_CATEGORY,)
     ).fetchall()
     return render_template("stock.html", products=product_rows, history=history, adjustments=adjustments,
                            stock_alerts=stock_alerts,

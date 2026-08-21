@@ -15,10 +15,13 @@
   <link rel="stylesheet" href="{{url_for('static',filename='style.css')}}">
 </head>
 <body>
+{% if is_homologation %}<div class="alert alert-warning rounded-0 text-center fw-bold py-2 mb-0" role="status">🧪 AMBIENTE DE HOMOLOGAÇÃO</div>{% endif %}
 {% if current_user and not (guest_mode|default(false)) %}
 {% set endpoint=request.endpoint or '' %}
+{% set client_sports_catalog_active=endpoint == 'sales.sale' and request.args.get('catalog') == 'sports' %}
 {% set cash_active=endpoint.startswith('cash.') %}
-{% set bar_active=endpoint.startswith('sales.') or endpoint.startswith('products.') or cash_active %}
+{% set sports_active=endpoint in ['products.sports_materials','sales.sports_material_sales','reports.sports_material_report'] %}
+{% set bar_active=(endpoint.startswith('sales.') or endpoint.startswith('products.') or cash_active) and not sports_active %}
 {% set events_active=endpoint.startswith('events.') %}
 {% set deliveries_active=endpoint in ['sales.pending_delivery','sales.pending_delivery_pdf','sales.delivered_history','sales.canceled_history'] %}
 {% set finance_active=endpoint.startswith('finance.') %}
@@ -44,6 +47,9 @@
             {% if current_user.role in ['manager','staff'] %}<a class="{{'active' if cash_active}}" href="{{url_for('cash.dashboard')}}">Caixa</a><a class="{{'active' if endpoint == 'sales.pix'}}" href="{{url_for('sales.pix')}}">Conferir Pix</a><a class="{{'active' if endpoint == 'products.stock'}}" href="{{url_for('products.stock')}}">Estoque</a><a class="{{'active' if endpoint.startswith('products.products') or endpoint.startswith('products.edit_product')}}" href="{{url_for('products.products')}}">Produtos</a><a class="orders-link {{'staff-orders-link' if current_user.role == 'staff' else ''}} {{'active' if endpoint == 'sales.orders'}}" href="{{url_for('sales.orders')}}">Pedidos</a><a class="{{'active' if endpoint == 'products.restock_request' or endpoint == 'products.restock_requests'}}" href="{{url_for('products.restock_requests' if current_user.role == 'manager' else 'products.restock_request')}}">Reposição{% if current_user.role == 'manager' and pending_restock_requests %} <span class="badge rounded-pill text-bg-danger">{{pending_restock_requests}}</span>{% elif current_user.role == 'staff' and unread_restock_notifications %} <span class="badge rounded-pill text-bg-primary">{{unread_restock_notifications}}</span>{% endif %}</a><div class="sidebar-submenu-group {{'active' if deliveries_active}}"><span>Entregas</span><a class="{{'active' if endpoint == 'sales.pending_delivery'}}" href="{{url_for('sales.pending_delivery')}}">Aguardando retiradas</a><a class="{{'active' if endpoint == 'sales.delivered_history'}}" href="{{url_for('sales.delivered_history')}}">Entregues recentemente</a><a class="{{'active' if endpoint == 'sales.canceled_history'}}" href="{{url_for('sales.canceled_history')}}">Cancelados recentemente</a></div>{% endif %}
             <a class="{{'sale-link ' if current_user.role not in ['staff','manager'] else ''}}{{'active' if endpoint == 'sales.sale'}}" href="{{url_for('sales.sale')}}">{{'Compra rápida' if current_user.role == 'client' else 'Venda rápida'}}</a>
           </div></div>
+        </div><div class="sidebar-group">
+          <button class="sidebar-module {{'active' if sports_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-sports" aria-expanded="{{'true' if sports_active else 'false'}}" aria-controls="sidebar-sports"><span class="sidebar-module-icon">🏃</span><span>Material Esportivo</span><span class="sidebar-chevron">⌄</span></button>
+          <div class="collapse {{'show' if sports_active}}" id="sidebar-sports" data-bs-parent="#sidebar-nav"><div class="sidebar-submenu"><a class="{{'active' if endpoint == 'products.sports_materials'}}" href="{{url_for('products.sports_materials')}}">Cadastro de Material Esportivo</a><a class="{{'active' if endpoint == 'sales.sports_material_sales'}}" href="{{url_for('sales.sports_material_sales')}}">Pedidos de Material Esportivo</a>{% if current_user.role == 'manager' %}<a class="{{'active' if endpoint == 'reports.sports_material_report'}}" href="{{url_for('reports.sports_material_report')}}">Relatório de Material Esportivo</a>{% endif %}</div></div>
         </div>{% elif current_user.role == 'client' %}<a class="sidebar-module sidebar-direct sale-link {{'active' if endpoint == 'sales.sale'}}" href="{{url_for('sales.sale')}}"><span class="sidebar-module-icon">B</span><span>Compra rápida</span></a>{% endif %}
         {% if current_user.role in ['manager','staff'] %}<div class="sidebar-group">
           <button class="sidebar-module {{'active' if events_active}}" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-events" aria-expanded="{{'true' if events_active else 'false'}}" aria-controls="sidebar-events"><span class="sidebar-module-icon">🎉</span><span>Eventos/Festas</span><span class="sidebar-chevron">⌄</span></button>

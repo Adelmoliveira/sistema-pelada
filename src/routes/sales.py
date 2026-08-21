@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 from flask import Blueprint, render_template, request, redirect, url_for, flash, g, jsonify, current_app, send_file
 from itsdangerous import BadData, URLSafeTimedSerializer
 from src.db import get_db
@@ -13,13 +13,25 @@ from src.services.mercadopago import (
     validate_webhook_signature,
 )
 from src.services.stock_alerts import notify_low_stock
-from src.services.purchase_receipts import send_purchase_receipt, send_delivery_update
-from src.services.push_notifications import send_player_push_once
 from src.services.bar_credits import approve_topup, balance as credit_balance, consume as consume_credit, low_balance_threshold, notify_low_balance
 from src.services.pending_delivery_pdf import build_pending_delivery_pdf
+from src.catalog import SPORTS_MATERIAL_CATEGORY
 
 bp = Blueprint("sales", __name__)
 PIX_TOKEN_MAX_AGE = 60 * 60
+SPORTS_FULFILLMENT_TRANSITIONS = {
+    ("ready", "reserved"): "delivered",
+    ("backorder", "requested"): "in_production",
+    ("backorder", "in_production"): "available",
+    ("backorder", "available"): "delivered",
+}
+SPORTS_FULFILLMENT_LABELS = {
+    "reserved": "Reservado",
+    "requested": "Solicitado",
+    "in_production": "Em produção",
+    "available": "Disponível para retirada",
+    "delivered": "Entregue",
+}
 
 def pix_access_token(user):
     serializer = URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="pix-qrcode")
@@ -60,6 +72,8 @@ def require_pix_access_token():
     return False
 
 def mercadopago_config():
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return None, None
     return (
         current_app.config.get("MERCADOPAGO_ACCESS_TOKEN"),
         current_app.config.get("MERCADOPAGO_POS_ID"),
@@ -119,11 +133,105 @@ def apply_mercadopago_status(db, sale, order):
 
     return sale["payment_status"]
 
+def _clean_sports_text(value, limit, label):
+    value = " ".join(str(value or "").strip().split())
+    if len(value) > limit:
+        raise ValueError(f"{label} deve ter no máximo {limit} caracteres.")
+    return value
+
+def _create_sports_sale(db):
+    if request.form.get("sale_type", "player").strip().lower() == "event" or request.form.get("event_id"):
+        raise ValueError("Material Esportivo não está disponível para Convidado / Evento.")
+    method = request.form.get("payment_method", "")
+    if method == "Pix":
+        raise ValueError("Pagamento Pix para Material Esportivo será disponibilizado em breve.")
+    if method not in {"Dinheiro", "Créditos"}:
+        raise ValueError("Material Esportivo aceita Dinheiro ou Créditos nesta etapa.")
+    player_id = int(g.user["player_id"] or 0) if g.user["role"] == "client" else int(request.form.get("player_id") or 0)
+    if not player_id:
+        raise ValueError("Selecione o peladeiro.")
+    raw_items = zip(request.form.getlist("product_id"), request.form.getlist("variant_id"),
+                    request.form.getlist("quantity"), request.form.getlist("custom_name"),
+                    request.form.getlist("custom_number"), request.form.getlist("order_mode"))
+    items = []
+    for product_id, variant_id, quantity, custom_name, custom_number, order_mode in raw_items:
+        quantity = int(quantity or 0)
+        if quantity > 0:
+            items.append((int(product_id), int(variant_id), quantity,
+                          _clean_sports_text(custom_name, 40, "Nome personalizado"),
+                          _clean_sports_text(custom_number, 10, "Número"), order_mode))
+    if not items:
+        raise ValueError("Escolha ao menos um material esportivo.")
+    variant_ids = [item[1] for item in items]
+    placeholders = ",".join("?" for _ in variant_ids)
+    rows = db.execute(f"""SELECT v.id variant_id,v.product_id,v.size,v.stock,v.active variant_active,
+        p.name,p.price_cents,p.cost_cents,p.active product_active,p.category,
+        c.allow_custom_name,c.allow_custom_number,c.allow_backorder
+        FROM sports_product_variants v JOIN products p ON p.id=v.product_id
+        JOIN sports_product_config c ON c.product_id=p.id WHERE v.id IN ({placeholders})""",
+        tuple(variant_ids)).fetchall()
+    by_variant = {row["variant_id"]: row for row in rows}
+    if len(by_variant) != len(set(variant_ids)):
+        raise ValueError("Uma variante selecionada não está mais disponível.")
+    total = 0
+    for product_id, variant_id, quantity, custom_name, custom_number, order_mode in items:
+        row = by_variant[variant_id]
+        if (row["product_id"] != product_id or not row["product_active"] or
+                not row["variant_active"] or row["category"] != SPORTS_MATERIAL_CATEGORY):
+            raise ValueError("Produto ou tamanho esportivo inválido.")
+        if custom_name and not row["allow_custom_name"]:
+            raise ValueError("Este produto não permite nome personalizado.")
+        if custom_number and not row["allow_custom_number"]:
+            raise ValueError("Este produto não permite número personalizado.")
+        if order_mode not in {"ready", "backorder"}:
+            raise ValueError("Escolha pronta entrega ou encomenda.")
+        if order_mode == "backorder" and not row["allow_backorder"]:
+            raise ValueError("Este produto não permite encomenda.")
+        total += row["price_cents"] * quantity
+    cash_pending = method == "Dinheiro"
+    with db:
+        sale = db.execute("""INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,paid_at,ready_for_delivery,notes)
+            VALUES(?,?,?,?,?,CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE NULL END,0,?)""",
+            (player_id, method, total, 0 if cash_pending else 1,
+             "pending_cash" if cash_pending else "approved", 0 if cash_pending else 1,
+             request.form.get("notes", "").strip()))
+        for product_id, variant_id, quantity, custom_name, custom_number, order_mode in items:
+            row = by_variant[variant_id]
+            if order_mode == "ready":
+                updated = db.execute("""UPDATE sports_product_variants SET stock=stock-?,updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND product_id=? AND active AND stock>=?""",
+                    (quantity, variant_id, product_id, quantity))
+                if updated.rowcount != 1:
+                    raise ValueError(f"Estoque insuficiente para {row['name']} — {row['size']}.")
+            sale_item = db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                (sale.lastrowid, product_id, quantity, row["price_cents"], row["cost_cents"]))
+            db.execute("""INSERT INTO sports_sale_item_details
+                (sale_item_id,variant_id,variant_size,custom_name,custom_number,order_mode,fulfillment_status)
+                VALUES(?,?,?,?,?,?,?) RETURNING sale_item_id""",
+                (sale_item.lastrowid, variant_id, row["size"], custom_name, custom_number,
+                 order_mode, "reserved" if order_mode == "ready" else "requested"))
+        if method == "Créditos":
+            if g.user["role"] != "client":
+                raise ValueError("Somente o peladeiro pode pagar com créditos.")
+            consume_credit(db, player_id, total, sale.lastrowid, g.user["id"])
+    return sale.lastrowid
+
 @bp.route("/sale", methods=["GET", "POST"])
 @roles_allowed("manager", "staff", "client")
 def sale():
     db = get_db()
     if request.method == "POST":
+        if request.form.get("department") == "sports":
+            try:
+                sale_id = _create_sports_sale(db)
+                flash(f"Pedido esportivo #{sale_id} registrado com sucesso!", "success")
+                return redirect(url_for("sales.sale", catalog="sports", cart_cleared="sports"), code=303)
+            except ValueError as exc:
+                flash(str(exc), "danger")
+            except Exception as exc:
+                current_app.logger.error("SPORTS_SALE_ERROR exception_type=%s", type(exc).__name__)
+                flash("Erro interno ao processar a compra esportiva.", "danger")
+            return redirect(url_for("sales.sale", catalog="sports"), code=303)
         product_ids = request.form.getlist("product_id")
         quantities = request.form.getlist("quantity")
         requested = {}
@@ -245,8 +353,8 @@ def sale():
            FROM products p
            LEFT JOIN sale_items si ON si.product_id=p.id
            LEFT JOIN sales s ON s.id=si.sale_id
-           WHERE p.active=1 AND p.stock>0
-           GROUP BY p.id"""
+           WHERE p.active=1 AND p.stock>0 AND p.category<>?
+           GROUP BY p.id""", (SPORTS_MATERIAL_CATEGORY,)
     ).fetchall()
     product_data = []
     beverage_categories = {"cerveja", "refrigerante", "água mineral com gás", "água mineral sem gás", "energético", "suco", "isotônico"}
@@ -259,13 +367,36 @@ def sale():
         category = (product.get("category") or "").strip().lower()
         product["group"] = "Bebidas" if category in beverage_categories or "bebida" in category else "Salgados" if category in snack_categories or "salgad" in category else "Alimentos" if "alimento" in category else "Outros"
         product_data.append(product)
+    sports_rows = db.execute("""SELECT p.id,p.name,p.category,p.price_cents,p.cost_cents,p.thumbnail_data,
+        t.name sports_type,t.code sports_type_code,c.allow_custom_name,c.allow_custom_number,c.allow_backorder,
+        v.id variant_id,v.size variant_size,v.stock variant_stock,v.min_stock variant_min_stock,v.active variant_active
+        FROM products p JOIN sports_product_config c ON c.product_id=p.id
+        JOIN sports_material_types t ON t.id=c.type_id
+        JOIN sports_product_variants v ON v.product_id=p.id AND v.active
+        WHERE p.active=1 AND p.category=? ORDER BY p.name,v.id""", (SPORTS_MATERIAL_CATEGORY,)).fetchall()
+    sports_products = {}
+    for row in sports_rows:
+        product = sports_products.setdefault(row["id"], {"id":row["id"], "name":row["name"],
+            "category":row["category"], "price_cents":row["price_cents"], "cost_cents":row["cost_cents"],
+            "thumbnail_data":row["thumbnail_data"], "stock":0, "min_stock":0, "sold_quantity":0,
+            "group":SPORTS_MATERIAL_CATEGORY, "sports_type":row["sports_type"],
+            "single_variant":row["sports_type_code"] == "commemorative_coin",
+            "allow_custom_name":bool(row["allow_custom_name"]),
+            "allow_custom_number":bool(row["allow_custom_number"]),
+            "allow_backorder":bool(row["allow_backorder"]), "variants":[]})
+        product["variants"].append({"id":row["variant_id"], "size":row["variant_size"],
+            "stock":int(row["variant_stock"] or 0), "min_stock":int(row["variant_min_stock"] or 0),
+            "active":bool(row["variant_active"])})
+        product["stock"] += int(row["variant_stock"] or 0)
+        product["min_stock"] += int(row["variant_min_stock"] or 0)
+    product_data.extend(sports_products.values())
     product_data.sort(key=lambda product: (-int(product.get("sold_quantity") or 0), (product.get("category") or "").lower(), (product.get("name") or "").lower()))
     product_rows = product_data
     client_credit_balance = credit_balance(db, g.user["player_id"])["balance_cents"] if g.user["role"] == "client" and g.user["player_id"] else 0
     open_events = db.execute(
         "SELECT id,name,event_date FROM bar_events WHERE status='open' ORDER BY event_date DESC,id DESC"
     ).fetchall() if g.user["role"] in ("manager", "staff") else []
-    product_groups = [group for group in ("Bebidas", "Alimentos", "Salgados", "Outros") if any(product["group"] == group for product in product_data)]
+    product_groups = [group for group in ("Bebidas", "Alimentos", "Salgados", "Outros", SPORTS_MATERIAL_CATEGORY) if any(product["group"] == group for product in product_data)]
     return render_template(
         "sale.html",
         players=player_rows,
@@ -431,7 +562,156 @@ def pix():
 @bp.get("/orders")
 @roles_allowed("manager", "staff")
 def orders():
-    return render_template("orders.html")
+    # Ensure templates always receive a department value. Default to 'bar'.
+    department = request.args.get('department', 'bar')
+    if department not in ('bar', 'sports'):
+        department = 'bar'
+    return render_template("orders.html", department=department)
+
+@bp.get("/material-esportivo/vendas")
+@roles_allowed("manager", "staff")
+def sports_material_sales():
+    db = get_db()
+    default_status = "reserved" if g.user["role"] == "staff" else ""
+    status = request.args.get("status", default_status).strip()
+    if status not in {"", *SPORTS_FULFILLMENT_LABELS}:
+        status = default_status
+    search = request.args.get("q", "").strip()[:100]
+    where = ["p.category=?"]
+    params = [SPORTS_MATERIAL_CATEGORY]
+    if status:
+        where.append("d.fulfillment_status=?")
+        params.append(status)
+    if search:
+        where.append("""(LOWER(p.name) LIKE LOWER(?)
+                         OR LOWER(COALESCE(pl.name,'')) LIKE LOWER(?)
+                         OR LOWER(COALESCE(pl.war_name,'')) LIKE LOWER(?))""")
+        term = f"%{search}%"
+        params.extend((term, term, term))
+    items = db.execute(
+        f"""SELECT si.id sale_item_id,si.sale_id,si.quantity,si.unit_price_cents,
+                   p.name product_name,p.thumbnail_data,t.name material_type,t.code material_type_code,
+                   COALESCE(pl.war_name,pl.name,'Peladeiro') player_name,
+                   s.payment_method,s.payment_status,s.paid,s.created_at,
+                   d.variant_size,d.custom_name,d.custom_number,d.order_mode,
+                   d.fulfillment_status,d.delivered_at,u.name delivered_by_name,
+                   r.status reservation_status
+            FROM sports_sale_item_details d
+            JOIN sale_items si ON si.id=d.sale_item_id
+            JOIN sales s ON s.id=si.sale_id
+            JOIN products p ON p.id=si.product_id
+            JOIN sports_product_config config ON config.product_id=p.id
+            JOIN sports_material_types t ON t.id=config.type_id
+            LEFT JOIN players pl ON pl.id=s.player_id
+            LEFT JOIN users u ON u.id=d.delivered_by
+            LEFT JOIN sports_stock_reservations r ON r.sale_item_id=si.id
+            WHERE {' AND '.join(where)}
+            ORDER BY CASE d.fulfillment_status
+                       WHEN 'available' THEN 1 WHEN 'reserved' THEN 2
+                       WHEN 'in_production' THEN 3 WHEN 'requested' THEN 4 ELSE 5 END,
+                     s.created_at DESC,si.id DESC""",
+        tuple(params),
+    ).fetchall()
+    rows = []
+    for item in items:
+        row = dict(item)
+        row["fulfillment_label"] = SPORTS_FULFILLMENT_LABELS[row["fulfillment_status"]]
+        row["next_status"] = SPORTS_FULFILLMENT_TRANSITIONS.get(
+            (row["order_mode"], row["fulfillment_status"])
+        )
+        row["next_label"] = {
+            "in_production": "Iniciar produção",
+            "available": "Marcar como disponível",
+            "delivered": "Registrar entrega",
+        }.get(row["next_status"])
+        rows.append(row)
+    return render_template(
+        "sports_orders.html", items=rows, status=status, search=search,
+        status_labels=SPORTS_FULFILLMENT_LABELS,
+    )
+
+@bp.post("/material-esportivo/vendas/<int:sale_item_id>/status")
+@roles_allowed("manager", "staff")
+def update_sports_fulfillment(sale_item_id):
+    payload = request.get_json(silent=True) or request.form
+    target = str(payload.get("to_status") or "").strip()
+    notes = " ".join(str(payload.get("notes") or "").split())[:500]
+    db = get_db()
+    item = db.execute(
+        """SELECT d.sale_item_id,d.order_mode,d.fulfillment_status,d.delivered_at,d.delivered_by,
+                  s.id sale_id,s.payment_method,s.payment_status,s.paid,r.status reservation_status
+           FROM sports_sale_item_details d
+           JOIN sale_items si ON si.id=d.sale_item_id
+           JOIN sales s ON s.id=si.sale_id
+           LEFT JOIN sports_stock_reservations r ON r.sale_item_id=d.sale_item_id
+           WHERE d.sale_item_id=?""",
+        (sale_item_id,),
+    ).fetchone()
+    if not item:
+        return jsonify(error="Item esportivo não encontrado."), 404
+    current = item["fulfillment_status"]
+    expected = SPORTS_FULFILLMENT_TRANSITIONS.get((item["order_mode"], current))
+    if current == "delivered" and target == "delivered":
+        return jsonify(ok=True, already_delivered=True, sale_item_id=sale_item_id)
+    if not target or target != expected:
+        return jsonify(error="Transição operacional não permitida."), 409
+    payment_status = (item["payment_status"] or "").lower()
+    is_delivery = target == "delivered"
+    if payment_status in {"failed", "expired", "canceled", "refunded"}:
+        return jsonify(error="O estado do pagamento bloqueia esta operação."), 409
+    if item["payment_method"] == "Pix" and (not item["paid"] or payment_status != "approved"):
+        return jsonify(error="A entrega aguarda a aprovação do Pix."), 409
+    if is_delivery and item["reservation_status"] == "released":
+        return jsonify(error="A reserva deste item foi liberada e ele não pode ser entregue."), 409
+    if item["payment_method"] != "Dinheiro" and (not item["paid"] or payment_status != "approved"):
+        return jsonify(error="O pagamento ainda não foi confirmado."), 409
+    try:
+        with db:
+            if is_delivery and item["payment_method"] == "Dinheiro" and payment_status == "pending_cash" and not item["paid"]:
+                paid = db.execute(
+                    """UPDATE sales SET paid=1,payment_status='approved',paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP)
+                       WHERE id=? AND paid=0 AND payment_status='pending_cash'""",
+                    (item["sale_id"],),
+                )
+                if paid.rowcount != 1:
+                    raise RuntimeError("pagamento em dinheiro mudou durante a entrega")
+            if is_delivery:
+                updated = db.execute(
+                    """UPDATE sports_sale_item_details
+                       SET fulfillment_status=?,delivered_at=CURRENT_TIMESTAMP,delivered_by=?,updated_at=CURRENT_TIMESTAMP
+                       WHERE sale_item_id=? AND fulfillment_status=? AND delivered_at IS NULL""",
+                    (target, g.user["id"], sale_item_id, current),
+                )
+            else:
+                updated = db.execute(
+                    """UPDATE sports_sale_item_details SET fulfillment_status=?,updated_at=CURRENT_TIMESTAMP
+                       WHERE sale_item_id=? AND fulfillment_status=?""",
+                    (target, sale_item_id, current),
+                )
+            if updated.rowcount != 1:
+                raise ValueError("concurrent_transition")
+            db.execute(
+                """INSERT INTO sports_order_status_history
+                   (sale_item_id,from_status,to_status,changed_by,notes) VALUES(?,?,?,?,?)""",
+                (sale_item_id, current, target, g.user["id"], notes),
+            )
+    except ValueError as exc:
+        if str(exc) == "concurrent_transition":
+            latest = db.execute(
+                "SELECT fulfillment_status FROM sports_sale_item_details WHERE sale_item_id=?",
+                (sale_item_id,),
+            ).fetchone()
+            if latest and latest["fulfillment_status"] == "delivered" and target == "delivered":
+                return jsonify(ok=True, already_delivered=True, sale_item_id=sale_item_id)
+            return jsonify(error="O item foi atualizado por outro operador. Recarregue a página."), 409
+        raise
+    except Exception as exc:
+        current_app.logger.error(
+            "SPORTS_FULFILLMENT_ERROR sale_item_id=%s user_id=%s exception_type=%s",
+            sale_item_id, g.user["id"], type(exc).__name__,
+        )
+        return jsonify(error="Não foi possível atualizar o pedido esportivo."), 500
+    return jsonify(ok=True, sale_item_id=sale_item_id, from_status=current, to_status=target)
 
 @bp.get("/orders/delivered")
 @roles_allowed("manager", "staff")
@@ -494,7 +774,7 @@ def pending_delivery_pdf():
         download_name="pedidos-aguardando-retirada.pdf",
     )
 
-def delivery_order_data(db, sale):
+def delivery_order_data(db, sale, items_for_sales=None):
     # Normalize rows before reading optional columns.  sqlite3.Row and the
     # PostgreSQL adapters do not expose ``keys`` in exactly the same way; in
     # particular, iterating over ``row.keys`` (without calling it) raises
@@ -505,24 +785,27 @@ def delivery_order_data(db, sale):
         sale_keys = sale_keys()
     sale_keys = set(sale_keys or ())
     sale = {key: sale[key] for key in sale_keys}
-    items = db.execute(
-        """SELECT si.id,si.quantity,p.name,
-                  COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=si.id),0) delivered_quantity
-           FROM sale_items si
-           JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
-        (sale["id"],),
-    ).fetchall()
+    if items_for_sales and sale.get("id") in items_for_sales:
+        items = items_for_sales[sale.get("id")]
+    else:
+        items = db.execute(
+            """SELECT si.id,si.quantity,p.name,
+                      COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=si.id),0) delivered_quantity
+               FROM sale_items si
+               JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
+            (sale["id"],),
+        ).fetchall()
+        item_data_rows = []
+        for item in items:
+            item_keys = getattr(item, "keys", None)
+            if callable(item_keys):
+                item_keys = item_keys()
+            item_data_rows.append({key: item[key] for key in set(item_keys or ())})
+        items = item_data_rows
     # Compatibilidade com pedidos antigos: antes da retirada parcial, os
     # detalhes em sale_item_deliveries não eram gravados. Um pedido com
     # delivered_at preenchido, mas sem nenhum detalhe, foi integralmente
     # entregue e não deve exibir itens pendentes.
-    item_data_rows = []
-    for item in items:
-        item_keys = getattr(item, "keys", None)
-        if callable(item_keys):
-            item_keys = item_keys()
-        item_data_rows.append({key: item[key] for key in set(item_keys or ())})
-    items = item_data_rows
     if sale.get("delivered_at") and items and not any(int(item.get("delivered_quantity") or 0) > 0 for item in items):
         items = [dict(item, delivered_quantity=item.get("quantity")) for item in items]
     item_data = [{
@@ -590,10 +873,36 @@ def orders_feed():
         f"{select} WHERE s.payment_status='canceled' AND sc.canceled_at IS NOT NULL{payment_clause} ORDER BY sc.canceled_at DESC LIMIT 20",
         payment_params,
     ).fetchall()
+
+    # Batch-fetch sale_items for all sales to avoid N+1 queries
+    all_sale_ids = [int(s['id']) for s in list(pending) + list(delivered) + list(canceled)]
+    items_for_sales = {}
+    if all_sale_ids:
+        placeholders = ",".join("?" for _ in all_sale_ids)
+        items_rows = db.execute(
+            f"""SELECT si.id AS sale_item_id, si.sale_id, si.quantity, p.id AS product_id, p.name,
+                         COALESCE(SUM(sid.quantity), 0) AS delivered_quantity
+                  FROM sale_items si
+                  JOIN products p ON p.id=si.product_id
+                  LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
+                  WHERE si.sale_id IN ({placeholders})
+                  GROUP BY si.id, si.sale_id, si.quantity, p.id, p.name
+                  ORDER BY si.sale_id, si.id""",
+            tuple(all_sale_ids),
+        ).fetchall()
+        for row in items_rows:
+            sale_id = int(row['sale_id'])
+            items_for_sales.setdefault(sale_id, []).append({
+                "id": row["sale_item_id"],
+                "quantity": row["quantity"],
+                "name": row["name"],
+                "delivered_quantity": int(row["delivered_quantity"] or 0),
+            })
+
     return jsonify(
-        pending=[delivery_order_data(db, sale) for sale in pending],
-        delivered=[delivery_order_data(db, sale) for sale in delivered],
-        canceled=[delivery_order_data(db, sale) for sale in canceled],
+        pending=[delivery_order_data(db, sale, items_for_sales) for sale in pending],
+        delivered=[delivery_order_data(db, sale, items_for_sales) for sale in delivered],
+        canceled=[delivery_order_data(db, sale, items_for_sales) for sale in canceled],
         payment_method=payment_method,
     )
 
@@ -637,55 +946,67 @@ def deliver_order(sale_id):
         pending = int(item_by_id[item_id]["quantity"] or 0) - int(item_by_id[item_id]["delivered_quantity"] or 0)
         if quantity > pending:
             return jsonify(error=f"A quantidade pendente de {item_by_id[item_id]['name']} é {pending}."), 409
+    delivered_items = [{"name": item["name"], "quantity": deliver_plan[item["id"]]} for item in item_rows if item["id"] in deliver_plan]
+    remaining_items = [
+        {
+           "name": item["name"],
+           "quantity": max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0) - deliver_plan.get(item["id"], 0)),
+        }
+        for item in item_rows
+        if max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0) - deliver_plan.get(item["id"], 0)) > 0
+    ]
     try:
         with db:
-            if sale["payment_status"] == "pending_cash" and not sale["paid"]:
-                db.execute("UPDATE sales SET paid=1,payment_status='approved',paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP) WHERE id=?", (sale_id,))
-            for item_id, quantity in deliver_plan.items():
-                db.execute("INSERT INTO sale_item_deliveries(sale_item_id,quantity,delivered_by) VALUES(?,?,?)", (item_id, quantity, g.user["id"]))
-            delivered_totals = db.execute(
-                """SELECT si.quantity,COALESCE(SUM(sid.quantity),0) delivered_quantity
+           if sale["payment_status"] == "pending_cash" and not sale["paid"]:
+               db.execute("UPDATE sales SET paid=1,payment_status='approved',paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP) WHERE id=?", (sale_id,))
+           delivery_operation = db.execute(
+               "INSERT INTO sale_delivery_operations(sale_id,delivered_by,delivered_at) VALUES(?,?,CURRENT_TIMESTAMP)",
+               (sale_id, g.user["id"]),
+           )
+           delivery_operation_id = delivery_operation.lastrowid
+           for item_id, quantity in deliver_plan.items():
+               db.execute(
+                   "INSERT INTO sale_item_deliveries(delivery_operation_id,sale_item_id,quantity,delivered_by,delivered_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
+                   (delivery_operation_id, item_id, quantity, g.user["id"]),
+               )
+           delivered_totals = db.execute(
+               """SELECT si.quantity,COALESCE(SUM(sid.quantity),0) delivered_quantity
                    FROM sale_items si LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
                    WHERE si.sale_id=? GROUP BY si.id,si.quantity""", (sale_id,)
-            ).fetchall()
-            fully_delivered = all(int(item["delivered_quantity"] or 0) >= int(item["quantity"] or 0) for item in delivered_totals)
-            if fully_delivered:
-                db.execute("UPDATE sales SET delivered_at=CURRENT_TIMESTAMP,delivered_by=? WHERE id=?", (g.user["id"], sale_id))
+           ).fetchall()
+           fully_delivered = all(int(item["delivered_quantity"] or 0) >= int(item["quantity"] or 0) for item in delivered_totals)
+           if fully_delivered:
+               db.execute("UPDATE sales SET delivered_at=CURRENT_TIMESTAMP,delivered_by=? WHERE id=?", (g.user["id"], sale_id))
+           if sale["player_id"]:
+               delivered_total = sum(item["quantity"] for item in delivered_items)
+               delivery_time_row = db.execute(
+                   "SELECT delivered_at FROM sale_delivery_operations WHERE id=?",
+                   (delivery_operation_id,),
+               ).fetchone()
+               delivery_time = delivery_time_row["delivered_at"] if delivery_time_row else datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+               delivered_at = brdate(delivery_time)
+               payload = {
+                   "delivery_push": {
+                       "player_id": sale["player_id"],
+                       "kind": "pedido_retirada",
+                       "period": f"{sale_id}-{delivery_operation_id}-{delivery_time}",
+                       "title": "Retirada confirmada",
+                       "body": f"{('Pedido totalmente entregue' if not remaining_items else 'Retirada parcial registrada')}. {delivered_total} item(ns) retirado(s) em {delivered_at}." + (f" Restam {sum(item['quantity'] for item in remaining_items)} item(ns)." if remaining_items else ""),
+                       "url": url_for("auth.my_purchases"),
+                   },
+                   "delivery_update_email": {
+                       "sale_id": sale_id,
+                       "delivered_items": delivered_items,
+                       "remaining_items": remaining_items,
+                   },
+                   "purchase_receipt_email": {"sale_id": sale_id},
+               }
+               from src.services.notification_outbox import enqueue_delivery_events
+               enqueue_delivery_events(db, sale_id, delivery_operation_id, payload)
     except Exception as exc:
         current_app.logger.error("Erro ao registrar retirada parcial do pedido %s: %s", sale_id, exc)
         return jsonify(error="Não foi possível registrar a retirada."), 500
-    delivered_sale = db.execute(
-        """SELECT s.id,s.player_id,s.delivered_at,s.guest_name,p.name,p.war_name
-           FROM sales s LEFT JOIN players p ON p.id=s.player_id WHERE s.id=?""",
-        (sale_id,),
-    ).fetchone()
-    if delivered_sale:
-        display_name = delivered_sale["guest_name"] or delivered_sale["war_name"] or delivered_sale["name"] or f"Convidado #{sale_id}"
-        delivery_time = db.execute("SELECT MAX(delivered_at) delivered_at FROM sale_item_deliveries sid JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=?", (sale_id,)).fetchone()["delivered_at"]
-        delivered_at = brdate(delivery_time)
-        current = delivery_order_data(db, db.execute(
-            """SELECT s.*,p.name player_name,p.war_name,p.thumbnail_data player_thumbnail_data,u.name delivered_by_name
-               FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN users u ON u.id=s.delivered_by WHERE s.id=?""", (sale_id,)
-        ).fetchone())
-        delivered_items = [{"name": item["name"], "quantity": deliver_plan[item["id"]]} for item in item_rows if item["id"] in deliver_plan]
-        remaining_items = [{"name": item["name"], "quantity": item["pending_quantity"]} for item in current["items"] if item["pending_quantity"] > 0]
-        delivered_total = sum(item["quantity"] for item in delivered_items)
-        send_player_push_once(
-            db,
-            delivered_sale["player_id"],
-            "pedido_retirada",
-            f"{sale_id}-{delivery_time}",
-            "Retirada confirmada",
-            f"{('Pedido totalmente entregue' if not remaining_items else 'Retirada parcial registrada')}. {delivered_total} item(ns) retirado(s) em {delivered_at}." + (f" Restam {sum(item['quantity'] for item in remaining_items)} item(ns)." if remaining_items else ""),
-            url_for("auth.my_purchases"),
-        )
-        if delivered_sale["player_id"]:
-            send_delivery_update(db, sale_id, delivered_items, remaining_items, current_app.config.get("GMAIL_SMTP_USER", ""), current_app.config.get("GMAIL_APP_PASSWORD", ""))
-    receipt_status = send_purchase_receipt(
-        db, sale_id, current_app.config.get("GMAIL_SMTP_USER", ""),
-        current_app.config.get("GMAIL_APP_PASSWORD", ""),
-    ) if delivered_sale and delivered_sale["player_id"] else "skipped_guest"
-    return jsonify(ok=True, sale_id=sale_id, partial=bool(remaining_items), remaining_items=remaining_items, receipt_status=receipt_status)
+    return jsonify(ok=True, sale_id=sale_id, partial=bool(remaining_items), remaining_items=remaining_items, receipt_status="queued")
 
 @bp.post("/orders/<int:sale_id>/restore-delivery")
 @roles_allowed("manager")
@@ -830,11 +1151,17 @@ def pix_qrcode():
 def mercadopago_create_order():
     if not require_pix_access_token():
         return jsonify(error="A autorização do Pix expirou. Recarregue a página e tente novamente."), 401
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return jsonify(error="Pagamento Pix indisponível na homologação."), 403
+    body = request.get_json(silent=True) or {}
+    if body.get("department") == "sports" or any(
+            item.get("department") == "sports" or item.get("variant_id")
+            for item in body.get("items") or []):
+        return jsonify(error="Pagamento Pix para Material Esportivo será disponibilizado em breve."), 403
     access_token, _ = mercadopago_config()
     if not access_token:
         return jsonify(error="A integração com Mercado Pago ainda não foi configurada."), 503
 
-    body = request.get_json(silent=True) or {}
     try:
         event_id = int(body.get("event_id") or 0) or None
         guest_name = str(body.get("guest_name") or "").strip()

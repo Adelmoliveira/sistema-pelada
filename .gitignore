@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 bar.db
+bar.db.backup-*
 .env
 .env.local
 
@@ -13,3 +14,5 @@ android-panel/**/build/
 android-panel/local.properties
 .vercel
 .env*
+scripts/set_homolog_test_accounts.py
+.test-tmp-reconcile*/

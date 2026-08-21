@@ -9,6 +9,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 from src.db import get_db
+from src.catalog import SPORTS_MATERIAL_CATEGORY
 from src.services.material_photos import process_material_photo, process_club_qr_image
 from src.utils import local_today, service_medals
 
@@ -688,9 +689,14 @@ def my_purchases():
     if sales:
         placeholders = ",".join("?" for _ in sales)
         item_rows = db.execute(
-            f"""SELECT i.sale_id,i.id item_id,i.quantity,p.name product_name,
-                       COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=i.id),0) delivered_quantity
+            f"""SELECT i.sale_id,i.id item_id,i.quantity,p.name product_name,p.category,p.thumbnail_data,
+                       d.variant_size,d.custom_name,d.custom_number,d.order_mode,d.fulfillment_status,d.delivered_at sports_delivered_at,
+                       t.code material_type_code,
+                       COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=i.id),0) bar_delivered_quantity
                 FROM sale_items i JOIN products p ON p.id=i.product_id
+                LEFT JOIN sports_sale_item_details d ON d.sale_item_id=i.id
+                LEFT JOIN sports_product_config c ON c.product_id=p.id
+                LEFT JOIN sports_material_types t ON t.id=c.type_id
                 WHERE i.sale_id IN ({placeholders}) ORDER BY i.sale_id,i.id""",
             tuple(sale["id"] for sale in sales),
         ).fetchall()
@@ -702,20 +708,20 @@ def my_purchases():
             sale["id"] for sale in sales
             if sale.get("delivered_at")
             and not any(
-                int(item["delivered_quantity"] or 0) > 0
+                int(item["bar_delivered_quantity"] or 0) > 0
                 for item in item_rows
                 if item["sale_id"] == sale["id"]
             )
         }
         if legacy_delivered_sales:
             item_rows = [
-                dict(item, delivered_quantity=item["quantity"])
+                dict(item, bar_delivered_quantity=item["quantity"])
                 if item["sale_id"] in legacy_delivered_sales else item
                 for item in item_rows
             ]
         item_summary = {}
         for item in item_rows:
-            delivered = int(item["delivered_quantity"] or 0)
+            delivered = int(item["quantity"] or 0) if item["fulfillment_status"] == "delivered" else int(item["bar_delivered_quantity"] or 0)
             total = int(item["quantity"] or 0)
             pending = max(0, total - delivered)
             label = f"{item['product_name']} · {delivered}/{total} entregue(s)"
@@ -723,10 +729,28 @@ def my_purchases():
                 label += f" · restam {pending}"
             item_summary.setdefault(item["sale_id"], []).append(label)
         for sale in sales:
+            sale["items"] = []
+            for item in item_rows:
+                if item["sale_id"] != sale["id"]:
+                    continue
+                entry = dict(item)
+                entry["delivered_quantity"] = int(item["quantity"] or 0) if item["fulfillment_status"] == "delivered" else int(item["bar_delivered_quantity"] or 0)
+                sale["items"].append(entry)
+            sale["department"] = "MATERIAL ESPORTIVO" if sale["items"] and all(item["category"] == SPORTS_MATERIAL_CATEGORY for item in sale["items"]) else "BAR PELADEIROS"
             sale["items_summary"] = " · ".join(item_summary.get(sale["id"], []))
             sale_items = [item for item in item_rows if item["sale_id"] == sale["id"]]
-            sale["delivered_quantity"] = sum(int(item["delivered_quantity"] or 0) for item in sale_items)
-            sale["pending_quantity"] = sum(max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0)) for item in sale_items)
+            sale["delivered_quantity"] = sum(int(item["quantity"] or 0) if item["fulfillment_status"] == "delivered" else int(item["bar_delivered_quantity"] or 0) for item in sale_items)
+            sale["pending_quantity"] = sum(max(0, int(item["quantity"] or 0) - (int(item["quantity"] or 0) if item["fulfillment_status"] == "delivered" else int(item["bar_delivered_quantity"] or 0))) for item in sale_items)
+            sports_items = [item for item in sale_items if item["fulfillment_status"]]
+            if sports_items:
+                if all(item["fulfillment_status"] == "delivered" for item in sports_items):
+                    sale["display_status"],sale["display_status_label"],sale["display_status_class"] = "ENTREGUE","Entregue","secondary"
+                elif not sale.get("paid") and (sale.get("payment_status") or "").lower() not in {"pending_cash"}:
+                    pass
+                else:
+                    labels = {"reserved":"Reservado","requested":"Solicitado","in_production":"Em produção","available":"Disponível para retirada"}
+                    current = sports_items[0]["fulfillment_status"]
+                    sale["display_status"],sale["display_status_label"],sale["display_status_class"] = "ESPORTIVO_PENDENTE",labels.get(current,"Em acompanhamento"),"primary"
             if sale["delivered_quantity"] and sale["pending_quantity"]:
                 sale["display_status"] = "PARCIAL"
                 sale["display_status_label"] = f"Parcial · restam {sale['pending_quantity']}"

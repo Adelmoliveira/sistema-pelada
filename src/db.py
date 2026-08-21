@@ -211,14 +211,41 @@ CREATE TABLE IF NOT EXISTS bar_credit_audit (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_bar_credit_audit_player ON bar_credit_audit(player_id,created_at);
+CREATE TABLE IF NOT EXISTS sale_delivery_operations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+    delivered_by INTEGER REFERENCES users(id),
+    delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sale_delivery_operations_sale ON sale_delivery_operations(sale_id,delivered_at);
 CREATE TABLE IF NOT EXISTS sale_item_deliveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_operation_id INTEGER NOT NULL REFERENCES sale_delivery_operations(id) ON DELETE CASCADE,
     sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
     quantity INTEGER NOT NULL CHECK(quantity > 0),
     delivered_by INTEGER REFERENCES users(id),
     delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_item ON sale_item_deliveries(sale_item_id);
+CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_operation ON sale_item_deliveries(delivery_operation_id);
+CREATE TABLE IF NOT EXISTS notification_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_key TEXT NOT NULL UNIQUE,
+    event_type TEXT NOT NULL CHECK(event_type IN ('delivery_push','delivery_update_email','purchase_receipt_email')),
+    sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+    delivery_id INTEGER NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','sent','failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processing_started_at TEXT,
+    processed_at TEXT,
+    last_error TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_ready ON notification_outbox(status,available_at,id);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_sale ON notification_outbox(sale_id,delivery_id);
 CREATE TABLE IF NOT EXISTS sale_cancellations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sale_id INTEGER NOT NULL UNIQUE REFERENCES sales(id) ON DELETE CASCADE,
@@ -1324,12 +1351,42 @@ def migrate_maintenance_areas(connection):
     """)
     connection.execute("PRAGMA foreign_keys = ON")
 
+def migrate_sale_delivery_operations(connection):
+    table_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sale_delivery_operations'"
+    ).fetchone()
+    if not table_exists:
+        connection.execute("""
+            CREATE TABLE sale_delivery_operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+                delivered_by INTEGER REFERENCES users(id),
+                delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    item_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sale_item_deliveries'"
+    ).fetchone()
+    if item_exists:
+        item_columns = {row[1] for row in connection.execute("PRAGMA table_info(sale_item_deliveries)").fetchall()}
+        if "delivery_operation_id" not in item_columns:
+            connection.execute(
+                "ALTER TABLE sale_item_deliveries ADD COLUMN delivery_operation_id INTEGER REFERENCES sale_delivery_operations(id) ON DELETE CASCADE"
+            )
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_delivery_operations_sale ON sale_delivery_operations(sale_id,delivered_at)")
+    if item_exists:
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_operation ON sale_item_deliveries(delivery_operation_id)")
+    connection.commit()
+
+
 def init_sqlite(wrapper):
     conn = wrapper.conn
     migrate_user_roles(conn)
     migrate_payment_method(conn)
     migrate_credit_payment_method(conn)
+    migrate_sale_delivery_operations(conn)
     conn.executescript(SCHEMA)
+    migrate_sale_delivery_operations(conn)
     topup_columns = {row[1] for row in conn.execute("PRAGMA table_info(bar_credit_topups)")}
     if "refunded_at" not in topup_columns:
         conn.execute("ALTER TABLE bar_credit_topups ADD COLUMN refunded_at TEXT")

@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import os
 from datetime import date, datetime, timedelta
 from email.utils import parseaddr
 
@@ -29,6 +30,18 @@ from src.utils import SAO_PAULO, alphabetical_key, money, brdate, cents, month_b
 
 bp = Blueprint("finance", __name__)
 WEEKLY_TRIBUTE_SECRET_KEY = "weekly_tribute_cron_secret_hash"
+
+
+def _cron_authorized():
+    authorization = request.headers.get("Authorization", "")
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        return False
+    supplied = authorization[len(prefix):]
+    general_secret = current_app.config.get("CRON_SECRET") or ""
+    if general_secret and hmac.compare_digest(supplied, general_secret):
+        return True
+    return False
 
 
 def _weekly_tribute_cron_authorized():
@@ -957,6 +970,15 @@ def send_test_reminder():
     return redirect(url_for("finance.reminders"))
 
 
+@bp.route("/cron/process-notification-outbox", methods=["GET", "POST"])
+def process_notification_outbox_cron():
+    if not _cron_authorized():
+        return jsonify(error="Não autorizado."), 401
+    from src.services.notification_outbox import process_notification_outbox
+    result = process_notification_outbox(get_db())
+    return jsonify(ok=True, **result)
+
+
 @bp.get("/cron/payment-reminders")
 def payment_reminders_cron():
     secret = current_app.config.get("CRON_SECRET") or ""
@@ -964,6 +986,8 @@ def payment_reminders_cron():
     expected = f"Bearer {secret}"
     if not secret or not hmac.compare_digest(authorization, expected):
         return jsonify(error="Não autorizado."), 401
+    if not current_app.config.get("CRON_ENABLED", True):
+        return jsonify(error="Cron de lembretes indisponível na homologação."), 403
 
     db = get_db()
     settings = get_reminder_settings(db)
