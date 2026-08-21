@@ -412,6 +412,7 @@ def sale():
         } for player in player_rows],
         pix_token=pix_access_token(g.user),
         mercadopago_enabled=mercadopago_enabled(),
+        external_payments_enabled=current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True),
         client_credit_balance=int(client_credit_balance or 0),
         client_credit_low_threshold=low_balance_threshold(),
         open_events=open_events,
@@ -506,6 +507,7 @@ def guest_event_sale(token):
         current_user=guest_user, current_player=None, players=[], player_data=[], products=product_data,
         product_data=product_data, product_groups=[group for group in ("Bebidas", "Alimentos", "Salgados", "Outros") if any(p["group"] == group for p in product_data)],
         pix_token=token, event_pix_token=token, mercadopago_enabled=mercadopago_enabled(),
+        external_payments_enabled=current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True),
         client_credit_balance=0, client_credit_low_threshold=0, open_events=[]
     )
 
