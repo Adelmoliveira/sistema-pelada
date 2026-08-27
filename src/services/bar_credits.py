@@ -40,6 +40,145 @@ def balance(db, player_id):
     return ensure_account(db, player_id)
 
 
+def available_balance(db, player_id):
+    """Return ledger balance less active, non-expired reservations."""
+    account = ensure_account(db, player_id)
+    reserved = db.execute(
+        """SELECT COALESCE(SUM(amount_cents), 0) AS total
+           FROM bar_credit_reservations
+           WHERE player_id=? AND status='reserved'
+             AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)""",
+        (player_id,),
+    ).fetchone()
+    return max(0, int(account["balance_cents"] or 0) - int(reserved["total"] or 0))
+
+
+def _lock_credit_account(db, player_id):
+    """Serialize reservation decisions for one wallet inside the caller transaction."""
+    ensure_account(db, player_id)
+    db.execute(
+        """UPDATE bar_credit_accounts SET updated_at=updated_at
+           WHERE player_id=?""",
+        (player_id,),
+    )
+
+
+def _compatible_reservation(reservation, player_id, amount_cents, expires_at):
+    same_expiration = (
+        (reservation["expires_at"] is None and expires_at is None)
+        or str(reservation["expires_at"]) == str(expires_at)
+    )
+    return (
+        int(reservation["player_id"]) == int(player_id)
+        and int(reservation["amount_cents"]) == amount_cents
+        and same_expiration
+    )
+
+
+def reserve_credit(db, player_id, sale_id, amount_cents, expires_at=None):
+    """Reserve available credit without changing the ledger balance."""
+    try:
+        amount_cents = int(amount_cents)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("O valor da reserva deve ser maior que zero.") from exc
+    if amount_cents <= 0:
+        raise ValueError("O valor da reserva deve ser maior que zero.")
+
+    existing = db.execute(
+        "SELECT * FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+    ).fetchone()
+    if existing:
+        if _compatible_reservation(existing, player_id, amount_cents, expires_at):
+            return existing
+        raise ValueError("Esta venda já possui uma reserva de créditos diferente.")
+
+    _lock_credit_account(db, player_id)
+    existing = db.execute(
+        "SELECT * FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+    ).fetchone()
+    if existing:
+        if _compatible_reservation(existing, player_id, amount_cents, expires_at):
+            return existing
+        raise ValueError("Esta venda já possui uma reserva de créditos diferente.")
+    if available_balance(db, player_id) < amount_cents:
+        raise ValueError("Saldo de créditos disponível insuficiente para esta reserva.")
+    db.execute(
+        """INSERT INTO bar_credit_reservations
+           (sale_id,player_id,amount_cents,expires_at)
+           VALUES(?,?,?,?)""",
+        (sale_id, player_id, amount_cents, expires_at),
+    )
+    return db.execute(
+        "SELECT * FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+    ).fetchone()
+
+
+def consume_reservation(db, sale_id, actor_user_id=None):
+    """Consume one reservation and its wallet credit exactly once."""
+    lock_suffix = " FOR UPDATE" if getattr(db, "is_postgres", False) else ""
+    reservation = db.execute(
+        "SELECT * FROM bar_credit_reservations WHERE sale_id=?" + lock_suffix,
+        (sale_id,),
+    ).fetchone()
+    if not reservation:
+        raise ValueError("Reserva de créditos não encontrada.")
+    if reservation["status"] == "consumed":
+        account = ensure_account(db, reservation["player_id"])
+        return int(account["balance_cents"] or 0), False
+    if reservation["status"] != "reserved":
+        raise ValueError("Esta reserva de créditos não está disponível para consumo.")
+    if reservation["expires_at"] is not None:
+        active = db.execute(
+            """SELECT 1 FROM bar_credit_reservations
+               WHERE sale_id=? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)""",
+            (sale_id,),
+        ).fetchone()
+        if not active:
+            raise ValueError("Esta reserva de créditos expirou.")
+
+    _lock_credit_account(db, reservation["player_id"])
+    updated = db.execute(
+        """UPDATE bar_credit_reservations
+           SET status='consumed',consumed_at=CURRENT_TIMESTAMP
+           WHERE sale_id=? AND status='reserved'
+             AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)""",
+        (sale_id,),
+    )
+    if updated.rowcount != 1:
+        latest = db.execute(
+            "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+        ).fetchone()
+        if latest and latest["status"] == "consumed":
+            account = ensure_account(db, reservation["player_id"])
+            return int(account["balance_cents"] or 0), False
+        raise ValueError("O estado da reserva de créditos mudou.")
+    new_balance, _ = consume(
+        db, reservation["player_id"], reservation["amount_cents"],
+        sale_id, actor_user_id,
+    )
+    return new_balance, True
+
+
+def release_reservation(db, sale_id):
+    """Release an active reservation without changing the ledger balance."""
+    reservation = db.execute(
+        "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+    ).fetchone()
+    if not reservation:
+        raise ValueError("Reserva de créditos não encontrada.")
+    if reservation["status"] == "released":
+        return False
+    if reservation["status"] != "reserved":
+        raise ValueError("Uma reserva consumida não pode ser liberada.")
+    updated = db.execute(
+        """UPDATE bar_credit_reservations
+           SET status='released',released_at=CURRENT_TIMESTAMP
+           WHERE sale_id=? AND status='reserved'""",
+        (sale_id,),
+    )
+    return updated.rowcount == 1
+
+
 def _audit(db, player_id, action, amount_cents=0, *, topup_id=None,
            transaction_id=None, actor_user_id=None, reason=""):
     db.execute(
