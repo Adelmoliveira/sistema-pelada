@@ -98,9 +98,32 @@ def order_payment_id(order):
     return str(payments[0].get("id")) if payments and payments[0].get("id") else None
 
 def restore_reserved_stock(db, sale_id):
-    items = db.execute("SELECT product_id,quantity FROM sale_items WHERE sale_id=?", (sale_id,)).fetchall()
+    items = db.execute(
+        """SELECT si.product_id,si.quantity,d.variant_id,d.order_mode,r.status reservation_status
+           FROM sale_items si
+           LEFT JOIN sports_sale_item_details d ON d.sale_item_id=si.id
+           LEFT JOIN sports_stock_reservations r ON r.sale_item_id=si.id
+           WHERE si.sale_id=?""",
+        (sale_id,),
+    ).fetchall()
     for item in items:
-        db.execute("UPDATE products SET stock=stock+? WHERE id=?", (item["quantity"], item["product_id"]))
+        if item["variant_id"]:
+            if item["order_mode"] == "ready" and item["reservation_status"] == "reserved":
+                released = db.execute(
+                    """UPDATE sports_stock_reservations
+                       SET status='released',updated_at=CURRENT_TIMESTAMP
+                       WHERE sale_item_id IN (SELECT id FROM sale_items WHERE sale_id=?)
+                         AND variant_id=? AND status='reserved'""",
+                    (sale_id, item["variant_id"]),
+                )
+                if released.rowcount:
+                    db.execute(
+                        """UPDATE sports_product_variants
+                           SET stock=stock+?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                        (item["quantity"], item["variant_id"]),
+                    )
+        else:
+            db.execute("UPDATE products SET stock=stock+? WHERE id=?", (item["quantity"], item["product_id"]))
 
 def apply_mercadopago_status(db, sale, order):
     status = order.get("status", "")
@@ -141,6 +164,12 @@ def apply_mercadopago_status(db, sale, order):
         with db:
             if reservation and reservation["status"] == "reserved":
                 consume_reservation(db, sale["id"])
+            db.execute(
+                """UPDATE sports_stock_reservations SET status='consumed',updated_at=CURRENT_TIMESTAMP
+                   WHERE sale_item_id IN (SELECT id FROM sale_items WHERE sale_id=?)
+                     AND status='reserved'""",
+                (sale["id"],),
+            )
             db.execute(
                 """UPDATE sales SET paid=1,payment_status='approved',mercadopago_payment_id=?,
                    paid_at=CURRENT_TIMESTAMP,ready_for_delivery=1
@@ -1292,10 +1321,9 @@ def mercadopago_create_order():
     if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
         return jsonify(error="Pagamento Pix indisponível na homologação."), 403
     body = request.get_json(silent=True) or {}
-    if body.get("department") == "sports" or any(
+    sports_mode = body.get("department") == "sports" or any(
             item.get("department") == "sports" or item.get("variant_id")
-            for item in body.get("items") or []):
-        return jsonify(error="Pagamento Pix para Material Esportivo será disponibilizado em breve."), 403
+            for item in body.get("items") or [])
     access_token, _ = mercadopago_config()
     if not access_token:
         return jsonify(error="A integração com Mercado Pago ainda não foi configurada."), 503
@@ -1304,17 +1332,30 @@ def mercadopago_create_order():
         event_id = int(body.get("event_id") or 0) or None
         guest_name = str(body.get("guest_name") or "").strip()
         player_id = int(body.get("player_id")) if body.get("player_id") else None
+        if sports_mode and event_id:
+            raise ValueError("Material Esportivo não está disponível para Convidado / Evento.")
         if event_id and not guest_name:
             raise ValueError("Informe o nome do convidado.")
         if not event_id and not player_id:
             raise ValueError("Selecione o peladeiro ou o evento.")
         requested = {}
+        sports_requested = []
         for item in body.get("items") or []:
             product_id = int(item.get("product_id"))
             quantity = int(item.get("quantity"))
             if quantity > 0:
-                requested[product_id] = requested.get(product_id, 0) + quantity
-        if not requested:
+                if sports_mode:
+                    sports_requested.append({
+                        "product_id": product_id,
+                        "variant_id": int(item.get("variant_id")),
+                        "quantity": quantity,
+                        "custom_name": _clean_sports_text(item.get("custom_name"), 40, "Nome personalizado"),
+                        "custom_number": _clean_sports_text(item.get("custom_number"), 10, "Número"),
+                        "order_mode": str(item.get("order_mode") or ""),
+                    })
+                else:
+                    requested[product_id] = requested.get(product_id, 0) + quantity
+        if not requested and not sports_requested:
             raise ValueError("Escolha ao menos um produto.")
     except (TypeError, ValueError):
         return jsonify(error="Selecione o peladeiro e produtos válidos."), 400
@@ -1322,23 +1363,64 @@ def mercadopago_create_order():
     db = get_db()
     event = db.execute("SELECT id,name FROM bar_events WHERE id=? AND status='open'", (event_id,)).fetchone() if event_id else None
     player = db.execute("SELECT id,email FROM players WHERE id=? AND active=1", (player_id,)).fetchone() if player_id else None
-    placeholders = ",".join("?" for _ in requested)
-    products = db.execute(
-        f"SELECT id,name,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
-        tuple(requested),
-    ).fetchall()
-    products_by_id = {product["id"]: product for product in products}
-    if (event_id and not event) or (not event_id and not player) or len(products_by_id) != len(requested):
+    products_by_id = {}
+    sports_by_variant = {}
+    if sports_mode:
+        variant_ids = [item["variant_id"] for item in sports_requested]
+        placeholders = ",".join("?" for _ in variant_ids)
+        rows = db.execute(
+            f"""SELECT v.id variant_id,v.product_id,v.size,v.stock,v.active variant_active,
+                       p.name,p.price_cents,p.cost_cents,p.active product_active,p.category,
+                       c.allow_custom_name,c.allow_custom_number,c.allow_backorder
+                FROM sports_product_variants v JOIN products p ON p.id=v.product_id
+                JOIN sports_product_config c ON c.product_id=p.id
+                WHERE v.id IN ({placeholders})""",
+            tuple(variant_ids),
+        ).fetchall()
+        sports_by_variant = {row["variant_id"]: row for row in rows}
+    else:
+        placeholders = ",".join("?" for _ in requested)
+        products = db.execute(
+            f"SELECT id,name,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
+            tuple(requested),
+        ).fetchall()
+        products_by_id = {product["id"]: product for product in products}
+    invalid_products = (
+        len(sports_by_variant) != len(set(item["variant_id"] for item in sports_requested))
+        if sports_mode else len(products_by_id) != len(requested)
+    )
+    if (event_id and not event) or (not event_id and not player) or invalid_products:
         return jsonify(error="Peladeiro, evento ou produto inválido."), 400
     payer_email = str(player["email"] or "").strip().lower() if player else str(current_app.config.get("GMAIL_SMTP_USER") or "").strip().lower()
     if "@" not in payer_email:
         return jsonify(error="Configure um e-mail válido para gerar o Pix do evento." if event_id else "Cadastre um e-mail válido para o peladeiro antes de gerar o Pix."), 400
-    for product_id, quantity in requested.items():
-        if products_by_id[product_id]["stock"] < quantity:
-            return jsonify(error=f"Estoque insuficiente de {products_by_id[product_id]['name']}."), 409
+    if sports_mode:
+        for item in sports_requested:
+            row = sports_by_variant[item["variant_id"]]
+            if (row["product_id"] != item["product_id"] or not row["product_active"] or
+                    not row["variant_active"] or row["category"] != SPORTS_MATERIAL_CATEGORY):
+                return jsonify(error="Produto ou tamanho esportivo inválido."), 400
+            if item["custom_name"] and not row["allow_custom_name"]:
+                return jsonify(error="Este produto não permite nome personalizado."), 400
+            if item["custom_number"] and not row["allow_custom_number"]:
+                return jsonify(error="Este produto não permite número personalizado."), 400
+            if item["order_mode"] not in {"ready", "backorder"}:
+                return jsonify(error="Escolha pronta entrega ou encomenda."), 400
+            if item["order_mode"] == "backorder" and not row["allow_backorder"]:
+                return jsonify(error="Este produto não permite encomenda."), 400
+            if item["order_mode"] == "ready" and row["stock"] < item["quantity"]:
+                return jsonify(error=f"Estoque insuficiente para {row['name']} — {row['size']}."), 409
+    else:
+        for product_id, quantity in requested.items():
+            if products_by_id[product_id]["stock"] < quantity:
+                return jsonify(error=f"Estoque insuficiente de {products_by_id[product_id]['name']}."), 409
 
-    total_cents = sum(products_by_id[product_id]["price_cents"] * quantity for product_id, quantity in requested.items())
-    use_bar_credit = body.get("use_bar_credit") is True and bool(player_id)
+    total_cents = (
+        sum(sports_by_variant[item["variant_id"]]["price_cents"] * item["quantity"] for item in sports_requested)
+        if sports_mode else
+        sum(products_by_id[product_id]["price_cents"] * quantity for product_id, quantity in requested.items())
+    )
+    use_bar_credit = body.get("use_bar_credit") is True and bool(player_id) and not sports_mode
     credit_amount = min(available_credit_balance(db, player_id), total_cents) if use_bar_credit else 0
     external_cents = total_cents - credit_amount
     full_credit = credit_amount == total_cents and credit_amount > 0
@@ -1354,18 +1436,51 @@ def mercadopago_create_order():
             sale_id = sale_cursor.lastrowid
             if credit_amount and not full_credit:
                 reserve_credit(db, player_id, sale_id, credit_amount)
-            for product_id, quantity in requested.items():
-                product = products_by_id[product_id]
-                db.execute(
-                    "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
-                    (sale_id, product_id, quantity, product["price_cents"], product["cost_cents"]),
-                )
-                updated = db.execute(
-                    "UPDATE products SET stock=stock-? WHERE id=? AND stock>=?",
-                    (quantity, product_id, quantity),
-                )
-                if updated.rowcount != 1:
-                    raise ValueError(f"O estoque de {product['name']} mudou. Tente novamente.")
+            if sports_mode:
+                for item in sports_requested:
+                    product = sports_by_variant[item["variant_id"]]
+                    if item["order_mode"] == "ready":
+                        updated = db.execute(
+                            """UPDATE sports_product_variants
+                               SET stock=stock-?,updated_at=CURRENT_TIMESTAMP
+                               WHERE id=? AND product_id=? AND active AND stock>=?""",
+                            (item["quantity"], item["variant_id"], item["product_id"], item["quantity"]),
+                        )
+                        if updated.rowcount != 1:
+                            raise ValueError(f"O estoque de {product['name']} mudou. Tente novamente.")
+                    sale_item = db.execute(
+                        """INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents)
+                           VALUES(?,?,?,?,?)""",
+                        (sale_id, item["product_id"], item["quantity"],
+                         product["price_cents"], product["cost_cents"]),
+                    )
+                    db.execute(
+                        """INSERT INTO sports_sale_item_details
+                           (sale_item_id,variant_id,variant_size,custom_name,custom_number,
+                            order_mode,fulfillment_status) VALUES(?,?,?,?,?,?,?)""",
+                        (sale_item.lastrowid, item["variant_id"], product["size"],
+                         item["custom_name"], item["custom_number"], item["order_mode"],
+                         "reserved" if item["order_mode"] == "ready" else "requested"),
+                    )
+                    if item["order_mode"] == "ready":
+                        db.execute(
+                            """INSERT INTO sports_stock_reservations
+                               (sale_item_id,variant_id,quantity,status) VALUES(?,?,?,'reserved')""",
+                            (sale_item.lastrowid, item["variant_id"], item["quantity"]),
+                        )
+            else:
+                for product_id, quantity in requested.items():
+                    product = products_by_id[product_id]
+                    db.execute(
+                        "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                        (sale_id, product_id, quantity, product["price_cents"], product["cost_cents"]),
+                    )
+                    updated = db.execute(
+                        "UPDATE products SET stock=stock-? WHERE id=? AND stock>=?",
+                        (quantity, product_id, quantity),
+                    )
+                    if updated.rowcount != 1:
+                        raise ValueError(f"O estoque de {product['name']} mudou. Tente novamente.")
             if full_credit:
                 consume_credit(
                     db, player_id, total_cents, sale_id,
@@ -1380,7 +1495,8 @@ def mercadopago_create_order():
         return jsonify(error=str(exc)), 409
 
     if full_credit:
-        notify_low_stock(db, requested.keys())
+        if not sports_mode:
+            notify_low_stock(db, requested.keys())
         return jsonify(
             sale_id=sale_id,
             amount=money(0),
@@ -1403,7 +1519,8 @@ def mercadopago_create_order():
             (order_id, order_payment_id(order), sale_id),
         )
         db.commit()
-        notify_low_stock(db, requested.keys())
+        if not sports_mode:
+            notify_low_stock(db, requested.keys())
         encoded_image = generate_qrcode_base64(qr_data)
         return jsonify(
             sale_id=sale_id,

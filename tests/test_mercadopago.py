@@ -323,16 +323,123 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(details[0]["fulfillment_status"], "requested")
             self.assertEqual(db.execute("SELECT stock FROM sports_product_variants WHERE id=?", (allowed_variant,)).fetchone()["stock"], 0)
 
-    @patch("src.routes.sales.create_pix_order")
-    def test_homologation_sports_pix_remains_blocked(self, create_order_mock):
-        response = self.client.post(
-            "/pix/mercadopago/orders", headers=self.headers(),
-            json={"department": "sports", "player_id": self.player_id,
-                  "items": [{"product_id": self.product_id, "variant_id": 45, "quantity": 1}]},
-        )
-        self.assertEqual(response.status_code, 403)
-        self.assertIn("Material Esportivo", response.get_json()["error"])
-        create_order_mock.assert_not_called()
+    def test_sports_pix_ready_uses_variant_stock_and_is_idempotent(self):
+        from src.routes.sales import apply_mercadopago_status
+
+        product_id, variant_id = self.create_sports_product("Camisa Pix", stock=5)
+        order = {
+            "id": "ORD-SPORTS-READY", "status": "action_required",
+            "transactions": {"payments": [{
+                "id": "PAY-SPORTS-READY",
+                "payment_method": {"qr_code": "000201SPORTS"},
+            }]},
+        }
+        with patch("src.routes.sales.create_pix_order", return_value=order) as create_order:
+            response = self.client.post(
+                "/pix/mercadopago/orders", headers=self.headers(),
+                json={"department": "sports", "player_id": self.player_id,
+                      "use_bar_credit": True,
+                      "items": [{"department": "sports", "product_id": product_id,
+                                 "variant_id": variant_id, "quantity": 1,
+                                 "custom_name": "", "custom_number": "",
+                                 "order_mode": "ready"}]},
+            )
+        self.assertEqual(response.status_code, 201, response.get_json())
+        sale_id = response.get_json()["sale_id"]
+        self.assertEqual(create_order.call_args.args[2], 2000)
+        with app.app_context():
+            db = get_db()
+            sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+            detail = db.execute(
+                """SELECT d.variant_id,d.fulfillment_status,r.status reservation_status
+                   FROM sports_sale_item_details d
+                   JOIN sale_items si ON si.id=d.sale_item_id
+                   JOIN sports_stock_reservations r ON r.sale_item_id=si.id
+                   WHERE si.sale_id=?""", (sale_id,),
+            ).fetchone()
+            self.assertEqual(db.execute(
+                "SELECT stock FROM sports_product_variants WHERE id=?", (variant_id,)
+            ).fetchone()[0], 4)
+            self.assertEqual(db.execute(
+                "SELECT stock FROM products WHERE id=?", (product_id,)
+            ).fetchone()[0], 0)
+            self.assertEqual((detail["variant_id"], detail["fulfillment_status"],
+                              detail["reservation_status"]), (variant_id, "reserved", "reserved"))
+            approved = {"status": "processed", "status_detail": "accredited",
+                        "total_paid_amount": "20.00",
+                        "transactions": {"payments": [{"id": "PAY-SPORTS-APPROVED"}]}}
+            self.assertEqual(apply_mercadopago_status(db, sale, approved), "approved")
+            sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+            self.assertEqual(apply_mercadopago_status(db, sale, approved), "approved")
+            self.assertEqual(db.execute(
+                "SELECT stock FROM sports_product_variants WHERE id=?", (variant_id,)
+            ).fetchone()[0], 4)
+            self.assertEqual(db.execute(
+                "SELECT status FROM sports_stock_reservations r JOIN sale_items si ON si.id=r.sale_item_id WHERE si.sale_id=?",
+                (sale_id,),
+            ).fetchone()[0], "consumed")
+            self.assertEqual((sale["paid"], sale["payment_status"]), (1, "approved"))
+        self.login_manager()
+        queue = self.client.get("/material-esportivo/vendas")
+        self.assertIn("Camisa Pix", queue.get_data(as_text=True))
+
+    def test_sports_pix_terminal_restores_ready_stock_and_backorder_never_debits(self):
+        from src.routes.sales import apply_mercadopago_status
+
+        ready_product, ready_variant = self.create_sports_product("Camisa Cancelada", stock=2)
+        backorder_product, backorder_variant = self.create_sports_product(
+            "Camisa Encomenda Pix", stock=0, allow_backorder=1)
+
+        def create_sports_order(product_id, variant_id, mode, order_id):
+            order = {"id": order_id, "transactions": {"payments": [{
+                "id": f"PAY-{order_id}", "payment_method": {"qr_code": "000201SPORTS"},
+            }]}}
+            with patch("src.routes.sales.create_pix_order", return_value=order):
+                response = self.client.post(
+                    "/pix/mercadopago/orders", headers=self.headers(),
+                    json={"department": "sports", "player_id": self.player_id,
+                          "items": [{"department": "sports", "product_id": product_id,
+                                     "variant_id": variant_id, "quantity": 1,
+                                     "custom_name": "", "custom_number": "",
+                                     "order_mode": mode}]},
+                )
+            self.assertEqual(response.status_code, 201, response.get_json())
+            return response.get_json()["sale_id"]
+
+        ready_sale = create_sports_order(ready_product, ready_variant, "ready", "ORD-SPORTS-CANCEL")
+        backorder_sale = create_sports_order(
+            backorder_product, backorder_variant, "backorder", "ORD-SPORTS-BACKORDER")
+        with app.app_context():
+            db = get_db()
+            ready = db.execute("SELECT * FROM sales WHERE id=?", (ready_sale,)).fetchone()
+            self.assertEqual(apply_mercadopago_status(
+                db, ready, {"status": "canceled", "transactions": {"payments": []}}
+            ), "canceled")
+            ready = db.execute("SELECT * FROM sales WHERE id=?", (ready_sale,)).fetchone()
+            self.assertEqual(apply_mercadopago_status(
+                db, ready, {"status": "canceled", "transactions": {"payments": []}}
+            ), "canceled")
+            self.assertEqual(db.execute(
+                "SELECT stock FROM sports_product_variants WHERE id=?", (ready_variant,)
+            ).fetchone()[0], 2)
+            self.assertEqual(db.execute(
+                "SELECT status FROM sports_stock_reservations r JOIN sale_items si ON si.id=r.sale_item_id WHERE si.sale_id=?",
+                (ready_sale,),
+            ).fetchone()[0], "released")
+            detail = db.execute(
+                """SELECT d.fulfillment_status FROM sports_sale_item_details d
+                   JOIN sale_items si ON si.id=d.sale_item_id WHERE si.sale_id=?""",
+                (backorder_sale,),
+            ).fetchone()
+            self.assertEqual(detail["fulfillment_status"], "requested")
+            self.assertEqual(db.execute(
+                "SELECT stock FROM sports_product_variants WHERE id=?", (backorder_variant,)
+            ).fetchone()[0], 0)
+            self.assertIsNone(db.execute(
+                """SELECT r.id FROM sports_stock_reservations r
+                   JOIN sale_items si ON si.id=r.sale_item_id WHERE si.sale_id=?""",
+                (backorder_sale,),
+            ).fetchone())
 
     def test_environment_config_wires_homologation_safeguards_and_banner(self):
         homologation = environment_config("homologation")
