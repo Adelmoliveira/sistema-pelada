@@ -3963,6 +3963,172 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual((sale["paid"], sale["payment_status"], sale["ready_for_delivery"]), (0, "canceled", 0))
             self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 10)
 
+    def test_partial_credit_cash_reserves_and_consumes_only_on_confirmation(self):
+        self.login_manager()
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,400)",
+                (self.player_id,),
+            )
+            db.commit()
+
+        created = self.client.post(
+            "/sale",
+            data={
+                "sale_type": "player", "player_id": str(self.player_id),
+                "payment_method": "Dinheiro", "use_bar_credit": "1",
+                "product_id": [str(self.product_id)], "quantity": ["5"],
+            },
+        )
+        self.assertEqual(created.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            sale = db.execute("SELECT * FROM sales ORDER BY id DESC LIMIT 1").fetchone()
+            sale_id = sale["id"]
+            reservation = db.execute(
+                "SELECT * FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+            ).fetchone()
+            self.assertEqual((sale["total_cents"], sale["payment_method"], sale["payment_status"]), (1500, "Dinheiro", "pending_cash"))
+            self.assertEqual((reservation["amount_cents"], reservation["status"]), (400, "reserved"))
+            self.assertEqual(db.execute(
+                "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
+            ).fetchone()[0], 400)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM bar_credit_transactions WHERE sale_id=?", (sale_id,)
+            ).fetchone()[0], 0)
+
+        feed_order = next(
+            order for order in self.client.get("/orders/feed").get_json()["pending"]
+            if order["id"] == sale_id
+        )
+        self.assertEqual(
+            (feed_order["total_cents"], feed_order["credit_reserved_cents"], feed_order["cash_due_cents"]),
+            (1500, 400, 1100),
+        )
+        confirmed = self.client.post(
+            f"/orders/{sale_id}/confirm-payment",
+            json={"amount_received_cents": 1100, "convert_change_to_credit": False},
+        )
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(
+            (confirmed.get_json()["cash_due_cents"], confirmed.get_json()["change_cents"], confirmed.get_json()["credit_consumed_cents"]),
+            (1100, 0, 400),
+        )
+        repeated = self.client.post(
+            f"/orders/{sale_id}/confirm-payment",
+            json={"amount_received_cents": 1100, "convert_change_to_credit": False},
+        )
+        self.assertTrue(repeated.get_json()["already_paid"])
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM bar_credit_transactions WHERE sale_id=? AND type='CONSUMPTION'", (sale_id,)
+            ).fetchone()[0], 1)
+            self.assertEqual(db.execute(
+                "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+            ).fetchone()[0], "consumed")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM sale_item_deliveries sid JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=?",
+                (sale_id,),
+            ).fetchone()[0], 0)
+
+    def test_partial_credit_cash_change_and_cancel_are_atomic(self):
+        self.login_manager()
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,400)",
+                (self.player_id,),
+            )
+            db.commit()
+
+        form = {
+            "sale_type": "player", "player_id": str(self.player_id),
+            "payment_method": "Dinheiro", "use_bar_credit": "1",
+            "product_id": [str(self.product_id)], "quantity": ["5"],
+        }
+        self.client.post("/sale", data=form)
+        with app.app_context():
+            sale_id = get_db().execute("SELECT MAX(id) FROM sales").fetchone()[0]
+        paid = self.client.post(
+            f"/orders/{sale_id}/confirm-payment",
+            json={"amount_received_cents": 2000, "convert_change_to_credit": True},
+        )
+        self.assertEqual(paid.status_code, 200)
+        self.assertEqual((paid.get_json()["change_cents"], paid.get_json()["balance_cents"]), (900, 900))
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT SUM(amount_cents) FROM bar_credit_transactions WHERE sale_id=?", (sale_id,)
+            ).fetchone()[0], 500)
+
+            db.execute("UPDATE products SET stock=5 WHERE id=?", (self.product_id,))
+            db.execute("UPDATE bar_credit_accounts SET balance_cents=400 WHERE player_id=?", (self.player_id,))
+            db.commit()
+        self.client.post("/sale", data=form)
+        with app.app_context():
+            canceled_id = get_db().execute("SELECT MAX(id) FROM sales").fetchone()[0]
+        canceled = self.client.post(
+            f"/orders/{canceled_id}/cancel", json={"reason": "Cliente desistiu"}
+        )
+        self.assertEqual(canceled.status_code, 200)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (canceled_id,)
+            ).fetchone()[0], "released")
+            self.assertEqual(db.execute(
+                "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
+            ).fetchone()[0], 400)
+
+    def test_partial_credit_backend_recalculates_and_full_credit_stays_immediate(self):
+        self.login_manager()
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,250)",
+                (self.player_id,),
+            )
+            db.commit()
+        self.client.post(
+            "/sale", data={
+                "sale_type": "player", "player_id": str(self.player_id),
+                "payment_method": "Dinheiro", "use_bar_credit": "1",
+                "product_id": [str(self.product_id)], "quantity": ["1"],
+                "credit_amount": "999999",
+            },
+        )
+        with app.app_context():
+            db = get_db()
+            sale = db.execute("SELECT * FROM sales ORDER BY id DESC LIMIT 1").fetchone()
+            self.assertEqual(db.execute(
+                "SELECT amount_cents FROM bar_credit_reservations WHERE sale_id=?", (sale["id"],)
+            ).fetchone()[0], 250)
+            db.execute("UPDATE products SET stock=5 WHERE id=?", (self.product_id,))
+            db.execute("UPDATE bar_credit_accounts SET balance_cents=1000 WHERE player_id=?", (self.player_id,))
+            db.commit()
+        self.client.post(
+            "/sale", data={
+                "sale_type": "player", "player_id": str(self.player_id),
+                "payment_method": "Dinheiro", "use_bar_credit": "1",
+                "product_id": [str(self.product_id)], "quantity": ["1"],
+            },
+        )
+        with app.app_context():
+            db = get_db()
+            full_credit_sale = db.execute("SELECT * FROM sales ORDER BY id DESC LIMIT 1").fetchone()
+            self.assertEqual(
+                (full_credit_sale["payment_method"], full_credit_sale["paid"], full_credit_sale["payment_status"]),
+                ("Créditos", 1, "approved"),
+            )
+            self.assertIsNone(db.execute(
+                "SELECT id FROM bar_credit_reservations WHERE sale_id=?", (full_credit_sale["id"],)
+            ).fetchone())
+
     def test_cash_change_uses_credit_wallet_atomically_and_idempotently(self):
         def create_cash_sale(player_id=self.player_id, guest_name=None):
             with app.app_context():

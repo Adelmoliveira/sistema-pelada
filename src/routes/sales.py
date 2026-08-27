@@ -13,7 +13,17 @@ from src.services.mercadopago import (
     validate_webhook_signature,
 )
 from src.services.stock_alerts import notify_low_stock
-from src.services.bar_credits import approve_topup, balance as credit_balance, consume as consume_credit, credit_cash_change, low_balance_threshold, notify_low_balance
+from src.services.bar_credits import (
+    approve_topup,
+    available_balance as available_credit_balance,
+    consume as consume_credit,
+    consume_reservation,
+    credit_cash_change,
+    low_balance_threshold,
+    notify_low_balance,
+    release_reservation,
+    reserve_credit,
+)
 from src.services.pending_delivery_pdf import build_pending_delivery_pdf
 from src.catalog import SPORTS_MATERIAL_CATEGORY
 
@@ -283,12 +293,19 @@ def sale():
             
             total = sum(products_by_id[pid]["price_cents"] * qty for pid, qty in requested.items())
             method = request.form["payment_method"]
+            use_bar_credit = request.form.get("use_bar_credit") == "1"
             if method == "Pix" and mercadopago_enabled():
                 raise ValueError("Para pagamentos Pix, gere o QR Code e aguarde a confirmação automática.")
             if sale_type == "event" and method not in ("Pix", "Dinheiro", "Débito", "Cortesia"):
                 raise ValueError("Vendas de evento não podem usar créditos de peladeiro.")
             if g.user["role"] == "client" and method not in ("Pix", "Dinheiro", "Créditos"):
                 raise ValueError("Clientes podem registrar pagamentos somente em Pix ou Dinheiro.")
+
+            credit_amount = 0
+            if use_bar_credit and method == "Dinheiro" and player_id:
+                credit_amount = min(available_credit_balance(db, player_id), total)
+                if credit_amount == total:
+                    method = "Créditos"
             
             cash_pending = method == "Dinheiro"
             paid = 0 if cash_pending else 1
@@ -303,11 +320,13 @@ def sale():
                      request.form.get("notes", "").strip())
                 )
                 if method == "Créditos":
-                    if g.user["role"] != "client":
-                        raise ValueError("Somente o peladeiro pode pagar com créditos.")
+                    if not player_id:
+                        raise ValueError("Selecione um peladeiro para pagar com créditos.")
                     paid = 1
                     payment_status = "approved"
                     db.execute("UPDATE sales SET paid=1,payment_status='approved',paid_at=CURRENT_TIMESTAMP WHERE id=?", (cur.lastrowid,))
+                elif credit_amount:
+                    reserve_credit(db, player_id, cur.lastrowid, credit_amount)
                 for pid, qty in requested.items():
                     product = products_by_id[pid]
                     db.execute(
@@ -392,7 +411,11 @@ def sale():
     product_data.extend(sports_products.values())
     product_data.sort(key=lambda product: (-int(product.get("sold_quantity") or 0), (product.get("category") or "").lower(), (product.get("name") or "").lower()))
     product_rows = product_data
-    client_credit_balance = credit_balance(db, g.user["player_id"])["balance_cents"] if g.user["role"] == "client" and g.user["player_id"] else 0
+    player_available_credits = {
+        int(player["id"]): available_credit_balance(db, player["id"])
+        for player in player_rows
+    }
+    client_credit_balance = player_available_credits.get(int(g.user["player_id"] or 0), 0) if g.user["role"] == "client" else 0
     open_events = db.execute(
         "SELECT id,name,event_date FROM bar_events WHERE status='open' ORDER BY event_date DESC,id DESC"
     ).fetchall() if g.user["role"] in ("manager", "staff") else []
@@ -409,6 +432,7 @@ def sale():
             "war_name": player["war_name"] or "",
             "photo": player["thumbnail_data"] or "",
             "accumulated_total_cents": int(player["accumulated_total_cents"] or 0),
+            "available_credit_cents": player_available_credits[int(player["id"])],
         } for player in player_rows],
         pix_token=pix_access_token(g.user),
         mercadopago_enabled=mercadopago_enabled(),
@@ -817,6 +841,13 @@ def delivery_order_data(db, sale, items_for_sales=None):
     } for item in items]
     delivered_quantity = sum(item["delivered_quantity"] for item in item_data)
     pending_quantity = sum(item["pending_quantity"] for item in item_data)
+    reservation = db.execute(
+        """SELECT amount_cents FROM bar_credit_reservations
+           WHERE sale_id=? AND status='reserved'
+             AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)""",
+        (sale["id"],),
+    ).fetchone()
+    credit_reserved_cents = int(reservation["amount_cents"] or 0) if reservation else 0
     return {
         "id": sale["id"],
         "player_name": sale.get("guest_name") or sale.get("war_name") or sale.get("player_name") or f"Convidado #{sale['id']}",
@@ -827,6 +858,8 @@ def delivery_order_data(db, sale, items_for_sales=None):
         "is_event": bool(sale.get("event_id")),
         "guest_name": sale.get("guest_name") or "",
         "total_cents": sale.get("total_cents", 0),
+        "credit_reserved_cents": credit_reserved_cents,
+        "cash_due_cents": max(0, int(sale.get("total_cents", 0) or 0) - credit_reserved_cents),
         "payment_method": sale.get("payment_method") or "",
         "payment_status": sale.get("payment_status") or "",
         "paid": bool(sale.get("paid")),
@@ -928,10 +961,15 @@ def confirm_cash_payment(sale_id):
         amount_received_cents = int(payload.get("amount_received_cents"))
     except (TypeError, ValueError):
         return jsonify(error="Informe o valor recebido em dinheiro."), 400
-    total_cents = int(sale["total_cents"] or 0)
-    if amount_received_cents < total_cents:
-        return jsonify(error="O valor recebido não pode ser menor que o total do pedido."), 400
-    change_cents = amount_received_cents - total_cents
+    reservation = db.execute(
+        "SELECT amount_cents,status FROM bar_credit_reservations WHERE sale_id=?",
+        (sale_id,),
+    ).fetchone()
+    reserved_cents = int(reservation["amount_cents"] or 0) if reservation and reservation["status"] == "reserved" else 0
+    cash_due_cents = max(0, int(sale["total_cents"] or 0) - reserved_cents)
+    if amount_received_cents < cash_due_cents:
+        return jsonify(error="O valor recebido não pode ser menor que o restante em dinheiro."), 400
+    change_cents = amount_received_cents - cash_due_cents
     convert_change = payload.get("convert_change_to_credit") is True
     if convert_change and change_cents > 0:
         player = db.execute("SELECT id FROM players WHERE id=?", (sale["player_id"],)).fetchone()
@@ -952,6 +990,8 @@ def confirm_cash_payment(sale_id):
                 if latest and latest["paid"] and latest["payment_status"] == "approved":
                     return jsonify(ok=True, sale_id=sale_id, already_paid=True)
                 return jsonify(error="O estado do pagamento mudou. Atualize a fila."), 409
+            if reserved_cents:
+                consume_reservation(db, sale_id, g.user["id"])
             credited = False
             balance_cents = None
             if convert_change and change_cents > 0:
@@ -964,6 +1004,7 @@ def confirm_cash_payment(sale_id):
     return jsonify(
         ok=True, sale_id=sale_id, already_paid=False,
         change_cents=change_cents, credited=credited, balance_cents=balance_cents,
+        credit_consumed_cents=reserved_cents, cash_due_cents=cash_due_cents,
     )
 
 
@@ -1140,6 +1181,11 @@ def cancel_cash_order(sale_id):
                 "INSERT INTO sale_cancellations(sale_id,reason,canceled_by) VALUES(?,?,?)",
                 (sale_id, reason, g.user["id"]),
             )
+            reservation = db.execute(
+                "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+            ).fetchone()
+            if reservation and reservation["status"] == "reserved":
+                release_reservation(db, sale_id)
             restore_reserved_stock(db, sale_id)
         notify_low_stock(db, [item["product_id"] for item in items])
     except Exception as exc:
