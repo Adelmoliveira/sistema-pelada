@@ -199,6 +199,21 @@ CREATE TABLE IF NOT EXISTS bar_credit_transactions (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_bar_credit_transactions_player ON bar_credit_transactions(player_id,created_at);
+CREATE TABLE IF NOT EXISTS bar_credit_reservations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id INTEGER NOT NULL UNIQUE REFERENCES sales(id) ON DELETE CASCADE,
+    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    status TEXT NOT NULL DEFAULT 'reserved' CHECK(status IN ('reserved','consumed','released')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT,
+    consumed_at TEXT,
+    released_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bar_credit_reservations_player_active
+    ON bar_credit_reservations(player_id,created_at) WHERE status='reserved';
+CREATE INDEX IF NOT EXISTS idx_bar_credit_reservations_status_expires
+    ON bar_credit_reservations(status,expires_at) WHERE status='reserved';
 CREATE TABLE IF NOT EXISTS bar_credit_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
