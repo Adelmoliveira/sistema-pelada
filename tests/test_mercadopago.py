@@ -4036,6 +4036,36 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 (sale_id,),
             ).fetchone()[0], 0)
 
+    def test_partial_credit_ui_has_safe_catalog_initialization_order(self):
+        with app.app_context():
+            db = get_db()
+            client_id = db.execute(
+                """INSERT INTO users(username,name,password_hash,role,player_id)
+                   VALUES(?,?,?,'client',?)""",
+                ("credito.parcial", "Crédito Parcial", "hash", self.player_id),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,2000)",
+                (self.player_id,),
+            )
+            db.execute("UPDATE products SET price_cents=2400 WHERE id=?", (self.product_id,))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+
+        page = self.client.get("/sale")
+        html = page.get_data(as_text=True)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('id="partial-credit-box"', html)
+        self.assertIn('id="use-bar-credit"', html)
+        self.assertIn("method.value==='Dinheiro'", html)
+        self.assertIn("catalogMode==='bar'", html)
+        self.assertIn("creditBalance>0", html)
+        self.assertLess(
+            html.index("let catalogMode='bar'"),
+            html.index("renderPlayerSummary();toggleSaleTarget();total();"),
+        )
+
     def test_partial_credit_cash_change_and_cancel_are_atomic(self):
         self.login_manager()
         with app.app_context():
