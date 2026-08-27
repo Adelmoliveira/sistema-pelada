@@ -44,12 +44,18 @@ def index():
 @bp.get("/saldo")
 @roles_allowed("client")
 def current_balance():
-    """Return the connected player's current balance for live UI updates."""
-    account = get_db().execute(
-        "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?",
-        (_player_id(),),
+    """Return spendable credit for live sale UI updates."""
+    row = get_db().execute(
+        """SELECT balance_cents,
+                  COALESCE((SELECT SUM(amount_cents)
+                            FROM bar_credit_reservations
+                            WHERE player_id=? AND status='reserved'
+                              AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)),0) reserved_cents
+           FROM bar_credit_accounts WHERE player_id=?""",
+        (_player_id(), _player_id()),
     ).fetchone()
-    return jsonify(balance_cents=int(account["balance_cents"] or 0) if account else 0)
+    spendable = max(0, int(row["balance_cents"] or 0) - int(row["reserved_cents"] or 0)) if row else 0
+    return jsonify(balance_cents=spendable)
 
 
 @bp.get("/pendentes")
