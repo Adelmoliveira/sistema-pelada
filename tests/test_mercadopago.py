@@ -3876,12 +3876,16 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(blocked_delivery.status_code, 409)
 
         confirmed = self.client.post(
-            f"/orders/{sale_id}/confirm-payment", headers={"Accept": "application/json"}
+            f"/orders/{sale_id}/confirm-payment",
+            json={"amount_received_cents": 3000, "convert_change_to_credit": False},
+            headers={"Accept": "application/json"},
         )
         self.assertEqual(confirmed.status_code, 200)
         self.assertFalse(confirmed.get_json()["already_paid"])
         repeated_confirmation = self.client.post(
-            f"/orders/{sale_id}/confirm-payment", headers={"Accept": "application/json"}
+            f"/orders/{sale_id}/confirm-payment",
+            json={"amount_received_cents": 3000, "convert_change_to_credit": False},
+            headers={"Accept": "application/json"},
         )
         self.assertEqual(repeated_confirmation.status_code, 200)
         self.assertTrue(repeated_confirmation.get_json()["already_paid"])
@@ -3958,6 +3962,135 @@ class MercadoPagoFlowTest(unittest.TestCase):
             sale = db.execute("SELECT * FROM sales WHERE id=?", (canceled_id,)).fetchone()
             self.assertEqual((sale["paid"], sale["payment_status"], sale["ready_for_delivery"]), (0, "canceled", 0))
             self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 10)
+
+    def test_cash_change_uses_credit_wallet_atomically_and_idempotently(self):
+        def create_cash_sale(player_id=self.player_id, guest_name=None):
+            with app.app_context():
+                db = get_db()
+                sale_id = db.execute(
+                    """INSERT INTO sales
+                       (player_id,guest_name,payment_method,total_cents,paid,payment_status,ready_for_delivery)
+                       VALUES(?,?,'Dinheiro',600,0,'pending_cash',1)""",
+                    (player_id, guest_name or ""),
+                ).lastrowid
+                db.commit()
+                return sale_id
+
+        with app.app_context():
+            db = get_db()
+            db.execute("DELETE FROM bar_credit_audit WHERE player_id=?", (self.player_id,))
+            db.execute("DELETE FROM bar_credit_transactions WHERE player_id=?", (self.player_id,))
+            db.execute("DELETE FROM bar_credit_accounts WHERE player_id=?", (self.player_id,))
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        returned_sale_id = create_cash_sale()
+        returned = self.client.post(
+            f"/orders/{returned_sale_id}/confirm-payment",
+            json={"amount_received_cents": 1000, "convert_change_to_credit": False},
+        )
+        self.assertEqual(returned.status_code, 200)
+        self.assertEqual(returned.get_json()["change_cents"], 400)
+        self.assertFalse(returned.get_json()["credited"])
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT COALESCE(SUM(amount_cents),0) FROM bar_credit_transactions WHERE player_id=?",
+                (self.player_id,),
+            ).fetchone()[0], 0)
+
+        converted_sale_id = create_cash_sale()
+        converted = self.client.post(
+            f"/orders/{converted_sale_id}/confirm-payment",
+            json={"amount_received_cents": 1000, "convert_change_to_credit": True},
+        )
+        self.assertEqual(converted.status_code, 200)
+        self.assertEqual(
+            (converted.get_json()["change_cents"], converted.get_json()["credited"], converted.get_json()["balance_cents"]),
+            (400, True, 400),
+        )
+        repeated = self.client.post(
+            f"/orders/{converted_sale_id}/confirm-payment",
+            json={"amount_received_cents": 1000, "convert_change_to_credit": True},
+        )
+        self.assertEqual(repeated.status_code, 200)
+        self.assertTrue(repeated.get_json()["already_paid"])
+        with app.app_context():
+            db = get_db()
+            account = db.execute(
+                "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
+            ).fetchone()
+            transactions = db.execute(
+                """SELECT type,amount_cents,balance_after_cents,description,sale_id,created_by
+                   FROM bar_credit_transactions WHERE player_id=?""",
+                (self.player_id,),
+            ).fetchall()
+            audit = db.execute(
+                """SELECT action,amount_cents,actor_user_id,reason
+                   FROM bar_credit_audit WHERE player_id=?""",
+                (self.player_id,),
+            ).fetchone()
+            self.assertEqual(account["balance_cents"], 400)
+            self.assertEqual(len(transactions), 1)
+            self.assertEqual(
+                tuple(transactions[0]),
+                ("ADJUSTMENT", 400, 400, "Troco convertido em crédito", converted_sale_id, self.user_id),
+            )
+            self.assertEqual(
+                tuple(audit), ("TROCO_CONVERTIDO", 400, self.user_id, f"Pedido #{converted_sale_id}")
+            )
+
+        exact_sale_id = create_cash_sale()
+        exact = self.client.post(
+            f"/orders/{exact_sale_id}/confirm-payment",
+            json={"amount_received_cents": 600, "convert_change_to_credit": True},
+        )
+        self.assertEqual(exact.status_code, 200)
+        self.assertEqual((exact.get_json()["change_cents"], exact.get_json()["credited"]), (0, False))
+
+        insufficient_sale_id = create_cash_sale()
+        missing_amount = self.client.post(
+            f"/orders/{insufficient_sale_id}/confirm-payment", json={}
+        )
+        self.assertEqual(missing_amount.status_code, 400)
+        insufficient = self.client.post(
+            f"/orders/{insufficient_sale_id}/confirm-payment",
+            json={"amount_received_cents": 599, "convert_change_to_credit": False},
+        )
+        self.assertEqual(insufficient.status_code, 400)
+        with app.app_context():
+            sale = get_db().execute("SELECT paid,payment_status FROM sales WHERE id=?", (insufficient_sale_id,)).fetchone()
+            self.assertEqual((sale["paid"], sale["payment_status"]), (0, "pending_cash"))
+
+        guest_sale_id = create_cash_sale(player_id=None, guest_name="Convidado Evento")
+        guest_conversion = self.client.post(
+            f"/orders/{guest_sale_id}/confirm-payment",
+            json={"amount_received_cents": 1000, "convert_change_to_credit": True},
+        )
+        self.assertEqual(guest_conversion.status_code, 400)
+        guest_returned = self.client.post(
+            f"/orders/{guest_sale_id}/confirm-payment",
+            json={"amount_received_cents": 1000, "convert_change_to_credit": False},
+        )
+        self.assertEqual(guest_returned.status_code, 200)
+
+        failed_sale_id = create_cash_sale()
+        with patch("src.routes.sales.credit_cash_change", side_effect=RuntimeError("wallet unavailable")):
+            failed = self.client.post(
+                f"/orders/{failed_sale_id}/confirm-payment",
+                json={"amount_received_cents": 1000, "convert_change_to_credit": True},
+            )
+        self.assertEqual(failed.status_code, 500)
+        with app.app_context():
+            db = get_db()
+            failed_sale = db.execute(
+                "SELECT paid,payment_status,paid_at FROM sales WHERE id=?", (failed_sale_id,)
+            ).fetchone()
+            self.assertEqual((failed_sale["paid"], failed_sale["payment_status"], failed_sale["paid_at"]), (0, "pending_cash", None))
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM bar_credit_transactions WHERE sale_id=?", (failed_sale_id,)
+            ).fetchone()[0], 0)
 
     def test_cash_register_reconciles_sales_movements_reversal_and_closing(self):
         with self.client.session_transaction() as session:

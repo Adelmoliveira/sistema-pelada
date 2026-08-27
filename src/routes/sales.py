@@ -13,7 +13,7 @@ from src.services.mercadopago import (
     validate_webhook_signature,
 )
 from src.services.stock_alerts import notify_low_stock
-from src.services.bar_credits import approve_topup, balance as credit_balance, consume as consume_credit, low_balance_threshold, notify_low_balance
+from src.services.bar_credits import approve_topup, balance as credit_balance, consume as consume_credit, credit_cash_change, low_balance_threshold, notify_low_balance
 from src.services.pending_delivery_pdf import build_pending_delivery_pdf
 from src.catalog import SPORTS_MATERIAL_CATEGORY
 
@@ -831,6 +831,7 @@ def delivery_order_data(db, sale, items_for_sales=None):
         "payment_status": sale.get("payment_status") or "",
         "paid": bool(sale.get("paid")),
         "waiting_cash": sale.get("payment_status") == "pending_cash" and not sale.get("paid"),
+        "can_convert_change_to_credit": bool(sale.get("player_id")),
         "notes": sale.get("notes") or "",
         "paid_at": datetime_iso(sale.get("paid_at") or sale.get("created_at")),
         "delivered_at": datetime_iso(sale.get("delivered_at")),
@@ -913,7 +914,7 @@ def orders_feed():
 def confirm_cash_payment(sale_id):
     db = get_db()
     sale = db.execute(
-        "SELECT id,payment_method,paid,payment_status FROM sales WHERE id=?",
+        "SELECT id,player_id,payment_method,total_cents,paid,payment_status FROM sales WHERE id=?",
         (sale_id,),
     ).fetchone()
     if not sale or sale["payment_method"] != "Dinheiro":
@@ -922,21 +923,48 @@ def confirm_cash_payment(sale_id):
         return jsonify(ok=True, sale_id=sale_id, already_paid=True)
     if sale["paid"] or sale["payment_status"] != "pending_cash":
         return jsonify(error="O pedido não está aguardando pagamento em dinheiro."), 409
-    with db:
-        updated = db.execute(
-            """UPDATE sales
-               SET paid=1,payment_status='approved',paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP)
-               WHERE id=? AND payment_method='Dinheiro' AND paid=0 AND payment_status='pending_cash'""",
-            (sale_id,),
-        )
-        if updated.rowcount != 1:
-            latest = db.execute(
-                "SELECT paid,payment_status FROM sales WHERE id=?", (sale_id,)
-            ).fetchone()
-            if latest and latest["paid"] and latest["payment_status"] == "approved":
-                return jsonify(ok=True, sale_id=sale_id, already_paid=True)
-            return jsonify(error="O estado do pagamento mudou. Atualize a fila."), 409
-    return jsonify(ok=True, sale_id=sale_id, already_paid=False)
+    payload = request.get_json(silent=True) or {}
+    try:
+        amount_received_cents = int(payload.get("amount_received_cents"))
+    except (TypeError, ValueError):
+        return jsonify(error="Informe o valor recebido em dinheiro."), 400
+    total_cents = int(sale["total_cents"] or 0)
+    if amount_received_cents < total_cents:
+        return jsonify(error="O valor recebido não pode ser menor que o total do pedido."), 400
+    change_cents = amount_received_cents - total_cents
+    convert_change = payload.get("convert_change_to_credit") is True
+    if convert_change and change_cents > 0:
+        player = db.execute("SELECT id FROM players WHERE id=?", (sale["player_id"],)).fetchone()
+        if not player:
+            return jsonify(error="Este pedido não possui peladeiro para receber créditos."), 400
+    try:
+        with db:
+            updated = db.execute(
+                """UPDATE sales
+                   SET paid=1,payment_status='approved',paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP)
+                   WHERE id=? AND payment_method='Dinheiro' AND paid=0 AND payment_status='pending_cash'""",
+                (sale_id,),
+            )
+            if updated.rowcount != 1:
+                latest = db.execute(
+                    "SELECT paid,payment_status FROM sales WHERE id=?", (sale_id,)
+                ).fetchone()
+                if latest and latest["paid"] and latest["payment_status"] == "approved":
+                    return jsonify(ok=True, sale_id=sale_id, already_paid=True)
+                return jsonify(error="O estado do pagamento mudou. Atualize a fila."), 409
+            credited = False
+            balance_cents = None
+            if convert_change and change_cents > 0:
+                balance_cents, credited = credit_cash_change(
+                    db, sale["player_id"], change_cents, sale_id, g.user["id"]
+                )
+    except Exception as exc:
+        current_app.logger.error("Erro ao confirmar pagamento em dinheiro do pedido %s: %s", sale_id, exc)
+        return jsonify(error="Não foi possível confirmar o pagamento."), 500
+    return jsonify(
+        ok=True, sale_id=sale_id, already_paid=False,
+        change_cents=change_cents, credited=credited, balance_cents=balance_cents,
+    )
 
 
 @bp.post("/orders/<int:sale_id>/deliver")

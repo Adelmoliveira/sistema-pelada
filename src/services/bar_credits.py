@@ -72,6 +72,41 @@ def consume(db, player_id, amount_cents, sale_id, created_by=None):
     return new_balance, new_balance <= low_balance_threshold() and not bool(account["low_balance_notified"])
 
 
+def credit_cash_change(db, player_id, amount_cents, sale_id, created_by=None):
+    """Convert cash change into wallet credit exactly once per sale."""
+    amount_cents = int(amount_cents)
+    if amount_cents <= 0:
+        raise ValueError("O troco convertido deve ser maior que zero.")
+    existing = db.execute(
+        """SELECT balance_after_cents FROM bar_credit_transactions
+           WHERE sale_id=? AND type='ADJUSTMENT'
+             AND description='Troco convertido em crédito'""",
+        (sale_id,),
+    ).fetchone()
+    if existing:
+        return int(existing["balance_after_cents"]), False
+    account = ensure_account(db, player_id)
+    new_balance = int(account["balance_cents"] or 0) + amount_cents
+    db.execute(
+        """UPDATE bar_credit_accounts
+           SET balance_cents=?,low_balance_notified=0,updated_at=CURRENT_TIMESTAMP
+           WHERE player_id=?""",
+        (new_balance, player_id),
+    )
+    cur = db.execute(
+        """INSERT INTO bar_credit_transactions
+           (player_id,type,amount_cents,balance_after_cents,description,sale_id,created_by)
+           VALUES(?,'ADJUSTMENT',?,?,?,?,?)""",
+        (player_id, amount_cents, new_balance, "Troco convertido em crédito", sale_id, created_by),
+    )
+    _audit(
+        db, player_id, "TROCO_CONVERTIDO", amount_cents,
+        transaction_id=cur.lastrowid, actor_user_id=created_by,
+        reason=f"Pedido #{sale_id}",
+    )
+    return new_balance, True
+
+
 def approve_topup(db, topup, payment_id=None, created_by=None):
     """Credit a Pix top-up exactly once."""
     topup_id = topup["id"] if hasattr(topup, "keys") else topup
