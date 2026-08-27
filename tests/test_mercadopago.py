@@ -3816,6 +3816,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
     def test_cash_order_waits_for_staff_payment_delivery_or_cancel(self):
         with app.app_context():
             db = get_db()
+            db.execute("UPDATE products SET stock=20 WHERE id=?", (self.product_id,))
             cursor = db.execute(
                 "INSERT INTO users(username,name,password_hash,role,password_required) VALUES(?,?,?,'client',0)",
                 ("peladeiro.caixa", "Peladeiro Caixa", "hash"),
@@ -3830,7 +3831,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             data={
                 "player_id": str(self.player_id),
                 "product_id": [str(self.product_id)],
-                "quantity": ["2"],
+                "quantity": ["10"],
                 "payment_method": "Dinheiro",
                 "notes": "Precisa de troco.",
             },
@@ -3842,19 +3843,23 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "SELECT * FROM sales WHERE payment_method='Dinheiro' ORDER BY id DESC LIMIT 1"
             ).fetchone()
             sale_id = cash_sale["id"]
+            sale_item_id = db.execute(
+                "SELECT id FROM sale_items WHERE sale_id=?", (sale_id,)
+            ).fetchone()["id"]
             self.assertEqual(
                 (cash_sale["paid"], cash_sale["payment_status"], cash_sale["ready_for_delivery"]),
                 (0, "pending_cash", 1),
             )
             self.assertEqual(
                 db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"],
-                3,
+                10,
             )
 
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
         orders_page = self.client.get("/orders").get_data(as_text=True)
-        self.assertIn("Confirmar pagamento e entregar", orders_page)
+        self.assertIn("Confirmar pagamento", orders_page)
+        self.assertNotIn("Confirmar pagamento e entregar", orders_page)
         self.assertIn("Cancelar", orders_page)
         feed = self.client.get("/orders/feed", headers={"Accept": "application/json"}).get_json()
         self.assertEqual(len(feed["pending"]), 1)
@@ -3863,12 +3868,67 @@ class MercadoPagoFlowTest(unittest.TestCase):
             (sale_id, True, "Precisa de troco."),
         )
 
+        blocked_delivery = self.client.post(
+            f"/orders/{sale_id}/deliver",
+            json={"sale_item_id": sale_item_id, "quantity": 1},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(blocked_delivery.status_code, 409)
+
+        confirmed = self.client.post(
+            f"/orders/{sale_id}/confirm-payment", headers={"Accept": "application/json"}
+        )
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertFalse(confirmed.get_json()["already_paid"])
+        repeated_confirmation = self.client.post(
+            f"/orders/{sale_id}/confirm-payment", headers={"Accept": "application/json"}
+        )
+        self.assertEqual(repeated_confirmation.status_code, 200)
+        self.assertTrue(repeated_confirmation.get_json()["already_paid"])
+        with app.app_context():
+            db = get_db()
+            sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+            self.assertEqual((sale["paid"], sale["payment_status"]), (1, "approved"))
+            self.assertIsNotNone(sale["paid_at"])
+            self.assertIsNone(sale["delivered_at"])
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM sale_item_deliveries WHERE sale_item_id=?", (sale_item_id,)
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM sale_delivery_operations WHERE sale_id=?", (sale_id,)
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM notification_outbox WHERE sale_id=?", (sale_id,)
+            ).fetchone()[0], 0)
+
+        paid_feed = self.client.get("/orders/feed", headers={"Accept": "application/json"}).get_json()
+        paid_order = next(order for order in paid_feed["pending"] if order["id"] == sale_id)
+        self.assertFalse(paid_order["waiting_cash"])
+
+        partial = self.client.post(
+            f"/orders/{sale_id}/deliver",
+            json={"sale_item_id": sale_item_id, "quantity": 1},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(partial.status_code, 200)
+        self.assertTrue(partial.get_json()["partial"])
+        self.assertEqual(partial.get_json()["remaining_items"][0]["quantity"], 9)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT SUM(quantity) FROM sale_item_deliveries WHERE sale_item_id=?", (sale_item_id,)
+            ).fetchone()[0], 1)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM sale_delivery_operations WHERE sale_id=?", (sale_id,)
+            ).fetchone()[0], 1)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM notification_outbox WHERE sale_id=?", (sale_id,)
+            ).fetchone()[0], 3)
+
         delivered = self.client.post(f"/orders/{sale_id}/deliver", headers={"Accept": "application/json"})
         self.assertEqual(delivered.status_code, 200)
         with app.app_context():
             sale = get_db().execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
-            self.assertEqual((sale["paid"], sale["payment_status"]), (1, "approved"))
-            self.assertIsNotNone(sale["paid_at"])
             self.assertIsNotNone(sale["delivered_at"])
 
         with self.client.session_transaction() as session:
@@ -3886,7 +3946,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         with app.app_context():
             db = get_db()
             canceled_id = db.execute("SELECT MAX(id) FROM sales").fetchone()[0]
-            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 2)
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 9)
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
         canceled = self.client.post(f"/orders/{canceled_id}/cancel", headers={"Accept": "application/json"})
@@ -3897,7 +3957,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             db = get_db()
             sale = db.execute("SELECT * FROM sales WHERE id=?", (canceled_id,)).fetchone()
             self.assertEqual((sale["paid"], sale["payment_status"], sale["ready_for_delivery"]), (0, "canceled", 0))
-            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 3)
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 10)
 
     def test_cash_register_reconciles_sales_movements_reversal_and_closing(self):
         with self.client.session_transaction() as session:

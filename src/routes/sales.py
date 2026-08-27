@@ -908,6 +908,37 @@ def orders_feed():
         payment_method=payment_method,
     )
 
+@bp.post("/orders/<int:sale_id>/confirm-payment")
+@roles_allowed("manager", "staff")
+def confirm_cash_payment(sale_id):
+    db = get_db()
+    sale = db.execute(
+        "SELECT id,payment_method,paid,payment_status FROM sales WHERE id=?",
+        (sale_id,),
+    ).fetchone()
+    if not sale or sale["payment_method"] != "Dinheiro":
+        return jsonify(error="Pedido em dinheiro não encontrado."), 404
+    if sale["paid"] and sale["payment_status"] == "approved":
+        return jsonify(ok=True, sale_id=sale_id, already_paid=True)
+    if sale["paid"] or sale["payment_status"] != "pending_cash":
+        return jsonify(error="O pedido não está aguardando pagamento em dinheiro."), 409
+    with db:
+        updated = db.execute(
+            """UPDATE sales
+               SET paid=1,payment_status='approved',paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP)
+               WHERE id=? AND payment_method='Dinheiro' AND paid=0 AND payment_status='pending_cash'""",
+            (sale_id,),
+        )
+        if updated.rowcount != 1:
+            latest = db.execute(
+                "SELECT paid,payment_status FROM sales WHERE id=?", (sale_id,)
+            ).fetchone()
+            if latest and latest["paid"] and latest["payment_status"] == "approved":
+                return jsonify(ok=True, sale_id=sale_id, already_paid=True)
+            return jsonify(error="O estado do pagamento mudou. Atualize a fila."), 409
+    return jsonify(ok=True, sale_id=sale_id, already_paid=False)
+
+
 @bp.post("/orders/<int:sale_id>/deliver")
 @roles_allowed("manager", "staff")
 def deliver_order(sale_id):
@@ -924,6 +955,10 @@ def deliver_order(sale_id):
     sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
     if not sale or not sale["ready_for_delivery"] or sale["delivered_at"]:
         return jsonify(error="Pedido não encontrado ou já entregue."), 409
+    if sale["payment_method"] == "Dinheiro" and (
+        not sale["paid"] or sale["payment_status"] != "approved"
+    ):
+        return jsonify(error="Confirme o pagamento em dinheiro antes da entrega."), 409
     item_rows = db.execute(
         """SELECT si.id,si.quantity,p.name,
                   COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=si.id),0) delivered_quantity
@@ -959,8 +994,6 @@ def deliver_order(sale_id):
     ]
     try:
         with db:
-           if sale["payment_status"] == "pending_cash" and not sale["paid"]:
-               db.execute("UPDATE sales SET paid=1,payment_status='approved',paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP) WHERE id=?", (sale_id,))
            delivery_operation = db.execute(
                "INSERT INTO sale_delivery_operations(sale_id,delivered_by,delivered_at) VALUES(?,?,CURRENT_TIMESTAMP)",
                (sale_id, g.user["id"]),
