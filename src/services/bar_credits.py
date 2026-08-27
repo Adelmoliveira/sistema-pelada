@@ -191,10 +191,11 @@ def _audit(db, player_id, action, amount_cents=0, *, topup_id=None,
 
 
 def consume(db, player_id, amount_cents, sale_id, created_by=None):
+    _lock_credit_account(db, player_id)
     account = ensure_account(db, player_id)
     current = int(account["balance_cents"] or 0)
     amount_cents = int(amount_cents)
-    if amount_cents <= 0 or current < amount_cents:
+    if amount_cents <= 0 or available_balance(db, player_id) < amount_cents:
         raise ValueError("Saldo de créditos insuficiente para este pedido.")
     new_balance = current - amount_cents
     db.execute(

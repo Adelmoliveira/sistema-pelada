@@ -3592,6 +3592,151 @@ class MercadoPagoFlowTest(unittest.TestCase):
             db = get_db()
             self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 4)
 
+    def test_partial_credit_pix_charges_remainder_and_consumes_once_on_approval(self):
+        from src.routes.sales import apply_mercadopago_status
+
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE products SET price_cents=1500 WHERE id=?", (self.product_id,))
+            db.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,400)",
+                (self.player_id,),
+            )
+            db.commit()
+        order_response = {
+            "id": "ORD-PARTIAL-CREDIT",
+            "status": "action_required",
+            "transactions": {"payments": [{
+                "id": "PAY-PARTIAL-CREDIT",
+                "payment_method": {"qr_code": "000201PARTIAL"},
+            }]},
+        }
+        with patch("src.routes.sales.create_pix_order", return_value=order_response) as create_order:
+            created = self.client.post(
+                "/pix/mercadopago/orders", headers=self.headers(),
+                json={
+                    "player_id": self.player_id,
+                    "use_bar_credit": True,
+                    "items": [{"product_id": self.product_id, "quantity": 1}],
+                },
+            )
+        self.assertEqual(created.status_code, 201, created.get_json())
+        sale_id = created.get_json()["sale_id"]
+        self.assertEqual(create_order.call_args.args[2], 1100)
+        self.assertEqual(created.get_json()["amount"], "R$ 11,00")
+        with app.app_context():
+            db = get_db()
+            sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+            reservation = db.execute(
+                "SELECT * FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+            ).fetchone()
+            self.assertEqual((sale["total_cents"], sale["paid"]), (1500, 0))
+            self.assertEqual((reservation["amount_cents"], reservation["status"]), (400, "reserved"))
+            self.assertEqual(db.execute(
+                "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
+            ).fetchone()[0], 400)
+            approved_order = {
+                "status": "processed", "status_detail": "accredited",
+                "total_paid_amount": "11.00",
+                "transactions": {"payments": [{"id": "PAY-APPROVED"}]},
+            }
+            self.assertEqual(apply_mercadopago_status(db, sale, approved_order), "approved")
+            sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+            self.assertEqual(apply_mercadopago_status(db, sale, approved_order), "approved")
+            self.assertEqual(db.execute(
+                "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM bar_credit_transactions WHERE sale_id=? AND type='CONSUMPTION'",
+                (sale_id,),
+            ).fetchone()[0], 1)
+            self.assertEqual(db.execute(
+                "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+            ).fetchone()[0], "consumed")
+            self.assertEqual((sale["paid"], sale["payment_status"], sale["ready_for_delivery"]), (1, "approved", 1))
+
+    def test_partial_credit_pix_terminal_and_creation_failure_release_reservation(self):
+        from src.routes.sales import apply_mercadopago_status
+
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE products SET price_cents=1500,stock=5 WHERE id=?", (self.product_id,))
+            db.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,400)",
+                (self.player_id,),
+            )
+            db.commit()
+
+        def create_pending(order_id):
+            response_data = {
+                "id": order_id,
+                "transactions": {"payments": [{
+                    "id": f"PAY-{order_id}", "payment_method": {"qr_code": "000201TEST"},
+                }]},
+            }
+            with patch("src.routes.sales.create_pix_order", return_value=response_data):
+                response = self.client.post(
+                    "/pix/mercadopago/orders", headers=self.headers(),
+                    json={"player_id": self.player_id, "use_bar_credit": True,
+                          "items": [{"product_id": self.product_id, "quantity": 1}]},
+                )
+            return response.get_json()["sale_id"]
+
+        for terminal_status in ("expired", "canceled"):
+            sale_id = create_pending(f"ORD-{terminal_status}")
+            with app.app_context():
+                db = get_db()
+                sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+                self.assertEqual(apply_mercadopago_status(
+                    db, sale, {"status": terminal_status, "transactions": {"payments": []}}
+                ), terminal_status)
+                self.assertEqual(db.execute(
+                    "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+                ).fetchone()[0], "released")
+                self.assertEqual(db.execute(
+                    "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
+                ).fetchone()[0], 400)
+
+        with patch("src.routes.sales.create_pix_order", side_effect=MercadoPagoError("falha simulada")):
+            failed = self.client.post(
+                "/pix/mercadopago/orders", headers=self.headers(),
+                json={"player_id": self.player_id, "use_bar_credit": True,
+                      "items": [{"product_id": self.product_id, "quantity": 1}]},
+            )
+        self.assertEqual(failed.status_code, 502)
+        with app.app_context():
+            db = get_db()
+            failed_sale = db.execute("SELECT id FROM sales ORDER BY id DESC LIMIT 1").fetchone()
+            self.assertEqual(db.execute(
+                "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (failed_sale["id"],)
+            ).fetchone()[0], "released")
+
+    def test_pix_selection_with_full_credit_skips_mercadopago(self):
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE products SET price_cents=300 WHERE id=?", (self.product_id,))
+            db.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,1000)",
+                (self.player_id,),
+            )
+            db.commit()
+        with patch("src.routes.sales.create_pix_order") as create_order:
+            response = self.client.post(
+                "/pix/mercadopago/orders", headers=self.headers(),
+                json={"player_id": self.player_id, "use_bar_credit": True,
+                      "items": [{"product_id": self.product_id, "quantity": 1}]},
+            )
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.get_json()["paid"])
+        create_order.assert_not_called()
+        with app.app_context():
+            db = get_db()
+            sale = db.execute("SELECT * FROM sales ORDER BY id DESC LIMIT 1").fetchone()
+            self.assertEqual((sale["payment_method"], sale["paid"], sale["payment_status"]), ("Créditos", 1, "approved"))
+            self.assertIsNone(db.execute(
+                "SELECT id FROM bar_credit_reservations WHERE sale_id=?", (sale["id"],)
+            ).fetchone())
+
     def test_webhook_simulator_acknowledges_unknown_order(self):
         data_id = "123456"
         request_id = "request-simulator"

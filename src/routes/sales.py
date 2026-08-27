@@ -112,14 +112,41 @@ def apply_mercadopago_status(db, sale, order):
     except (TypeError, ValueError):
         paid_cents = 0
 
-    if status == "processed" and detail == "accredited" and paid_cents == sale["total_cents"]:
-        db.execute(
-            """UPDATE sales SET paid=1,payment_status='approved',mercadopago_payment_id=?,
-               paid_at=CURRENT_TIMESTAMP,ready_for_delivery=1
-               WHERE id=? AND paid=0""",
-            (payment_id, sale["id"]),
-        )
-        db.commit()
+    reservation = db.execute(
+        "SELECT amount_cents,status,expires_at FROM bar_credit_reservations WHERE sale_id=?",
+        (sale["id"],),
+    ).fetchone()
+    reserved_cents = int(reservation["amount_cents"] or 0) if reservation else 0
+    expected_external_cents = int(sale["total_cents"] or 0) - reserved_cents
+
+    if status == "processed" and detail == "accredited" and paid_cents == expected_external_cents:
+        if int(sale["paid"] or 0) and sale["payment_status"] == "approved":
+            return "approved"
+        if reservation and reservation["status"] == "released":
+            return sale["payment_status"]
+        if reservation and reservation["status"] == "reserved":
+            active = db.execute(
+                """SELECT 1 FROM bar_credit_reservations
+                   WHERE sale_id=? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)""",
+                (sale["id"],),
+            ).fetchone()
+            if not active:
+                db.execute(
+                    """UPDATE sales SET payment_status='credit_reservation_expired',
+                       mercadopago_payment_id=? WHERE id=? AND paid=0""",
+                    (payment_id, sale["id"]),
+                )
+                db.commit()
+                return "credit_reservation_expired"
+        with db:
+            if reservation and reservation["status"] == "reserved":
+                consume_reservation(db, sale["id"])
+            db.execute(
+                """UPDATE sales SET paid=1,payment_status='approved',mercadopago_payment_id=?,
+                   paid_at=CURRENT_TIMESTAMP,ready_for_delivery=1
+                   WHERE id=? AND paid=0""",
+                (payment_id, sale["id"]),
+            )
         return "approved"
 
     if status == "refunded" and sale["paid"]:
@@ -130,7 +157,7 @@ def apply_mercadopago_status(db, sale, order):
         db.commit()
         return "refunded"
 
-    terminal_statuses = {"expired", "canceled"}
+    terminal_statuses = {"expired", "canceled", "failed"}
     if status in terminal_statuses:
         with db:
             updated = db.execute(
@@ -138,6 +165,8 @@ def apply_mercadopago_status(db, sale, order):
                 (status, payment_id, sale["id"]),
             )
             if updated.rowcount:
+                if reservation and reservation["status"] == "reserved":
+                    release_reservation(db, sale["id"])
                 restore_reserved_stock(db, sale["id"])
         return status
 
@@ -1309,6 +1338,10 @@ def mercadopago_create_order():
             return jsonify(error=f"Estoque insuficiente de {products_by_id[product_id]['name']}."), 409
 
     total_cents = sum(products_by_id[product_id]["price_cents"] * quantity for product_id, quantity in requested.items())
+    use_bar_credit = body.get("use_bar_credit") is True and bool(player_id)
+    credit_amount = min(available_credit_balance(db, player_id), total_cents) if use_bar_credit else 0
+    external_cents = total_cents - credit_amount
+    full_credit = credit_amount == total_cents and credit_amount > 0
     external_reference = f"evento_{uuid.uuid4().hex}" if event_id else f"pelada_{uuid.uuid4().hex}"
     idempotency_key = str(uuid.uuid4())
     try:
@@ -1316,9 +1349,11 @@ def mercadopago_create_order():
             sale_cursor = db.execute(
                 """INSERT INTO sales(player_id,event_id,guest_name,payment_method,total_cents,paid,payment_status,external_reference,idempotency_key,notes)
                    VALUES(?,?,?,? ,?,'0','creating',?,?,?)""",
-                (player_id, event_id, guest_name, "Pix", total_cents, external_reference, idempotency_key, str(body.get("notes") or "").strip()),
+                (player_id, event_id, guest_name, "Créditos" if full_credit else "Pix", total_cents, external_reference, idempotency_key, str(body.get("notes") or "").strip()),
             )
             sale_id = sale_cursor.lastrowid
+            if credit_amount and not full_credit:
+                reserve_credit(db, player_id, sale_id, credit_amount)
             for product_id, quantity in requested.items():
                 product = products_by_id[product_id]
                 db.execute(
@@ -1331,11 +1366,31 @@ def mercadopago_create_order():
                 )
                 if updated.rowcount != 1:
                     raise ValueError(f"O estoque de {product['name']} mudou. Tente novamente.")
+            if full_credit:
+                consume_credit(
+                    db, player_id, total_cents, sale_id,
+                    g.user["id"] if g.user else None,
+                )
+                db.execute(
+                    """UPDATE sales SET paid=1,payment_status='approved',
+                       paid_at=CURRENT_TIMESTAMP,ready_for_delivery=1 WHERE id=?""",
+                    (sale_id,),
+                )
     except ValueError as exc:
         return jsonify(error=str(exc)), 409
 
+    if full_credit:
+        notify_low_stock(db, requested.keys())
+        return jsonify(
+            sale_id=sale_id,
+            amount=money(0),
+            status="approved",
+            paid=True,
+            status_url=url_for("sales.receipt", sale_id=sale_id),
+        ), 201
+
     try:
-        order = create_pix_order(access_token, external_reference, total_cents, idempotency_key, payer_email)
+        order = create_pix_order(access_token, external_reference, external_cents, idempotency_key, payer_email)
         order_id = order.get("id")
         payments = (order.get("transactions") or {}).get("payments") or []
         payment_method = (payments[0].get("payment_method") or {}) if payments else {}
@@ -1355,7 +1410,7 @@ def mercadopago_create_order():
             order_id=order_id,
             payload=qr_data,
             image=f"data:image/png;base64,{encoded_image}",
-            amount=money(total_cents),
+            amount=money(external_cents),
             status="pending",
             status_url=url_for("sales.mercadopago_order_status", sale_id=sale_id),
         ), 201
@@ -1364,6 +1419,11 @@ def mercadopago_create_order():
         with db:
             sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
             if sale and sale["payment_status"] == "creating":
+                reservation = db.execute(
+                    "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
+                ).fetchone()
+                if reservation and reservation["status"] == "reserved":
+                    release_reservation(db, sale_id)
                 restore_reserved_stock(db, sale_id)
                 db.execute("UPDATE sales SET payment_status='failed' WHERE id=?", (sale_id,))
         message = str(exc) if isinstance(exc, MercadoPagoError) else "Não foi possível criar a cobrança no Mercado Pago."
