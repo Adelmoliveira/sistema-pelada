@@ -36,8 +36,15 @@ def index():
         (player_id,),
     ).fetchall()
     return render_template(
-        "credits.html", account=account, transactions=transactions, pending=pending,
-        preset_amounts=PRESET_AMOUNTS_CENTS, low_balance_threshold_cents=low_balance_threshold(),
+         "credits.html",
+        account=account,
+        transactions=transactions,
+        pending=pending,
+        preset_amounts=PRESET_AMOUNTS_CENTS,
+        low_balance_threshold_cents=low_balance_threshold(),
+        external_payments_enabled=current_app.config.get(
+            "EXTERNAL_PAYMENTS_ENABLED", True
+         ),
     )
 
 
