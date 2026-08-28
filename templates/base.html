@@ -132,4 +132,8 @@ sidebar.querySelectorAll('a[href]').forEach(link=>link.addEventListener('click',
 (function(){const cart=document.querySelector('#topbar-cart');if(!cart)return;const key='gpcta-sale-cart-v1';let label=document.createElement('span');label.className='topbar-cart-label';cart.appendChild(label);function refresh(){try{const items=JSON.parse(localStorage.getItem(key)||'[]');const valid=Array.isArray(items)?items.filter(item=>Number(item.quantity)>0):[];const quantity=valid.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);cart.hidden=quantity===0;const count=cart.querySelector('#topbar-cart-count');if(count){count.hidden=quantity===0;count.textContent=quantity>99?'99+':String(quantity||'')}const names=valid.map(item=>`${item.name||'Produto'} ×${item.quantity}`).join(', ');label.textContent=names;cart.title=names?`Carrinho: ${names}`:'Carrinho vazio';cart.setAttribute('aria-label',names?`Carrinho: ${names}`:'Carrinho vazio')}catch(_error){cart.hidden=true}}refresh();window.addEventListener('storage',event=>{if(event.key===key)refresh()});})();
 </script>{% endif %}
 {% block scripts %}{% endblock %}
+<script>
+  window.si = window.si || function () { (window.siq = window.siq || []).push(arguments); };
+</script>
+<script defer src="/_vercel/speed-insights/script.js"></script>
 </body></html>
