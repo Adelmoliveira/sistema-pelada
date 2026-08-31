@@ -752,11 +752,43 @@ class MercadoPagoFlowTest(unittest.TestCase):
             json={"payment_method": "Dinheiro"},
         )
         self.assertEqual(payment.status_code, 200, payment.get_json())
+        with app.app_context():
+            cash_sale = get_db().execute(
+                "SELECT payment_method,payment_status,paid,paid_at FROM sales WHERE id=?",
+                (rows[0]["sale_id"],),
+            ).fetchone()
+            self.assertEqual(
+                (cash_sale["payment_method"], cash_sale["payment_status"], cash_sale["paid"], cash_sale["paid_at"]),
+                ("Dinheiro", "pending_cash", 0, None),
+            )
+        cash_page = self.client.get("/material-esportivo/vendas?status=available").get_data(as_text=True)
+        self.assertIn("Dinheiro — Aguardando confirmação", cash_page)
+        self.assertIn("Confirmar recebimento em dinheiro", cash_page)
+        self.assertNotIn(
+            f'data-item="{item_ids[0]}" data-status="delivered"', cash_page
+        )
         confirmed = self.client.post(
-            f"/orders/{rows[0]['sale_id']}/confirm-payment",
-            json={"amount_received_cents": 2000},
+            f"/material-esportivo/vendas/{item_ids[0]}/confirmar-dinheiro",
+            json={},
         )
         self.assertEqual(confirmed.status_code, 200, confirmed.get_json())
+        self.assertFalse(confirmed.get_json()["already_paid"])
+        with app.app_context():
+            paid_sale = get_db().execute(
+                "SELECT paid,payment_status,paid_at FROM sales WHERE id=?", (rows[0]["sale_id"],)
+            ).fetchone()
+            self.assertEqual((paid_sale["paid"], paid_sale["payment_status"]), (1, "approved"))
+            self.assertIsNotNone(paid_sale["paid_at"])
+            first_paid_at = paid_sale["paid_at"]
+        repeated_cash = self.client.post(
+            f"/material-esportivo/vendas/{item_ids[0]}/confirmar-dinheiro", json={}
+        )
+        self.assertEqual(repeated_cash.status_code, 200, repeated_cash.get_json())
+        self.assertTrue(repeated_cash.get_json()["already_paid"])
+        with app.app_context():
+            self.assertEqual(get_db().execute(
+                "SELECT paid_at FROM sales WHERE id=?", (rows[0]["sale_id"],)
+            ).fetchone()["paid_at"], first_paid_at)
         paid_page = self.client.get("/material-esportivo/vendas?status=available").get_data(as_text=True)
         self.assertIn(f'data-item="{item_ids[0]}" data-status="delivered"', paid_page)
         delivered = self.client.post(
@@ -866,6 +898,65 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "SELECT COUNT(*) total FROM notification_outbox WHERE event_type='sports_order_available_push'"
             ).fetchone()["total"], 4)
 
+    def test_sports_cash_confirmation_allows_staff_and_denies_client(self):
+        product_id, variant_id = self.create_sports_product(
+            "Encomenda Dinheiro Staff", stock=0, allow_backorder=1
+        )
+        self.login_manager()
+        self.client.post("/sale", data=self.sports_sale_form(
+            product_id, variant_id, order_mode=["backorder"]
+        ))
+        with app.app_context():
+            db = get_db()
+            item_id = db.execute(
+                """SELECT d.sale_item_id FROM sports_sale_item_details d
+                   JOIN sale_items si ON si.id=d.sale_item_id WHERE si.product_id=?""",
+                (product_id,),
+            ).fetchone()["sale_item_id"]
+            staff_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES('sports-cash-staff','Staff','hash','staff')"
+            ).lastrowid
+            client_id = db.execute(
+                """INSERT INTO users(username,name,password_hash,role,player_id)
+                   VALUES('sports-cash-client','Cliente','hash','client',?)""",
+                (self.player_id,),
+            ).lastrowid
+            db.commit()
+        self.client.post(
+            "/material-esportivo/vendas/confirmar-envio", json={"sale_item_ids": [item_id]}
+        )
+        self.client.post("/material-esportivo/vendas/receber", json={
+            "sale_item_ids": [item_id], "variant_id": variant_id, "received_quantity": 1,
+        })
+        self.client.post(
+            f"/material-esportivo/vendas/{item_id}/pagamento", json={"payment_method": "Dinheiro"}
+        )
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+        denied = self.client.post(
+            f"/material-esportivo/vendas/{item_id}/confirmar-dinheiro", json={},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(denied.status_code, 403)
+        with app.app_context():
+            self.assertEqual(get_db().execute(
+                "SELECT paid FROM sales s JOIN sale_items si ON si.sale_id=s.id WHERE si.id=?",
+                (item_id,),
+            ).fetchone()["paid"], 0)
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        confirmed = self.client.post(
+            f"/material-esportivo/vendas/{item_id}/confirmar-dinheiro", json={}
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.get_json())
+        with app.app_context():
+            sale = get_db().execute(
+                """SELECT s.paid,s.payment_status,s.paid_at FROM sales s
+                   JOIN sale_items si ON si.sale_id=s.id WHERE si.id=?""", (item_id,),
+            ).fetchone()
+            self.assertEqual((sale["paid"], sale["payment_status"]), (1, "approved"))
+            self.assertIsNotNone(sale["paid_at"])
+
     def test_sports_available_pix_and_full_credit_unlock_delivery(self):
         from src.routes.sales import apply_mercadopago_status
 
@@ -917,6 +1008,9 @@ class MercadoPagoFlowTest(unittest.TestCase):
             f"/material-esportivo/vendas/{pix_item}/status", json={"to_status": "delivered"}
         )
         self.assertEqual(pix_delivery.status_code, 200, pix_delivery.get_json())
+        self.assertEqual(self.client.post(
+            f"/material-esportivo/vendas/{pix_item}/confirmar-dinheiro", json={}
+        ).status_code, 409)
 
         credit_item, _ = make_available("Encomenda Crédito Paga")
         with app.app_context():
@@ -932,6 +1026,9 @@ class MercadoPagoFlowTest(unittest.TestCase):
             json={"payment_method": "Créditos"},
         )
         self.assertEqual(credit_payment.status_code, 200, credit_payment.get_json())
+        self.assertEqual(self.client.post(
+            f"/material-esportivo/vendas/{credit_item}/confirmar-dinheiro", json={}
+        ).status_code, 409)
         credit_delivery = self.client.post(
             f"/material-esportivo/vendas/{credit_item}/status", json={"to_status": "delivered"}
         )

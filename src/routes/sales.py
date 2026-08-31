@@ -1126,6 +1126,59 @@ def start_sports_backorder_payment(sale_item_id):
         current_app.logger.error("Erro ao cobrar encomenda esportiva %s: %s", sale_id, exc)
         return jsonify(error=str(exc) if isinstance(exc, MercadoPagoError) else "Não foi possível criar a cobrança Pix."), 502
 
+
+@bp.post("/material-esportivo/vendas/<int:sale_item_id>/confirmar-dinheiro")
+@roles_allowed("manager", "staff")
+def confirm_sports_cash_payment(sale_item_id):
+    db = get_db()
+    item = db.execute(
+        """SELECT d.sale_item_id,d.order_mode,d.fulfillment_status,si.sale_id,
+                  p.category,s.payment_method,s.payment_status,s.paid,s.paid_at
+           FROM sports_sale_item_details d
+           JOIN sale_items si ON si.id=d.sale_item_id
+           JOIN sales s ON s.id=si.sale_id
+           JOIN products p ON p.id=si.product_id
+           WHERE d.sale_item_id=?""",
+        (sale_item_id,),
+    ).fetchone()
+    if not item or item["category"] != SPORTS_MATERIAL_CATEGORY:
+        return jsonify(error="Encomenda esportiva não encontrada."), 404
+    if item["paid"] and item["payment_status"] == "approved":
+        if item["payment_method"] != "Dinheiro":
+            return jsonify(error="Este pedido já foi pago por outra forma de pagamento."), 409
+        return jsonify(
+            ok=True, already_paid=True, sale_id=item["sale_id"],
+            sale_item_id=sale_item_id,
+        )
+    if (item["order_mode"] != "backorder" or item["fulfillment_status"] != "available"
+            or item["payment_method"] != "Dinheiro"
+            or item["payment_status"] != "pending_cash" or item["paid"]):
+        return jsonify(error="A encomenda não está aguardando confirmação de dinheiro."), 409
+    with db:
+        updated = db.execute(
+            """UPDATE sales SET paid=1,payment_status='approved',
+                      paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP),ready_for_delivery=1
+               WHERE id=? AND paid=0 AND payment_method='Dinheiro'
+                 AND payment_status='pending_cash'""",
+            (item["sale_id"],),
+        )
+        if updated.rowcount != 1:
+            latest = db.execute(
+                "SELECT paid,payment_method,payment_status FROM sales WHERE id=?",
+                (item["sale_id"],),
+            ).fetchone()
+            if (latest and latest["paid"] and latest["payment_method"] == "Dinheiro"
+                    and latest["payment_status"] == "approved"):
+                return jsonify(
+                    ok=True, already_paid=True, sale_id=item["sale_id"],
+                    sale_item_id=sale_item_id,
+                )
+            return jsonify(error="O estado do pagamento mudou. Atualize a página."), 409
+    return jsonify(
+        ok=True, already_paid=False, sale_id=item["sale_id"],
+        sale_item_id=sale_item_id,
+    )
+
 @bp.post("/material-esportivo/vendas/<int:sale_item_id>/status")
 @roles_allowed("manager", "staff")
 def update_sports_fulfillment(sale_item_id):
