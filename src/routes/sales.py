@@ -711,7 +711,7 @@ def sports_material_sales():
         params.extend((term, term, term))
     items = db.execute(
         f"""SELECT si.id sale_item_id,si.sale_id,si.quantity,si.unit_price_cents,
-                   p.name product_name,p.thumbnail_data,t.name material_type,t.code material_type_code,
+                   p.id product_id,p.name product_name,p.thumbnail_data,t.name material_type,t.code material_type_code,
                    COALESCE(pl.war_name,pl.name,'Peladeiro') player_name,
                    s.payment_method,s.payment_status,s.paid,s.created_at,
                    d.variant_id,d.variant_size,d.custom_name,d.custom_number,d.order_mode,
@@ -747,9 +747,22 @@ def sports_material_sales():
             "delivered": "Registrar entrega",
         }.get(row["next_status"])
         rows.append(row)
+    receiving_groups = {}
+    for row in rows:
+        if row["order_mode"] != "backorder" or row["fulfillment_status"] != "in_production":
+            continue
+        key = (int(row["product_id"]), int(row["variant_id"]))
+        group = receiving_groups.setdefault(key, {
+            "product_id": key[0], "variant_id": key[1],
+            "product_name": row["product_name"], "variant_size": row["variant_size"],
+            "items": [], "waiting_quantity": 0,
+        })
+        group["items"].append(row)
+        group["waiting_quantity"] += int(row["quantity"] or 0)
     return render_template(
         "sports_orders.html", items=rows, status=status, search=search,
         status_labels=SPORTS_FULFILLMENT_LABELS,
+        receiving_groups=list(receiving_groups.values()),
     )
 
 
@@ -811,53 +824,121 @@ def confirm_sports_supplier_send():
 @roles_allowed("manager", "staff")
 def receive_sports_backorders():
     payload = request.get_json(silent=True) or request.form
+    raw_groups = payload.get("groups") if hasattr(payload, "get") else None
+    legacy_payload = raw_groups is None
+    if raw_groups is None:
+        # Compatibilidade com o recebimento simples anterior.
+        raw_groups = [{
+            "product_id": payload.get("product_id"),
+            "variant_id": payload.get("variant_id"),
+            "received_quantity": payload.get("received_quantity"),
+            "sale_item_ids": payload.get("sale_item_ids", []),
+        }]
+    if not isinstance(raw_groups, list):
+        return jsonify(error="Informe os grupos de recebimento por produto e variante."), 400
+    groups = []
+    seen_groups = set()
+    seen_items = set()
     try:
-        item_ids = _sports_item_ids(payload)
-        variant_id = int(payload.get("variant_id") or 0)
-        received_quantity = int(payload.get("received_quantity") or 0)
-        if variant_id <= 0 or received_quantity <= 0:
-            raise ValueError
+        for raw in raw_groups:
+            if not isinstance(raw, dict):
+                raise ValueError
+            quantity_value = raw.get("received_quantity")
+            if quantity_value in (None, ""):
+                continue
+            received_quantity = int(quantity_value)
+            if received_quantity < 0:
+                raise ValueError
+            if received_quantity == 0:
+                continue
+            product_id = int(raw.get("product_id") or 0)
+            variant_id = int(raw.get("variant_id") or 0)
+            item_values = raw.get("sale_item_ids") or []
+            if not isinstance(item_values, (list, tuple)):
+                item_values = [item_values]
+            item_ids = sorted({int(value) for value in item_values if str(value).strip()})
+            if (product_id <= 0 and not legacy_payload) or variant_id <= 0 or not item_ids:
+                raise ValueError
+            group_key = (product_id, variant_id)
+            if group_key in seen_groups or any(item_id in seen_items for item_id in item_ids):
+                raise ValueError
+            seen_groups.add(group_key)
+            seen_items.update(item_ids)
+            groups.append({
+                "product_id": product_id, "variant_id": variant_id,
+                "received_quantity": received_quantity, "item_ids": item_ids,
+            })
     except (TypeError, ValueError):
-        return jsonify(error="Informe a variante, a quantidade recebida e as encomendas atendidas."), 400
+        return jsonify(error="Informe quantidades inteiras e seleções válidas para cada produto/tamanho."), 400
+    if not groups:
+        return jsonify(error="Informe quantidade maior que zero e selecione as encomendas atendidas em ao menos um grupo."), 400
     db = get_db()
-    placeholders = ",".join("?" for _ in item_ids)
-    rows = db.execute(
-        f"""SELECT d.sale_item_id,d.variant_id,d.variant_size,d.fulfillment_status,
-                   si.sale_id,si.quantity,p.name product_name,s.player_id
-            FROM sports_sale_item_details d JOIN sale_items si ON si.id=d.sale_item_id
-            JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id
-            WHERE d.sale_item_id IN ({placeholders})""", tuple(item_ids),
-    ).fetchall()
-    allocated = sum(int(row["quantity"] or 0) for row in rows)
-    if (len(rows) != len(item_ids) or any(row["variant_id"] != variant_id or row["fulfillment_status"] != "in_production" for row in rows)
-            or allocated > received_quantity):
-        return jsonify(error="Seleção incompatível com a variante, o estado ou a quantidade recebida."), 409
-    excess = received_quantity - allocated
+    prepared = []
+    for group in groups:
+        variant = db.execute(
+            "SELECT id,product_id,active FROM sports_product_variants WHERE id=?",
+            (group["variant_id"],),
+        ).fetchone()
+        if legacy_payload and variant and group["product_id"] <= 0:
+            group["product_id"] = int(variant["product_id"])
+        placeholders = ",".join("?" for _ in group["item_ids"])
+        rows = db.execute(
+            f"""SELECT d.sale_item_id,d.variant_id,d.variant_size,d.custom_name,d.custom_number,
+                       d.fulfillment_status,si.sale_id,si.product_id,si.quantity,
+                       p.name product_name,s.player_id
+                FROM sports_sale_item_details d JOIN sale_items si ON si.id=d.sale_item_id
+                JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id
+                WHERE d.sale_item_id IN ({placeholders})""", tuple(group["item_ids"]),
+        ).fetchall()
+        allocated = sum(int(row["quantity"] or 0) for row in rows)
+        if (not variant or not variant["active"] or variant["product_id"] != group["product_id"]
+                or len(rows) != len(group["item_ids"])
+                or any(row["product_id"] != group["product_id"]
+                       or row["variant_id"] != group["variant_id"]
+                       or row["fulfillment_status"] != "in_production" for row in rows)
+                or allocated > group["received_quantity"]):
+            return jsonify(error="Seleção incompatível com o produto, a variante, o estado ou a quantidade recebida."), 409
+        prepared.append({
+            **group, "rows": rows, "allocated": allocated,
+            "excess": group["received_quantity"] - allocated,
+        })
     try:
         with db:
-            for row in rows:
-                updated = db.execute(
-                    """UPDATE sports_sale_item_details SET fulfillment_status='available',updated_at=CURRENT_TIMESTAMP
-                       WHERE sale_item_id=? AND fulfillment_status='in_production'""", (row["sale_item_id"],),
-                )
-                if updated.rowcount != 1:
-                    raise RuntimeError("Uma encomenda mudou durante o recebimento.")
-                db.execute(
-                    """INSERT INTO sports_order_status_history(sale_item_id,from_status,to_status,changed_by,notes)
-                       VALUES(?,'in_production','available',?,'Recebimento do fornecedor')""",
-                    (row["sale_item_id"], g.user["id"]),
-                )
-                enqueue_sports_available_event(db, row["sale_id"], row["sale_item_id"], _sports_arrival_payload(row))
-            if excess:
-                updated_stock = db.execute(
-                    """UPDATE sports_product_variants SET stock=stock+?,updated_at=CURRENT_TIMESTAMP
-                       WHERE id=? AND active=1""", (excess, variant_id),
-                )
-                if updated_stock.rowcount != 1:
-                    raise RuntimeError("Variante esportiva indisponível.")
+            for group in prepared:
+                for row in group["rows"]:
+                    updated = db.execute(
+                        """UPDATE sports_sale_item_details SET fulfillment_status='available',updated_at=CURRENT_TIMESTAMP
+                           WHERE sale_item_id=? AND fulfillment_status='in_production'""", (row["sale_item_id"],),
+                    )
+                    if updated.rowcount != 1:
+                        raise RuntimeError("Uma encomenda mudou durante o recebimento.")
+                    db.execute(
+                        """INSERT INTO sports_order_status_history(sale_item_id,from_status,to_status,changed_by,notes)
+                           VALUES(?,'in_production','available',?,'Recebimento do fornecedor')""",
+                        (row["sale_item_id"], g.user["id"]),
+                    )
+                    enqueue_sports_available_event(db, row["sale_id"], row["sale_item_id"], _sports_arrival_payload(row))
+                if group["excess"]:
+                    updated_stock = db.execute(
+                        """UPDATE sports_product_variants SET stock=stock+?,updated_at=CURRENT_TIMESTAMP
+                           WHERE id=? AND product_id=? AND active=1""",
+                        (group["excess"], group["variant_id"], group["product_id"]),
+                    )
+                    if updated_stock.rowcount != 1:
+                        raise RuntimeError("Variante esportiva indisponível.")
     except RuntimeError as exc:
         return jsonify(error=str(exc)), 409
-    return jsonify(ok=True, available=len(rows), allocated_quantity=allocated, stock_excess=excess)
+    return jsonify(
+        ok=True, groups=len(prepared),
+        available=sum(len(group["rows"]) for group in prepared),
+        allocated_quantity=sum(group["allocated"] for group in prepared),
+        stock_excess=sum(group["excess"] for group in prepared),
+        results=[{
+            "product_id": group["product_id"], "variant_id": group["variant_id"],
+            "available": len(group["rows"]), "allocated_quantity": group["allocated"],
+            "stock_excess": group["excess"],
+        } for group in prepared],
+    )
 
 
 @bp.post("/material-esportivo/vendas/<int:sale_item_id>/cancelar")

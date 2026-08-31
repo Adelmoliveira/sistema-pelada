@@ -738,6 +738,120 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "SELECT stock FROM sports_product_variants WHERE id=?", (variant_id,)
             ).fetchone()["stock"], 1)
 
+    def test_sports_backorder_receives_multiple_dynamic_variants_atomically(self):
+        product_id, p_variant = self.create_sports_product(
+            "Camisa Multi", size="P", stock=0, allow_name=1, allow_number=1, allow_backorder=1
+        )
+        with app.app_context():
+            db = get_db()
+            variants = {"P": p_variant}
+            for size in ("M", "G", "GG", "Infantil 12"):
+                variants[size] = db.execute(
+                    "INSERT INTO sports_product_variants(product_id,size,stock,min_stock,active) VALUES(?,?,0,1,1)",
+                    (product_id, size),
+                ).lastrowid
+            db.commit()
+        self.login_manager()
+
+        requests = [("P", 2, "Nome P", "9"), ("M", 2, "", ""),
+                    ("G", 1, "", ""), ("GG", 1, "", ""),
+                    ("Infantil 12", 1, "", "")]
+        for size, quantity, custom_name, custom_number in requests:
+            response = self.client.post("/sale", data=self.sports_sale_form(
+                product_id, variants[size], order_mode=["backorder"], quantity=[str(quantity)],
+                custom_name=[custom_name], custom_number=[custom_number],
+            ))
+            self.assertEqual(response.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            rows = db.execute(
+                """SELECT d.sale_item_id,d.variant_size,d.custom_name,d.custom_number
+                   FROM sports_sale_item_details d ORDER BY d.sale_item_id"""
+            ).fetchall()
+            by_size = {row["variant_size"]: row for row in rows}
+        item_ids = [row["sale_item_id"] for row in rows]
+        self.assertEqual(self.client.post(
+            "/material-esportivo/vendas/confirmar-envio", json={"sale_item_ids": item_ids}
+        ).status_code, 200)
+
+        groups = [
+            {"product_id": product_id, "variant_id": variants["P"], "received_quantity": 3,
+             "sale_item_ids": [by_size["P"]["sale_item_id"]]},
+            {"product_id": product_id, "variant_id": variants["M"], "received_quantity": 2,
+             "sale_item_ids": [by_size["M"]["sale_item_id"]]},
+            {"product_id": product_id, "variant_id": variants["G"], "received_quantity": 4,
+             "sale_item_ids": [by_size["G"]["sale_item_id"]]},
+            {"product_id": product_id, "variant_id": variants["GG"], "received_quantity": 1,
+             "sale_item_ids": [by_size["GG"]["sale_item_id"]]},
+            {"product_id": product_id, "variant_id": variants["Infantil 12"], "received_quantity": "",
+             "sale_item_ids": [by_size["Infantil 12"]["sale_item_id"]]},
+        ]
+        response = self.client.post("/material-esportivo/vendas/receber", json={"groups": groups})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()["groups"], 4)
+        with app.app_context():
+            db = get_db()
+            stocks = {row["size"]: row["stock"] for row in db.execute(
+                "SELECT size,stock FROM sports_product_variants WHERE product_id=?", (product_id,)
+            ).fetchall()}
+            self.assertEqual(stocks, {"P": 1, "M": 0, "G": 3, "GG": 0, "Infantil 12": 0})
+            self.assertEqual(db.execute(
+                "SELECT fulfillment_status FROM sports_sale_item_details WHERE sale_item_id=?",
+                (by_size["Infantil 12"]["sale_item_id"],),
+            ).fetchone()["fulfillment_status"], "in_production")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) total FROM notification_outbox WHERE event_type='sports_order_available_push'"
+            ).fetchone()["total"], 4)
+            preserved = db.execute(
+                "SELECT custom_name,custom_number FROM sports_sale_item_details WHERE sale_item_id=?",
+                (by_size["P"]["sale_item_id"],),
+            ).fetchone()
+            self.assertEqual((preserved["custom_name"], preserved["custom_number"]), ("Nome P", "9"))
+        repeated = self.client.post("/material-esportivo/vendas/receber", json={"groups": groups[:4]})
+        self.assertEqual(repeated.status_code, 409)
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT stock FROM sports_product_variants WHERE id=?", (variants["P"],)
+            ).fetchone()["stock"], 1)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) total FROM notification_outbox WHERE event_type='sports_order_available_push'"
+            ).fetchone()["total"], 4)
+
+    def test_sports_multivariant_invalid_group_rolls_back_all_groups(self):
+        product_a, variant_a = self.create_sports_product("Camisa A G", size="G", stock=0, allow_backorder=1)
+        product_b, variant_b = self.create_sports_product("Short B G", size="G", stock=0, allow_backorder=1)
+        self.login_manager()
+        for product_id, variant_id in ((product_a, variant_a), (product_b, variant_b)):
+            self.client.post("/sale", data=self.sports_sale_form(
+                product_id, variant_id, order_mode=["backorder"]
+            ))
+        with app.app_context():
+            rows = get_db().execute(
+                """SELECT d.sale_item_id,si.product_id FROM sports_sale_item_details d
+                   JOIN sale_items si ON si.id=d.sale_item_id ORDER BY d.sale_item_id"""
+            ).fetchall()
+        ids = {row["product_id"]: row["sale_item_id"] for row in rows}
+        self.client.post("/material-esportivo/vendas/confirmar-envio", json={"sale_item_ids": list(ids.values())})
+        response = self.client.post("/material-esportivo/vendas/receber", json={"groups": [
+            {"product_id": product_a, "variant_id": variant_a, "received_quantity": 2,
+             "sale_item_ids": [ids[product_a]]},
+            {"product_id": product_b, "variant_id": variant_a, "received_quantity": 1,
+             "sale_item_ids": [ids[product_b]]},
+        ]})
+        self.assertIn(response.status_code, (400, 409))
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) total FROM sports_sale_item_details WHERE fulfillment_status='in_production'"
+            ).fetchone()["total"], 2)
+            self.assertEqual(db.execute(
+                "SELECT SUM(stock) total FROM sports_product_variants WHERE id IN (?,?)", (variant_a, variant_b)
+            ).fetchone()["total"], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) total FROM notification_outbox WHERE event_type='sports_order_available_push'"
+            ).fetchone()["total"], 0)
+
     def create_order(self, order_id, quantity):
         response_data = {
             "id": order_id,

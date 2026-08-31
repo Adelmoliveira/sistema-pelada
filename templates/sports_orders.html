@@ -14,17 +14,31 @@
 </form>
 <div class="card card-body shadow-sm mb-4">
   <h2 class="h6">Operações do fornecedor</h2>
-  <p class="small text-muted">Marque abaixo solicitações compatíveis. A confirmação envia somente itens solicitados; o recebimento exige a variante e a quantidade física total recebida.</p>
-  <div class="row g-2">
-    <div class="col-md-4"><input class="form-control" id="receive-variant" type="number" min="1" placeholder="ID da variante"></div>
-    <div class="col-md-4"><input class="form-control" id="receive-quantity" type="number" min="1" placeholder="Quantidade recebida"></div>
-    <div class="col-md-4 d-flex gap-2"><button type="button" id="confirm-supplier" class="btn btn-primary flex-fill">Confirmar envio</button><button type="button" id="receive-supplier" class="btn btn-success flex-fill">Registrar recebimento</button></div>
-  </div>
+  <p class="small text-muted">Marque nos pedidos abaixo as solicitações que foram enviadas ao fornecedor.</p>
+  <button type="button" id="confirm-supplier" class="btn btn-primary">Confirmar envio ao fornecedor</button>
 </div>
+<section class="card card-body shadow-sm mb-4" id="supplier-receipt">
+  <h2 class="h5">Recebimento do fornecedor</h2>
+  <p class="text-muted">Informe a quantidade recebida para cada produto/tamanho e selecione as encomendas que serão atendidas nesta entrega. O excedente será incorporado ao estoque de pronta entrega da respectiva variante.</p>
+  <div class="row g-3">
+  {% for group in receiving_groups %}
+    <div class="col-lg-6"><div class="border rounded p-3 receipt-group" data-product="{{group.product_id}}" data-variant="{{group.variant_id}}">
+      <h3 class="h6 mb-1">{{group.product_name}} — {{group.variant_size}}</h3>
+      <p class="small text-muted">Encomendas aguardando: {{group.items|length}} · Quantidade total aguardando: {{group.waiting_quantity}}</p>
+      <label class="form-label" for="received-{{group.product_id}}-{{group.variant_id}}">Quantidade recebida</label>
+      <input class="form-control receipt-quantity mb-3" id="received-{{group.product_id}}-{{group.variant_id}}" type="number" min="0" step="1" placeholder="0">
+      <div class="vstack gap-2">
+      {% for item in group.items %}<label class="border rounded p-2"><input class="form-check-input receipt-item me-2" type="checkbox" value="{{item.sale_item_id}}"><strong>{{item.player_name}}</strong> — qtd. {{item.quantity}}{% if item.custom_name %}<span class="d-block small ms-4">Nome: {{item.custom_name}}</span>{% endif %}{% if item.custom_number %}<span class="d-block small ms-4">Número: {{item.custom_number}}</span>{% endif %}</label>{% endfor %}
+      </div>
+    </div></div>
+  {% else %}<div class="col-12 text-muted">Nenhuma encomenda em produção aguardando recebimento.</div>{% endfor %}
+  </div>
+  {% if receiving_groups %}<div class="mt-3"><button type="button" id="receive-supplier" class="btn btn-success">Registrar recebimento</button></div>{% endif %}
+</section>
 <div class="row g-3">
 {% for item in items %}
   <div class="col-lg-6"><article class="card shadow-sm h-100"><div class="card-body">
-    <div class="d-flex gap-3">{% if item.thumbnail_data %}<img src="{{item.thumbnail_data}}" alt="" width="72" height="72" class="rounded border" style="object-fit:cover">{% endif %}<div class="flex-grow-1"><div class="d-flex justify-content-between gap-2"><strong>{% if item.order_mode == 'backorder' and item.fulfillment_status in ('requested','in_production') %}<input class="form-check-input supplier-item me-2" type="checkbox" value="{{item.sale_item_id}}" aria-label="Selecionar item {{item.sale_item_id}}">{% endif %}Pedido #{{item.sale_id}} · Item #{{item.sale_item_id}}</strong><span class="badge text-bg-primary">{{item.fulfillment_label}}</span></div><h2 class="h5 mt-2 mb-1">{{item.product_name}}</h2><div class="text-muted small">{{item.material_type}}{% if item.material_type_code != 'commemorative_coin' %} · Tamanho {{item.variant_size}}{% endif %} · Variante #{{item.variant_id}} · {{item.quantity}} unidade(s)</div></div></div>
+    <div class="d-flex gap-3">{% if item.thumbnail_data %}<img src="{{item.thumbnail_data}}" alt="" width="72" height="72" class="rounded border" style="object-fit:cover">{% endif %}<div class="flex-grow-1"><div class="d-flex justify-content-between gap-2"><strong>{% if item.order_mode == 'backorder' and item.fulfillment_status == 'requested' %}<input class="form-check-input supplier-item me-2" type="checkbox" value="{{item.sale_item_id}}" aria-label="Selecionar item {{item.sale_item_id}}">{% endif %}Pedido #{{item.sale_id}} · Item #{{item.sale_item_id}}</strong><span class="badge text-bg-primary">{{item.fulfillment_label}}</span></div><h2 class="h5 mt-2 mb-1">{{item.product_name}}</h2><div class="text-muted small">{{item.material_type}}{% if item.material_type_code != 'commemorative_coin' %} · Tamanho {{item.variant_size}}{% endif %} · Variante #{{item.variant_id}} · {{item.quantity}} unidade(s)</div></div></div>
     <hr><div class="row g-2 small"><div class="col-6"><span class="text-muted">Peladeiro</span><div class="fw-semibold">{{item.player_name}}</div></div><div class="col-6"><span class="text-muted">Modalidade</span><div>{{'Pronta entrega' if item.order_mode == 'ready' else 'Encomenda'}}</div></div><div class="col-6"><span class="text-muted">Pagamento</span><div>{{item.payment_method}} · {{'Pago' if item.paid else 'Pendente'}}</div></div>{% if item.custom_name or item.custom_number %}<div class="col-6"><span class="text-muted">Personalização</span><div>{{item.custom_name}}{% if item.custom_number %} · nº {{item.custom_number}}{% endif %}</div></div>{% endif %}{% if item.delivered_at %}<div class="col-12"><span class="text-muted">Entregue em</span><div>{{item.delivered_at|brdate}}{% if item.delivered_by_name %} por {{item.delivered_by_name}}{% endif %}</div></div>{% endif %}</div>
     <div class="mt-3 d-flex flex-wrap justify-content-end gap-2">
       {% if item.order_mode == 'backorder' and item.fulfillment_status == 'available' and not item.paid %}<button type="button" class="btn btn-outline-primary sports-pay" data-item="{{item.sale_item_id}}" data-method="Pix">Pix</button><button type="button" class="btn btn-outline-dark sports-pay" data-item="{{item.sale_item_id}}" data-method="Dinheiro">Dinheiro</button><button type="button" class="btn btn-outline-info sports-pay" data-item="{{item.sale_item_id}}" data-method="Créditos">100% Créditos</button>{% endif %}
@@ -42,7 +56,7 @@ const csrf={{csrf_token()|tojson}};
 const selectedItems=()=>[...document.querySelectorAll('.supplier-item:checked')].map(input=>Number(input.value));
 async function postJson(url,body){const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json','X-CSRFToken':csrf},body:JSON.stringify(body)}),data=await response.json();if(!response.ok)throw new Error(data.error||'Falha ao atualizar.');return data}
 document.getElementById('confirm-supplier').addEventListener('click',async()=>{try{await postJson('{{url_for("sales.confirm_sports_supplier_send")}}',{sale_item_ids:selectedItems()});location.reload()}catch(error){alert(error.message)}});
-document.getElementById('receive-supplier').addEventListener('click',async()=>{try{await postJson('{{url_for("sales.receive_sports_backorders")}}',{sale_item_ids:selectedItems(),variant_id:Number(document.getElementById('receive-variant').value),received_quantity:Number(document.getElementById('receive-quantity').value)});location.reload()}catch(error){alert(error.message)}});
+document.getElementById('receive-supplier')?.addEventListener('click',async()=>{const groups=[...document.querySelectorAll('.receipt-group')].map(group=>({product_id:Number(group.dataset.product),variant_id:Number(group.dataset.variant),received_quantity:group.querySelector('.receipt-quantity').value,sale_item_ids:[...group.querySelectorAll('.receipt-item:checked')].map(input=>Number(input.value))}));try{await postJson('{{url_for("sales.receive_sports_backorders")}}',{groups});location.reload()}catch(error){alert(error.message)}});
 document.addEventListener('click',async event=>{const button=event.target.closest('.sports-pay');if(!button)return;try{const data=await postJson(`/material-esportivo/vendas/${button.dataset.item}/pagamento`,{payment_method:button.dataset.method});if(data.image){const win=window.open();win.document.write(`<img alt="QR Code Pix" src="${data.image}"><p>${data.payload}</p>`)}else location.reload()}catch(error){alert(error.message)}});
 document.addEventListener('click',async event=>{const button=event.target.closest('.sports-cancel');if(!button)return;const reason=prompt('Motivo do cancelamento:');if(!reason)return;try{await postJson(`/material-esportivo/vendas/${button.dataset.item}/cancelar`,{reason});location.reload()}catch(error){alert(error.message)}});
 document.addEventListener('click',async event=>{const button=event.target.closest('.sports-resolve');if(!button)return;const body={action:button.dataset.action};if(body.action==='reassign'){body.target_sale_item_id=Number(prompt('Item da encomenda compatível que receberá esta unidade:')||0)}try{await postJson(`/material-esportivo/vendas/${button.dataset.item}/resolver-cancelamento`,body);location.reload()}catch(error){alert(error.message)}});
