@@ -251,18 +251,21 @@ def _save_sports_config(db, product_id, type_id, variants, form):
         variant = variants[0]
         variants = [{"size": COIN_TECHNICAL_SIZE, "stock": variant["stock"],
                      "min_stock": variant["min_stock"], "active": True}]
+    if form.get("ready_sale_enabled") != "1" and form.get("allow_backorder") != "1":
+        raise ValueError("Selecione pronta entrega, encomenda ou ambas as modalidades.")
     db.execute(
         """INSERT INTO sports_product_config
-           (product_id,type_id,allow_custom_name,allow_custom_number,allow_backorder,updated_at)
-           VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+           (product_id,type_id,allow_custom_name,allow_custom_number,allow_backorder,ready_sale_enabled,updated_at)
+           VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
            ON CONFLICT(product_id) DO UPDATE SET type_id=excluded.type_id,
            allow_custom_name=excluded.allow_custom_name,
            allow_custom_number=excluded.allow_custom_number,
-           allow_backorder=excluded.allow_backorder,updated_at=CURRENT_TIMESTAMP
+           allow_backorder=excluded.allow_backorder,ready_sale_enabled=excluded.ready_sale_enabled,
+           updated_at=CURRENT_TIMESTAMP
            RETURNING product_id""",
         (product_id, type_id, False if is_coin else form.get("allow_custom_name") == "1",
          False if is_coin else form.get("allow_custom_number") == "1",
-         form.get("allow_backorder") == "1"),
+         form.get("allow_backorder") == "1", form.get("ready_sale_enabled") == "1"),
     )
     db.execute("UPDATE sports_product_variants SET active=FALSE,updated_at=CURRENT_TIMESTAMP WHERE product_id=?", (product_id,))
     for variant in variants:
@@ -312,7 +315,7 @@ def sports_materials():
     items = db.execute(
         """SELECT p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
                   config.product_id configured,type.name sports_type,type.code sports_type_code,
-                  config.allow_custom_name,config.allow_custom_number,config.allow_backorder,
+                  config.allow_custom_name,config.allow_custom_number,config.allow_backorder,config.ready_sale_enabled,
                   COALESCE(SUM(CASE WHEN variant.active THEN variant.stock ELSE 0 END),0) variant_stock,
                   COUNT(variant.id) variant_count
            FROM products p
@@ -322,7 +325,7 @@ def sports_materials():
            WHERE p.category=?
            GROUP BY p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
                     config.product_id,type.name,type.code,config.allow_custom_name,
-                    config.allow_custom_number,config.allow_backorder
+                    config.allow_custom_number,config.allow_backorder,config.ready_sale_enabled
            ORDER BY p.active DESC,p.name""",
         (SPORTS_MATERIAL_CATEGORY,),
     ).fetchall()
@@ -338,7 +341,8 @@ def edit_sports_material(product_id):
     db = get_db()
     product = db.execute(
         """SELECT p.id,p.name,p.price_cents,p.cost_cents,p.photo_data,p.thumbnail_data,p.active,
-                  config.type_id,config.allow_custom_name,config.allow_custom_number,config.allow_backorder
+                  config.type_id,config.allow_custom_name,config.allow_custom_number,config.allow_backorder,
+                  config.ready_sale_enabled
            FROM products p LEFT JOIN sports_product_config config ON config.product_id=p.id
            WHERE p.id=? AND p.category=?""", (product_id, SPORTS_MATERIAL_CATEGORY),
     ).fetchone()

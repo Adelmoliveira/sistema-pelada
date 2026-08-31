@@ -246,7 +246,7 @@ CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_operation ON sale_item_deliv
 CREATE TABLE IF NOT EXISTS notification_outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_key TEXT NOT NULL UNIQUE,
-    event_type TEXT NOT NULL CHECK(event_type IN ('delivery_push','delivery_update_email','purchase_receipt_email')),
+    event_type TEXT NOT NULL CHECK(event_type IN ('delivery_push','delivery_update_email','purchase_receipt_email','sports_order_available_push')),
     sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
     delivery_id INTEGER NOT NULL,
     payload TEXT NOT NULL DEFAULT '{}',
