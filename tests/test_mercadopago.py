@@ -922,15 +922,56 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 (self.player_id,),
             ).lastrowid
             db.commit()
+        requested_page = self.client.get("/material-esportivo/vendas?status=requested")
+        self.assertIn(
+            "Pagamento será realizado quando o material estiver disponível para retirada.",
+            requested_page.get_data(as_text=True),
+        )
+        self.assertNotIn('data-method="Pix"', requested_page.get_data(as_text=True))
         self.client.post(
             "/material-esportivo/vendas/confirmar-envio", json={"sale_item_ids": [item_id]}
         )
+        production_page = self.client.get(
+            "/material-esportivo/vendas?status=in_production"
+        )
+        self.assertIn(
+            "Pagamento será realizado quando o material estiver disponível para retirada.",
+            production_page.get_data(as_text=True),
+        )
+        self.assertNotIn('data-method="Pix"', production_page.get_data(as_text=True))
         self.client.post("/material-esportivo/vendas/receber", json={
             "sale_item_ids": [item_id], "variant_id": variant_id, "received_quantity": 1,
         })
-        self.client.post(
+        available_page = self.client.get("/material-esportivo/vendas?status=available")
+        available_html = available_page.get_data(as_text=True)
+        self.assertIn(
+            "Disponível para retirada — pagamento no atendimento.", available_html
+        )
+        self.assertIn('data-method="Pix"', available_html)
+        self.assertIn('data-method="Dinheiro"', available_html)
+        self.assertIn('data-method="Créditos"', available_html)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+        purchases = self.client.get("/minhas-compras")
+        purchases_html = purchases.get_data(as_text=True)
+        self.assertIn(
+            "Disponível para retirada — pagamento no atendimento.", purchases_html
+        )
+        self.assertNotIn("sports-pay", purchases_html)
+        denied_start = self.client.post(
+            f"/material-esportivo/vendas/{item_id}/pagamento",
+            json={"payment_method": "Dinheiro"},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(denied_start.status_code, 403)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        started = self.client.post(
             f"/material-esportivo/vendas/{item_id}/pagamento", json={"payment_method": "Dinheiro"}
         )
+        self.assertEqual(started.status_code, 200, started.get_json())
         with self.client.session_transaction() as session:
             session["user_id"] = client_id
         denied = self.client.post(

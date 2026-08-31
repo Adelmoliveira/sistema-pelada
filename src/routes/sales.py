@@ -1066,7 +1066,7 @@ def resolve_sports_cancellation(sale_item_id):
 
 
 @bp.post("/material-esportivo/vendas/<int:sale_item_id>/pagamento")
-@roles_allowed("manager", "staff", "client")
+@roles_allowed("manager", "staff")
 def start_sports_backorder_payment(sale_item_id):
     payload = request.get_json(silent=True) or request.form
     method = str(payload.get("payment_method") or "").strip()
@@ -1082,8 +1082,6 @@ def start_sports_backorder_payment(sale_item_id):
     ).fetchone()
     if not item:
         return jsonify(error="Encomenda não encontrada."), 404
-    if g.user["role"] == "client" and int(g.user["player_id"] or 0) != int(item["player_id"]):
-        return jsonify(error="Você não pode pagar esta encomenda."), 403
     if item["order_mode"] != "backorder" or item["fulfillment_status"] != "available":
         return jsonify(error="O pagamento só é liberado depois que a encomenda estiver disponível."), 409
     if item["paid"]:
