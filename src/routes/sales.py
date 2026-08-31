@@ -738,9 +738,14 @@ def sports_material_sales():
     for item in items:
         row = dict(item)
         row["fulfillment_label"] = SPORTS_FULFILLMENT_LABELS[row["fulfillment_status"]]
-        row["next_status"] = SPORTS_FULFILLMENT_TRANSITIONS.get(
+        next_status = SPORTS_FULFILLMENT_TRANSITIONS.get(
             (row["order_mode"], row["fulfillment_status"])
         ) if row["order_mode"] == "ready" or row["fulfillment_status"] == "available" else None
+        if next_status == "delivered" and not (
+            bool(row["paid"]) and (row["payment_status"] or "").lower() == "approved"
+        ):
+            next_status = None
+        row["next_status"] = next_status
         row["next_label"] = {
             "in_production": "Iniciar produção",
             "available": "Marcar como disponível",
@@ -1151,7 +1156,7 @@ def update_sports_fulfillment(sale_item_id):
     if payment_status in {"failed", "expired", "canceled", "refunded"}:
         return jsonify(error="O estado do pagamento bloqueia esta operação."), 409
     if is_delivery and (not item["paid"] or payment_status != "approved"):
-        return jsonify(error="A entrega só pode ser registrada após a confirmação do pagamento."), 409
+        return jsonify(error="Pedido ainda não está pago."), 409
     if is_delivery and item["reservation_status"] == "released":
         return jsonify(error="A reserva deste item foi liberada e ele não pode ser entregue."), 409
     if item["payment_method"] != "Dinheiro" and (not item["paid"] or payment_status != "approved"):
