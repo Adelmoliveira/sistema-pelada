@@ -238,10 +238,6 @@ def _create_sports_sale(db):
     if request.form.get("sale_type", "player").strip().lower() == "event" or request.form.get("event_id"):
         raise ValueError("Material Esportivo não está disponível para Convidado / Evento.")
     method = request.form.get("payment_method", "")
-    if method == "Pix":
-        raise ValueError("Pagamento Pix para Material Esportivo será disponibilizado em breve.")
-    if method not in {"Dinheiro", "Créditos"}:
-        raise ValueError("Material Esportivo aceita Dinheiro ou Créditos nesta etapa.")
     player_id = int(g.user["player_id"] or 0) if g.user["role"] == "client" else int(request.form.get("player_id") or 0)
     if not player_id:
         raise ValueError("Selecione o peladeiro.")
@@ -289,6 +285,10 @@ def _create_sports_sale(db):
     if len(modes) != 1:
         raise ValueError("Finalize pronta entrega e encomenda em pedidos separados.")
     backorder_request = modes == {"backorder"}
+    if not backorder_request and method == "Pix":
+        raise ValueError("Use o botão Gerar QR Code Pix para concluir o pagamento.")
+    if not backorder_request and method not in {"Dinheiro", "Créditos"}:
+        raise ValueError("Material Esportivo aceita Pix, Dinheiro ou Créditos.")
     cash_pending = method == "Dinheiro" and not backorder_request
     with db:
         sale = db.execute("""INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,paid_at,ready_for_delivery,notes)

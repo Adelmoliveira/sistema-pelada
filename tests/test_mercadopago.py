@@ -326,6 +326,117 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(details[0]["fulfillment_status"], "requested")
             self.assertEqual(db.execute("SELECT stock FROM sports_product_variants WHERE id=?", (allowed_variant,)).fetchone()["stock"], 0)
 
+    def test_sports_backorder_quick_sale_has_no_advance_payment(self):
+        product_id, variant_id = self.create_sports_product(
+            "Produto misto sem pagamento antecipado", stock=2, allow_backorder=1
+        )
+        self.login_manager()
+
+        page = self.client.get("/sale?catalog=sports")
+        html = page.get_data(as_text=True)
+        self.assertIn('id="payment-section"', html)
+        self.assertIn('id="backorder-payment-message"', html)
+        self.assertIn("Pagamento na retirada", html)
+        self.assertIn(
+            "Sua encomenda será registrada agora. O pagamento será realizado quando o material estiver disponível para retirada.",
+            html,
+        )
+        self.assertIn("method.disabled=sportsRequest", html)
+        self.assertIn("pixButton.classList.toggle('d-none',!isPix||sportsRequest)", html)
+        self.assertIn("finalizeButton.textContent=sportsRequest?'Solicitar encomenda'", html)
+        self.assertIn("if(!sportsBackorderRequest()&&method.value==='Pix'", html)
+
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,5000)",
+                (self.player_id,),
+            )
+            db.commit()
+
+        for method in ("Pix", "Créditos", "Dinheiro"):
+            response = self.client.post(
+                "/sale",
+                data=self.sports_sale_form(
+                    product_id, variant_id,
+                    order_mode=["backorder"], payment_method=method,
+                ),
+            )
+            self.assertEqual(response.status_code, 303)
+
+        with app.app_context():
+            db = get_db()
+            sales = db.execute(
+                """SELECT paid,payment_status,payment_method,mercadopago_order_id
+                   FROM sales ORDER BY id"""
+            ).fetchall()
+            self.assertEqual(len(sales), 3)
+            for sale in sales:
+                self.assertEqual((sale["paid"], sale["payment_status"]), (0, "requested"))
+                self.assertEqual(sale["payment_method"], "Dinheiro")
+                self.assertIsNone(sale["mercadopago_order_id"])
+            self.assertEqual(
+                db.execute(
+                    "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?",
+                    (self.player_id,),
+                ).fetchone()["balance_cents"],
+                5000,
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) total FROM bar_credit_transactions").fetchone()["total"],
+                0,
+            )
+
+        with patch("src.routes.sales.create_pix_order") as create_order:
+            rejected = self.client.post(
+                "/pix/mercadopago/orders",
+                headers=self.headers(),
+                json={
+                    "department": "sports",
+                    "player_id": self.player_id,
+                    "items": [{
+                        "department": "sports", "product_id": product_id,
+                        "variant_id": variant_id, "quantity": 1,
+                        "custom_name": "", "custom_number": "",
+                        "order_mode": "backorder",
+                    }],
+                },
+            )
+        self.assertEqual(rejected.status_code, 409, rejected.get_json())
+        create_order.assert_not_called()
+
+        ready_order = {
+            "id": "ORD-MIXED-READY",
+            "transactions": {"payments": [{
+                "id": "PAY-MIXED-READY",
+                "payment_method": {"qr_code": "000201MIXEDREADY"},
+            }]},
+        }
+        with patch("src.routes.sales.create_pix_order", return_value=ready_order) as create_order:
+            ready = self.client.post(
+                "/pix/mercadopago/orders",
+                headers=self.headers(),
+                json={
+                    "department": "sports",
+                    "player_id": self.player_id,
+                    "items": [{
+                        "department": "sports", "product_id": product_id,
+                        "variant_id": variant_id, "quantity": 1,
+                        "custom_name": "", "custom_number": "",
+                        "order_mode": "ready",
+                    }],
+                },
+            )
+        self.assertEqual(ready.status_code, 201, ready.get_json())
+        create_order.assert_called_once()
+        with app.app_context():
+            self.assertEqual(
+                get_db().execute(
+                    "SELECT stock FROM sports_product_variants WHERE id=?", (variant_id,)
+                ).fetchone()["stock"],
+                1,
+            )
+
     def test_sports_pix_ready_uses_variant_stock_and_is_idempotent(self):
         from src.routes.sales import apply_mercadopago_status
 
