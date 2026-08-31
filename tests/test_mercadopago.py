@@ -2618,6 +2618,67 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(entry["area_code"], "INT")
             self.assertTrue(entry["bmp"].endswith(" | INT"))
 
+    def test_qr_code_selection_filters_by_conference_status_and_combines_filters(self):
+        self.login_manager()
+        with app.app_context():
+            db = get_db()
+            chair = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES('Cadeira QR','FCG-QR-1')"
+            ).lastrowid
+            table = db.execute(
+                "INSERT INTO materials(description,load_sheet) VALUES('Mesa QR','FCG-QR-2')"
+            ).lastrowid
+            entries = [
+                (chair, "BMP-QR-PENDING-BAR", "BAR", None),
+                (chair, "BMP-QR-CHECKED-BAR", "BAR", "2026-08-01 10:00:00"),
+                (table, "BMP-QR-PENDING-COZ", "COZ", None),
+                (table, "BMP-QR-CHECKED-COZ", "COZ", "2026-08-02 10:00:00"),
+            ]
+            for entry in entries:
+                db.execute(
+                    """INSERT INTO load_entries(material_id,bmp,area_code,last_checked_at)
+                       VALUES(?,?,?,?)""",
+                    entry,
+                )
+            db.commit()
+
+        def page(query=""):
+            response = self.client.get(f"/infra/load-relation/qr-codes{query}")
+            self.assertEqual(response.status_code, 200)
+            return response.get_data(as_text=True)
+
+        all_entries = page()
+        for bmp in ("BMP-QR-PENDING-BAR", "BMP-QR-CHECKED-BAR",
+                    "BMP-QR-PENDING-COZ", "BMP-QR-CHECKED-COZ"):
+            self.assertIn(bmp, all_entries)
+
+        missing = page("?conference_status=missing")
+        self.assertIn("BMP-QR-PENDING-BAR", missing)
+        self.assertIn("BMP-QR-PENDING-COZ", missing)
+        self.assertNotIn("BMP-QR-CHECKED-BAR", missing)
+        self.assertNotIn("BMP-QR-CHECKED-COZ", missing)
+
+        checked = page("?conference_status=checked")
+        self.assertIn("BMP-QR-CHECKED-BAR", checked)
+        self.assertIn("BMP-QR-CHECKED-COZ", checked)
+        self.assertNotIn("BMP-QR-PENDING-BAR", checked)
+        self.assertNotIn("BMP-QR-PENDING-COZ", checked)
+
+        area_missing = page("?area=BAR&conference_status=missing")
+        self.assertIn("BMP-QR-PENDING-BAR", area_missing)
+        self.assertNotIn("BMP-QR-PENDING-COZ", area_missing)
+
+        material_missing = page(f"?material_id={table}&conference_status=missing")
+        self.assertIn("BMP-QR-PENDING-COZ", material_missing)
+        self.assertNotIn("BMP-QR-PENDING-BAR", material_missing)
+
+        combined = page(f"?area=COZ&material_id={table}&conference_status=missing")
+        self.assertIn("BMP-QR-PENDING-COZ", combined)
+        self.assertNotIn("BMP-QR-PENDING-BAR", combined)
+
+        empty = page("?area=HIS&conference_status=missing")
+        self.assertIn("Nenhum BMP", empty)
+
     def test_qr_load_check_requires_and_atomically_stores_photo_evidence(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id

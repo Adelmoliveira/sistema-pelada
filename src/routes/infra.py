@@ -170,7 +170,8 @@ def limit_load_upload_request():
     request.max_content_length = MAX_LOAD_REQUEST_BYTES
 
 
-def load_entry_rows(db, query="", area_code="", status="", location="", responsible="", due="", material_id=None):
+def load_entry_rows(db, query="", area_code="", status="", location="", responsible="", due="", material_id=None,
+                    conference_status=""):
     sql = """SELECT le.*,m.description material_description,m.load_sheet material_fcg,
                     (SELECT COUNT(*) FROM load_entry_photos lp WHERE lp.load_entry_id=le.id) photo_count,
                     (SELECT thumbnail_data FROM load_entry_photos lp
@@ -188,6 +189,10 @@ def load_entry_rows(db, query="", area_code="", status="", location="", responsi
     if material_id:
         conditions.append("le.material_id=?")
         params.append(material_id)
+    if conference_status == "missing":
+        conditions.append("le.last_checked_at IS NULL")
+    elif conference_status == "checked":
+        conditions.append("le.last_checked_at IS NOT NULL")
     if status in LOAD_STATUS_LABELS:
         conditions.append("le.status=?")
         params.append(status)
@@ -556,17 +561,24 @@ def load_check():
 @roles_allowed("manager", "infra")
 def load_qr_codes():
     area_code = request.args.get("area", "").strip().upper()
+    conference_status = request.args.get("conference_status", "").strip().lower()
+    if conference_status not in {"", "missing", "checked"}:
+        conference_status = ""
     try:
         material_id = int(request.args.get("material_id", ""))
     except (TypeError, ValueError):
         material_id = None
     db = get_db()
-    entries = load_entry_rows(db, area_code=area_code, material_id=material_id)
+    entries = load_entry_rows(
+        db, area_code=area_code, material_id=material_id,
+        conference_status=conference_status,
+    )
     available_material_ids = {row["material_id"] for row in entries}
     available_materials = [material for material in material_options(db) if material["id"] in available_material_ids or material["id"] == material_id]
     return render_template(
         "load_qr_codes.html", entries=entries, area_code=area_code,
         load_areas=LOAD_AREAS, material_id=material_id, materials=available_materials,
+        conference_status=conference_status,
     )
 
 
@@ -580,10 +592,10 @@ def load_qr_codes_pdf():
         entry_ids = []
     if not entry_ids:
         flash("Selecione ao menos um BMP para gerar os códigos QR.", "danger")
-        return redirect(url_for("infra.load_qr_codes", area=request.form.get("area_code", ""), material_id=request.form.get("material_id", "")))
+        return redirect(url_for("infra.load_qr_codes", area=request.form.get("area_code", ""), material_id=request.form.get("material_id", ""), conference_status=request.form.get("conference_status", "")))
     if len(entry_ids) > 200:
         flash("Selecione no máximo 200 BMPs por impressão.", "danger")
-        return redirect(url_for("infra.load_qr_codes", area=request.form.get("area_code", ""), material_id=request.form.get("material_id", "")))
+        return redirect(url_for("infra.load_qr_codes", area=request.form.get("area_code", ""), material_id=request.form.get("material_id", ""), conference_status=request.form.get("conference_status", "")))
     placeholders = ",".join("?" for _ in entry_ids)
     entries = get_db().execute(
         f"""SELECT le.id,le.bmp,le.location,m.description material_description
