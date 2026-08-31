@@ -24,11 +24,11 @@
   {% for group in receiving_groups %}
     <div class="col-lg-6"><div class="border rounded p-3 receipt-group" data-product="{{group.product_id}}" data-variant="{{group.variant_id}}">
       <h3 class="h6 mb-1">{{group.product_name}} — {{group.variant_size}}</h3>
-      <p class="small text-muted">Encomendas aguardando: {{group.items|length}} · Quantidade total aguardando: {{group.waiting_quantity}}</p>
+      <p class="small text-muted">Encomendas aguardando: {{group["items"]|length}} · Quantidade total aguardando: {{group.waiting_quantity}}</p>
       <label class="form-label" for="received-{{group.product_id}}-{{group.variant_id}}">Quantidade recebida</label>
       <input class="form-control receipt-quantity mb-3" id="received-{{group.product_id}}-{{group.variant_id}}" type="number" min="0" step="1" placeholder="0">
       <div class="vstack gap-2">
-      {% for item in group.items %}<label class="border rounded p-2"><input class="form-check-input receipt-item me-2" type="checkbox" value="{{item.sale_item_id}}"><strong>{{item.player_name}}</strong> — qtd. {{item.quantity}}{% if item.custom_name %}<span class="d-block small ms-4">Nome: {{item.custom_name}}</span>{% endif %}{% if item.custom_number %}<span class="d-block small ms-4">Número: {{item.custom_number}}</span>{% endif %}</label>{% endfor %}
+      {% for item in group["items"] %}<label class="border rounded p-2"><input class="form-check-input receipt-item me-2" type="checkbox" value="{{item.sale_item_id}}"><strong>{{item.player_name}}</strong> — qtd. {{item.quantity}}{% if item.custom_name %}<span class="d-block small ms-4">Nome: {{item.custom_name}}</span>{% endif %}{% if item.custom_number %}<span class="d-block small ms-4">Número: {{item.custom_number}}</span>{% endif %}</label>{% endfor %}
       </div>
     </div></div>
   {% else %}<div class="col-12 text-muted">Nenhuma encomenda em produção aguardando recebimento.</div>{% endfor %}
