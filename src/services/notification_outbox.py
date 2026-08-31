@@ -14,6 +14,7 @@ OUTBOX_EVENT_TYPES = (
     "delivery_update_email",
     "purchase_receipt_email",
 )
+SPORTS_AVAILABLE_EVENT_TYPE = "sports_order_available_push"
 
 
 def _now_iso():
@@ -53,6 +54,23 @@ def enqueue_delivery_events(db, sale_id, delivery_id, payload):
         if getattr(cursor, "rowcount", 0) != 0:
             inserted += 1
     return inserted
+
+
+def enqueue_sports_available_event(db, sale_id, sale_item_id, payload):
+    """Queue one idempotent arrival notification for one sports sale item."""
+    event_key = f"sports-available:{int(sale_item_id)}"
+    cursor = db.execute(
+        """
+        INSERT INTO notification_outbox(
+            event_key,event_type,sale_id,delivery_id,payload,status,attempts,
+            available_at,created_at,updated_at
+        ) VALUES(?,?,?,?,?,'pending',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+        ON CONFLICT(event_key) DO NOTHING
+        """,
+        (event_key, SPORTS_AVAILABLE_EVENT_TYPE, int(sale_id), int(sale_item_id),
+         json.dumps(payload, sort_keys=True)),
+    )
+    return getattr(cursor, "rowcount", 0) != 0
 
 
 def _select_pending_events(db, batch_size=OUTBOX_BATCH_SIZE):
@@ -150,6 +168,13 @@ def _dispatch_event(db, event):
         if result.get("sent", 0) or result.get("skipped", 0):
             return True
         return False
+    if event_type == SPORTS_AVAILABLE_EVENT_TYPE:
+        result = send_player_push_once(
+            db, int(payload["player_id"]), "sports_order_available",
+            str(payload["sale_item_id"]), payload.get("title", "Seu produto chegou!"),
+            payload.get("body", ""), payload.get("url", "/minhas-compras"),
+        )
+        return bool(result.get("sent", 0) or result.get("skipped", 0))
     if event_type == "delivery_update_email":
         sender = current_app.config.get("GMAIL_SMTP_USER", "")
         password = current_app.config.get("GMAIL_APP_PASSWORD", "")
