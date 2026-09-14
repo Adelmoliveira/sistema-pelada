@@ -185,6 +185,23 @@ def products():
 
 COIN_MATERIAL_TYPE_CODE = "commemorative_coin"
 COIN_TECHNICAL_SIZE = "Único"
+SPORTS_SALE_MODES = {
+    "ready": (True, False),
+    "backorder": (False, True),
+    "both": (True, True),
+}
+
+
+def _sports_sale_mode_from_form(form):
+    try:
+        return SPORTS_SALE_MODES[form.get("sale_mode", "")]
+    except KeyError:
+        raise ValueError("Selecione a modalidade de venda.")
+
+
+def _sports_sale_mode(ready_sale_enabled, allow_backorder):
+    flags = (bool(ready_sale_enabled), bool(allow_backorder))
+    return next((mode for mode, values in SPORTS_SALE_MODES.items() if values == flags), None)
 
 
 def _sports_material_type(db, type_id):
@@ -247,12 +264,11 @@ def _sports_types(db, include_inactive=False):
 def _save_sports_config(db, product_id, type_id, variants, form):
     material_type = _sports_material_type(db, type_id)
     is_coin = material_type["code"] == COIN_MATERIAL_TYPE_CODE
+    ready_sale_enabled, allow_backorder = _sports_sale_mode_from_form(form)
     if is_coin:
         variant = variants[0]
         variants = [{"size": COIN_TECHNICAL_SIZE, "stock": variant["stock"],
                      "min_stock": variant["min_stock"], "active": True}]
-    if form.get("ready_sale_enabled") != "1" and form.get("allow_backorder") != "1":
-        raise ValueError("Selecione pronta entrega, encomenda ou ambas as modalidades.")
     db.execute(
         """INSERT INTO sports_product_config
            (product_id,type_id,allow_custom_name,allow_custom_number,allow_backorder,ready_sale_enabled,updated_at)
@@ -265,7 +281,7 @@ def _save_sports_config(db, product_id, type_id, variants, form):
            RETURNING product_id""",
         (product_id, type_id, False if is_coin else form.get("allow_custom_name") == "1",
          False if is_coin else form.get("allow_custom_number") == "1",
-         form.get("allow_backorder") == "1", form.get("ready_sale_enabled") == "1"),
+         allow_backorder, ready_sale_enabled),
     )
     db.execute("UPDATE sports_product_variants SET active=FALSE,updated_at=CURRENT_TIMESTAMP WHERE product_id=?", (product_id,))
     for variant in variants:
@@ -385,6 +401,7 @@ def edit_sports_material(product_id):
     coin_variant = next((variant for variant in variants if variant["size"] == COIN_TECHNICAL_SIZE), None)
     return render_template("edit_sports_material.html", product=product, variants=variants,
                            sports_types=_sports_types(db), is_coin=is_coin,
+                           sale_mode=_sports_sale_mode(product["ready_sale_enabled"], product["allow_backorder"]),
                            coin_variant=coin_variant,
                            coin_type_code=COIN_MATERIAL_TYPE_CODE,
                            coin_technical_size=COIN_TECHNICAL_SIZE)

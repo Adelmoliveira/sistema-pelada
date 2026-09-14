@@ -187,12 +187,14 @@ class MercadoPagoFlowTest(unittest.TestCase):
                     allow_custom_name INTEGER NOT NULL DEFAULT 0,
                     allow_custom_number INTEGER NOT NULL DEFAULT 0,
                     allow_backorder INTEGER NOT NULL DEFAULT 0,
-                    ready_sale_enabled INTEGER NOT NULL DEFAULT 1
+                    ready_sale_enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE sports_product_variants (
                     id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL, size TEXT NOT NULL,
                     stock INTEGER NOT NULL DEFAULT 0, min_stock INTEGER NOT NULL DEFAULT 0,
-                    active INTEGER NOT NULL DEFAULT 1, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    active INTEGER NOT NULL DEFAULT 1, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(product_id,size)
                 );
                 CREATE TABLE sports_sale_item_details (
                     sale_item_id INTEGER PRIMARY KEY, variant_id INTEGER NOT NULL,
@@ -258,6 +260,116 @@ class MercadoPagoFlowTest(unittest.TestCase):
         }
         form.update(overrides)
         return form
+
+    def sports_material_form(self, name, sale_mode=None, **overrides):
+        form = {
+            "type_id": "1", "name": name, "price": "20,00", "cost": "10,00",
+            "active": "1", "variant_size": ["M"], "variant_stock": ["7"],
+            "variant_min_stock": ["2"], "variant_active": ["1"],
+        }
+        if sale_mode is not None:
+            form["sale_mode"] = sale_mode
+        form.update(overrides)
+        return form
+
+    def test_sports_material_sale_mode_create_edit_and_stock_preservation(self):
+        self.login_manager()
+        expected = {
+            "ready": (1, 0),
+            "backorder": (0, 1),
+            "both": (1, 1),
+        }
+        product_ids = {}
+        for mode, flags in expected.items():
+            response = self.client.post(
+                "/material-esportivo",
+                data=self.sports_material_form(f"Modalidade {mode}", mode),
+            )
+            self.assertEqual(response.status_code, 303)
+            with app.app_context():
+                row = get_db().execute(
+                    """SELECT p.id,c.ready_sale_enabled,c.allow_backorder
+                       FROM products p JOIN sports_product_config c ON c.product_id=p.id
+                       WHERE p.name=?""",
+                    (f"Modalidade {mode}",),
+                ).fetchone()
+                self.assertEqual(
+                    (row["ready_sale_enabled"], row["allow_backorder"]), flags
+                )
+                product_ids[mode] = row["id"]
+            edit_html = self.client.get(
+                f"/material-esportivo/{product_ids[mode]}/editar"
+            ).get_data(as_text=True)
+            self.assertRegex(
+                edit_html,
+                rf'name="sale_mode" value="{mode}"[^>]*checked',
+            )
+            unchanged = self.client.post(
+                f"/material-esportivo/{product_ids[mode]}/editar",
+                data=self.sports_material_form(f"Modalidade {mode}", mode),
+            )
+            self.assertEqual(unchanged.status_code, 303)
+            with app.app_context():
+                config = get_db().execute(
+                    "SELECT ready_sale_enabled,allow_backorder FROM sports_product_config WHERE product_id=?",
+                    (product_ids[mode],),
+                ).fetchone()
+                self.assertEqual(
+                    (config["ready_sale_enabled"], config["allow_backorder"]), flags
+                )
+
+        missing = self.client.post(
+            "/material-esportivo",
+            data=self.sports_material_form("Sem modalidade"),
+            follow_redirects=True,
+        )
+        self.assertIn("Selecione a modalidade de venda.", missing.get_data(as_text=True))
+        with app.app_context():
+            self.assertIsNone(get_db().execute(
+                "SELECT id FROM products WHERE name='Sem modalidade'"
+            ).fetchone())
+
+        product_id = product_ids["ready"]
+        for mode in ("both", "backorder", "ready"):
+            response = self.client.post(
+                f"/material-esportivo/{product_id}/editar",
+                data=self.sports_material_form("Modalidade ready", mode),
+            )
+            self.assertEqual(response.status_code, 303)
+            with app.app_context():
+                db = get_db()
+                config = db.execute(
+                    "SELECT ready_sale_enabled,allow_backorder FROM sports_product_config WHERE product_id=?",
+                    (product_id,),
+                ).fetchone()
+                self.assertEqual(
+                    (config["ready_sale_enabled"], config["allow_backorder"]),
+                    expected[mode],
+                )
+                self.assertEqual(db.execute(
+                    "SELECT stock FROM sports_product_variants WHERE product_id=? AND size='M'",
+                    (product_id,),
+                ).fetchone()["stock"], 7)
+
+        coin = self.client.post(
+            "/material-esportivo",
+            data=self.sports_material_form(
+                "Moeda modalidade", "backorder", type_id="2",
+                coin_stock="4", coin_min_stock="1",
+            ),
+        )
+        self.assertEqual(coin.status_code, 303)
+        with app.app_context():
+            row = get_db().execute(
+                """SELECT c.ready_sale_enabled,c.allow_backorder,v.size,v.stock
+                   FROM products p JOIN sports_product_config c ON c.product_id=p.id
+                   JOIN sports_product_variants v ON v.product_id=p.id
+                   WHERE p.name='Moeda modalidade'"""
+            ).fetchone()
+            self.assertEqual(
+                (row["ready_sale_enabled"], row["allow_backorder"], row["size"], row["stock"]),
+                (0, 1, "Único", 4),
+            )
 
     def test_sports_catalog_restores_sized_coin_and_bar_products(self):
         shirt_id, _ = self.create_sports_product("Camisa Teste", size="M", stock=5)
