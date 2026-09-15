@@ -328,8 +328,12 @@ def sports_materials():
                 flash("Não foi possível cadastrar o material esportivo.", "danger")
         return redirect(url_for("products.sports_materials"), code=303)
 
+    status = request.args.get("status", "active")
+    if status not in {"active", "inactive", "all"}:
+        status = "active"
+    status_clause = " AND p.active = 1" if status == "active" else " AND p.active = 0" if status == "inactive" else ""
     items = db.execute(
-        """SELECT p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
+        f"""SELECT p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
                   config.product_id configured,type.name sports_type,type.code sports_type_code,
                   config.allow_custom_name,config.allow_custom_number,config.allow_backorder,config.ready_sale_enabled,
                   COALESCE(SUM(CASE WHEN variant.active THEN variant.stock ELSE 0 END),0) variant_stock,
@@ -338,7 +342,7 @@ def sports_materials():
            LEFT JOIN sports_product_config config ON config.product_id=p.id
            LEFT JOIN sports_material_types type ON type.id=config.type_id
            LEFT JOIN sports_product_variants variant ON variant.product_id=p.id
-           WHERE p.category=?
+           WHERE p.category=?{status_clause}
            GROUP BY p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
                     config.product_id,type.name,type.code,config.allow_custom_name,
                     config.allow_custom_number,config.allow_backorder,config.ready_sale_enabled
@@ -347,8 +351,31 @@ def sports_materials():
     ).fetchall()
     return render_template(
         "sports_materials.html", products=items, sports_types=_sports_types(db),
-        coin_type_code=COIN_MATERIAL_TYPE_CODE,
+        coin_type_code=COIN_MATERIAL_TYPE_CODE, status=status,
     )
+
+
+@bp.post("/material-esportivo/<int:product_id>/atividade")
+@roles_allowed("manager", "staff")
+def set_sports_material_activity(product_id):
+    active_value = request.form.get("active")
+    if active_value not in {"0", "1"}:
+        flash("Status do material esportivo inválido.", "danger")
+        return redirect(url_for("products.sports_materials"), code=303)
+    db = get_db()
+    product = db.execute(
+        "SELECT id,active FROM products WHERE id=? AND category=?",
+        (product_id, SPORTS_MATERIAL_CATEGORY),
+    ).fetchone()
+    if not product:
+        flash("Material esportivo não encontrado.", "warning")
+        return redirect(url_for("products.sports_materials"), code=303)
+    db.execute("UPDATE products SET active=? WHERE id=?", (int(active_value), product_id))
+    db.commit()
+    active = active_value == "1"
+    flash("Material esportivo reativado." if active else
+          "Material esportivo retirado de uso; o histórico foi preservado.", "success")
+    return redirect(url_for("products.sports_materials", status="active" if active else "inactive"), code=303)
 
 
 @bp.route("/material-esportivo/<int:product_id>/editar", methods=["GET", "POST"])
