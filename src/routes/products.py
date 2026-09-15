@@ -331,7 +331,7 @@ def sports_materials():
     status = request.args.get("status", "active")
     if status not in {"active", "inactive", "all"}:
         status = "active"
-    status_clause = " AND p.active" if status == "active" else " AND NOT p.active" if status == "inactive" else ""
+    status_clause = " AND p.active = 1" if status == "active" else " AND p.active = 0" if status == "inactive" else ""
     items = db.execute(
         f"""SELECT p.id,p.name,p.price_cents,p.cost_cents,p.thumbnail_data,p.active,p.created_at,
                   config.product_id configured,type.name sports_type,type.code sports_type_code,

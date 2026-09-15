@@ -372,6 +372,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
             )
 
     def test_sports_material_inactivation_and_reactivation_preserve_operations(self):
+        products_source = Path("src/routes/products.py").read_text(encoding="utf-8")
+        self.assertIn('status_clause = " AND p.active = 1"', products_source)
+        self.assertIn('else " AND p.active = 0"', products_source)
+        self.assertNotIn('status_clause = " AND p.active"', products_source)
+        self.assertNotIn('" AND NOT p.active"', products_source)
+
         product_id, variant_id = self.create_sports_product(
             "Material para inativar", stock=8, allow_backorder=1
         )
