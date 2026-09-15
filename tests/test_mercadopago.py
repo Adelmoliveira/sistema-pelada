@@ -371,6 +371,156 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 (0, 1, "Único", 4),
             )
 
+    def test_sports_material_inactivation_and_reactivation_preserve_operations(self):
+        product_id, variant_id = self.create_sports_product(
+            "Material para inativar", stock=8, allow_backorder=1
+        )
+        coin_id, coin_variant_id = self.create_sports_product(
+            "Moeda para inativar", type_id=2, size="Único", stock=4,
+            allow_backorder=1,
+        )
+        self.login_manager()
+
+        active_html = self.client.get("/material-esportivo").get_data(as_text=True)
+        self.assertIn("Material para inativar", active_html)
+        self.assertIn("Excluir", active_html)
+        self.assertNotIn("Reativar", active_html)
+
+        sale_ids = []
+        for _status in ("requested", "in_production", "available"):
+            response = self.client.post(
+                "/sale",
+                data=self.sports_sale_form(
+                    product_id, variant_id, order_mode=["backorder"]
+                ),
+            )
+            self.assertEqual(response.status_code, 303)
+            with app.app_context():
+                sale_ids.append(get_db().execute(
+                    "SELECT MAX(id) id FROM sales"
+                ).fetchone()["id"])
+        with app.app_context():
+            db = get_db()
+            item_rows = db.execute(
+                """SELECT si.sale_id,d.sale_item_id FROM sale_items si
+                   JOIN sports_sale_item_details d ON d.sale_item_id=si.id
+                   WHERE si.sale_id IN (?,?,?) ORDER BY si.sale_id""",
+                tuple(sale_ids),
+            ).fetchall()
+            for row, status in zip(item_rows[1:], ("in_production", "available")):
+                db.execute(
+                    "UPDATE sports_sale_item_details SET fulfillment_status=? WHERE sale_item_id=?",
+                    (status, row["sale_item_id"]),
+                )
+                db.execute(
+                    """INSERT INTO sports_order_status_history
+                       (sale_item_id,from_status,to_status,changed_by,notes)
+                       VALUES(?,'requested',?,?,?)""",
+                    (row["sale_item_id"], status, self.user_id, "Preservar histórico"),
+                )
+            db.commit()
+
+        for target_id in (product_id, coin_id):
+            first = self.client.post(
+                f"/material-esportivo/{target_id}/atividade", data={"active": "0"}
+            )
+            second = self.client.post(
+                f"/material-esportivo/{target_id}/atividade", data={"active": "0"}
+            )
+            self.assertEqual((first.status_code, second.status_code), (303, 303))
+
+        default_html = self.client.get("/material-esportivo").get_data(as_text=True)
+        inactive_html = self.client.get(
+            "/material-esportivo?status=inactive"
+        ).get_data(as_text=True)
+        all_html = self.client.get(
+            "/material-esportivo?status=all"
+        ).get_data(as_text=True)
+        self.assertNotIn("Material para inativar", default_html)
+        self.assertIn("Material para inativar", inactive_html)
+        self.assertIn("Moeda para inativar", inactive_html)
+        self.assertIn("Reativar", inactive_html)
+        self.assertIn("Material para inativar", all_html)
+
+        quick_sale = self.client.get("/sale?catalog=sports").get_data(as_text=True)
+        self.assertNotIn("Material para inativar", quick_sale)
+        with app.app_context():
+            db = get_db()
+            sales_before = db.execute("SELECT COUNT(*) total FROM sales").fetchone()["total"]
+        for mode in ("ready", "backorder"):
+            attempted = self.client.post(
+                "/sale",
+                data=self.sports_sale_form(
+                    product_id, variant_id, order_mode=[mode]
+                ),
+                follow_redirects=True,
+            )
+            self.assertIn(
+                "Produto ou tamanho esportivo inválido.", attempted.get_data(as_text=True)
+            )
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) total FROM sales"
+            ).fetchone()["total"], sales_before)
+            self.assertEqual(db.execute(
+                "SELECT stock FROM sports_product_variants WHERE id=?", (variant_id,)
+            ).fetchone()["stock"], 8)
+            self.assertEqual(db.execute(
+                "SELECT stock FROM sports_product_variants WHERE id=?", (coin_variant_id,)
+            ).fetchone()["stock"], 4)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) total FROM sports_product_variants WHERE product_id IN (?,?)",
+                (product_id, coin_id),
+            ).fetchone()["total"], 2)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) total FROM sports_order_status_history WHERE notes='Preservar histórico'"
+            ).fetchone()["total"], 2)
+            states = db.execute(
+                """SELECT d.fulfillment_status FROM sports_sale_item_details d
+                   JOIN sale_items si ON si.id=d.sale_item_id
+                   WHERE si.sale_id IN (?,?,?) ORDER BY si.sale_id""",
+                tuple(sale_ids),
+            ).fetchall()
+            self.assertEqual([row["fulfillment_status"] for row in states],
+                             ["requested", "in_production", "available"])
+
+        for status in ("requested", "in_production", "available"):
+            queue_html = self.client.get(
+                f"/material-esportivo/vendas?status={status}"
+            ).get_data(as_text=True)
+            self.assertIn("Material para inativar", queue_html)
+
+        for target_id in (product_id, coin_id):
+            first = self.client.post(
+                f"/material-esportivo/{target_id}/atividade", data={"active": "1"}
+            )
+            second = self.client.post(
+                f"/material-esportivo/{target_id}/atividade", data={"active": "1"}
+            )
+            self.assertEqual((first.status_code, second.status_code), (303, 303))
+
+        with app.app_context():
+            db = get_db()
+            restored = db.execute(
+                """SELECT p.active,c.ready_sale_enabled,c.allow_backorder,v.stock
+                   FROM products p JOIN sports_product_config c ON c.product_id=p.id
+                   JOIN sports_product_variants v ON v.product_id=p.id WHERE p.id=?""",
+                (product_id,),
+            ).fetchone()
+            self.assertEqual(
+                (restored["active"], restored["ready_sale_enabled"],
+                 restored["allow_backorder"], restored["stock"]),
+                (1, 1, 1, 8),
+            )
+            coin = db.execute(
+                """SELECT p.active,v.size,v.stock FROM products p
+                   JOIN sports_product_variants v ON v.product_id=p.id WHERE p.id=?""",
+                (coin_id,),
+            ).fetchone()
+            self.assertEqual((coin["active"], coin["size"], coin["stock"]),
+                             (1, "Único", 4))
+
     def test_sports_catalog_restores_sized_coin_and_bar_products(self):
         shirt_id, _ = self.create_sports_product("Camisa Teste", size="M", stock=5)
         coin_id, _ = self.create_sports_product("Moeda Teste", type_id=2, size="Único", stock=5)
