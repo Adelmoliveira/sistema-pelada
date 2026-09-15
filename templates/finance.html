@@ -42,8 +42,8 @@
             <div class="card-body">
                 <h2 class="h5">Registrar pagamento</h2>
                 <form method="post" id="payment-form" data-monthly-fee="{{ monthly_fee }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><label
-                        class="form-label">Peladeiro</label><select name="player_id" class="form-select mb-3" required>
-                        <option value="">Selecione</option>{% for p in players %}<option value="{{p.id}}">{{p.war_name or p.name}}
+                        class="form-label">Peladeiro</label><select name="player_id" id="membership-player" class="form-select mb-3" required>
+                        <option value="">Selecione</option>{% for p in players %}<option value="{{p.id}}" {{'selected' if p.id == selected_player_id}}>{{p.war_name or p.name}}
                         </option>{% endfor %}
                     </select><label class="form-label">Primeiro mês pago</label><input type="month" name="start_month"
                         value="{{current_month}}" class="form-control mb-3" required><label
@@ -76,7 +76,7 @@
                             </th>{% endfor %}
                         </tr>
                     </thead>
-                    <tbody>{% for row in statuses %}<tr>
+                    <tbody>{% for row in statuses %}<tr data-membership-player-id="{{row.player.id}}">
                             <td class="text-nowrap">{{row.player.name}}</td>{% for m in range(1,13) %}<td
                                 class="text-center"><span
                                     class="badge {{'bg-success' if m in row.months else 'bg-light text-muted'}}">{{'✓'
@@ -138,12 +138,12 @@
         <nav aria-label="Paginação do histórico">
             <ul class="pagination pagination-sm justify-content-center mb-0">
                 <li class="page-item {{'disabled' if history_page==1}}"><a class="page-link"
-                        href="{{url_for('finance.finance',year=year,page=history_page-1,members_page=members_page)}}">Anterior</a>
+                        href="{{url_for('finance.finance',year=year,page=history_page-1,members_page=members_page,player_id=selected_player_id)}}">Anterior</a>
                 </li>{% for n in range(1,history_pages+1) %}<li class="page-item {{'active' if n==history_page}}"><a
                         class="page-link"
-                        href="{{url_for('finance.finance',year=year,page=n,members_page=members_page)}}">{{n}}</a></li>
+                        href="{{url_for('finance.finance',year=year,page=n,members_page=members_page,player_id=selected_player_id)}}">{{n}}</a></li>
                 {% endfor %}<li class="page-item {{'disabled' if history_page==history_pages}}"><a class="page-link"
-                        href="{{url_for('finance.finance',year=year,page=history_page+1,members_page=members_page)}}">Próxima</a>
+                        href="{{url_for('finance.finance',year=year,page=history_page+1,members_page=members_page,player_id=selected_player_id)}}">Próxima</a>
                 </li>
             </ul>
         </nav>
@@ -155,7 +155,19 @@
     const count = document.querySelector('#months-count');
     const fee = document.querySelector('#fee-total');
     const form = document.querySelector('#payment-form');
+    const player = document.querySelector('#membership-player');
     const monthly = parseInt(form.dataset.monthlyFee);
+
+    player.addEventListener('change', () => {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('members_page');
+        if (player.value) {
+            url.searchParams.set('player_id', player.value);
+        } else {
+            url.searchParams.delete('player_id');
+        }
+        window.location.assign(url.toString());
+    });
 
     count.addEventListener('change', () => {
         const total = (monthly * parseInt(count.value)) / 100;

@@ -2475,6 +2475,68 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Hoje é aniversário do peladeiro", page)
         self.assertIn("Aniversariante", page)
 
+    def test_finance_player_filter_finds_player_outside_current_page(self):
+        with app.app_context():
+            db = get_db()
+            player_ids = []
+            for number in range(12):
+                player_ids.append(db.execute(
+                    "INSERT INTO players(name,active,membership_type) VALUES(?,1,'regular')",
+                    (f"Mensalista {number:02d}",),
+                ).lastrowid)
+            selected_id = player_ids[-1]
+            year = local_today().year
+            payment_id = db.execute(
+                """INSERT INTO membership_payments
+                   (player_id,amount_cents,months_count,start_month,payment_method)
+                   VALUES(?,1500,1,?,'Dinheiro')""",
+                (selected_id, f"{year}-01"),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO membership_months(payment_id,player_id,month) VALUES(?,?,?)",
+                (payment_id, selected_id, f"{year}-01"),
+            )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        unfiltered = self.client.get(f"/finance?year={year}").get_data(as_text=True)
+        self.assertEqual(unfiltered.count('data-membership-player-id="'), 10)
+
+        filtered = self.client.get(
+            f"/finance?year={year}&members_page=1&player_id={selected_id}"
+        ).get_data(as_text=True)
+        self.assertEqual(filtered.count('data-membership-player-id="'), 1)
+        self.assertIn(f'data-membership-player-id="{selected_id}"', filtered)
+        self.assertIn(f'<option value="{selected_id}" selected>', filtered)
+        self.assertIn("1 peladeiro(s)", filtered)
+        self.assertNotIn('aria-label="Paginação dos peladeiros"', filtered)
+        self.assertIn("bg-success", filtered)
+
+        cleared = self.client.get(f"/finance?year={year}").get_data(as_text=True)
+        self.assertEqual(cleared.count('data-membership-player-id="'), 10)
+
+    def test_finance_player_filter_rejects_invalid_or_ineligible_ids(self):
+        with app.app_context():
+            db = get_db()
+            inactive_id = db.execute(
+                "INSERT INTO players(name,active,membership_type) VALUES('Inativo filtro',0,'regular')"
+            ).lastrowid
+            exempt_id = db.execute(
+                "INSERT INTO players(name,active,membership_type) VALUES('Isento filtro',1,'board')"
+            ).lastrowid
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+
+        for player_id in ("inválido", "999999", str(inactive_id), str(exempt_id)):
+            response = self.client.get(f"/finance?player_id={player_id}")
+            self.assertEqual(response.status_code, 200)
+            html = response.get_data(as_text=True)
+            self.assertNotIn(f'data-membership-player-id="{player_id}"', html)
+
     def test_client_can_view_month_birthdays_from_sidebar(self):
         with app.app_context():
             db = get_db()

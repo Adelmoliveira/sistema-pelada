@@ -503,15 +503,34 @@ def finance():
             "months": paid_by_player.get(player["id"], set()),
             "start_month": _membership_start_month(player, year),
         })
+
+    selected_player_id = None
+    try:
+        requested_player_id = int(request.args.get("player_id", ""))
+    except (TypeError, ValueError):
+        requested_player_id = None
+    if requested_player_id is not None and any(
+        row["player"]["id"] == requested_player_id for row in all_status_rows
+    ):
+        selected_player_id = requested_player_id
     
     try:
         members_page = max(1, int(request.args.get("members_page", 1)))
     except ValueError:
         members_page = 1
     members_per_page = 10
-    members_pages = max(1, (len(all_status_rows) + members_per_page - 1) // members_per_page)
-    members_page = min(members_page, members_pages)
-    status_rows = all_status_rows[(members_page - 1) * members_per_page:members_page * members_per_page]
+    if selected_player_id is not None:
+        status_rows = [
+            row for row in all_status_rows if row["player"]["id"] == selected_player_id
+        ]
+        members_page = 1
+        members_pages = 1
+        members_total = 1
+    else:
+        members_pages = max(1, (len(all_status_rows) + members_per_page - 1) // members_per_page)
+        members_page = min(members_page, members_pages)
+        status_rows = all_status_rows[(members_page - 1) * members_per_page:members_page * members_per_page]
+        members_total = len(all_status_rows)
     
     try:
         history_page = max(1, int(request.args.get("page", 1)))
@@ -547,7 +566,8 @@ def finance():
                            current_month=local_today().strftime("%Y-%m"), history_page=history_page,
                            history_pages=history_pages, history_total=history_total,
                            members_page=members_page, members_pages=members_pages,
-                           members_total=len(all_status_rows), exempt_count=exempt_count,
+                           members_total=members_total, selected_player_id=selected_player_id,
+                           exempt_count=exempt_count,
                            finance_account_initialized=bool(db.execute("SELECT 1 FROM finance_accounts WHERE id=1").fetchone()))
 
 @bp.post("/finance/<int:payment_id>/delete")
