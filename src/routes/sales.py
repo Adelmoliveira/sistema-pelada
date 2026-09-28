@@ -18,9 +18,11 @@ from src.services.bar_credits import (
     available_balance as available_credit_balance,
     consume as consume_credit,
     consume_reservation,
+    convert_refunded_cash_to_credit,
     credit_cash_change,
     low_balance_threshold,
     notify_low_balance,
+    refund_sale_credit,
     release_reservation,
     reserve_credit,
 )
@@ -32,6 +34,7 @@ from src.services.sale_payment_parts import (
     associate_payment_part,
     cancel_active_payment_parts,
     create_payment_part,
+    refund_approved_payment_part,
     validate_approved_parts_total,
 )
 from src.catalog import SPORTS_MATERIAL_CATEGORY
@@ -218,11 +221,20 @@ def apply_mercadopago_status(db, sale, order):
         return "approved"
 
     if status == "refunded" and sale["paid"]:
-        db.execute(
-            "UPDATE sales SET paid=0,payment_status='refunded',mercadopago_payment_id=? WHERE id=?",
-            (payment_id, sale["id"]),
-        )
-        db.commit()
+        with db:
+            updated = db.execute(
+                """UPDATE sales SET paid=0,payment_status='refunded',mercadopago_payment_id=?
+                   WHERE id=? AND paid=1 AND payment_status='approved'""",
+                (payment_id, sale["id"]),
+            )
+            if updated.rowcount:
+                has_parts = db.execute(
+                    "SELECT 1 FROM sale_payment_parts WHERE sale_id=? LIMIT 1", (sale["id"],)
+                ).fetchone()
+                if has_parts:
+                    refund_sale_credit(db, sale["id"], sale["player_id"])
+                    refund_approved_payment_part(db, sale["id"], "Pix", payment_id)
+                    restore_reserved_stock(db, sale["id"])
         return "refunded"
 
     terminal_statuses = {"expired", "canceled", "failed"}
@@ -1704,6 +1716,61 @@ def cancel_cash_order(sale_id):
         reason = "Cancelamento registrado pela atendente (sem justificativa informada)."
     reason = reason[:500]
     try:
+        sale = db.execute(
+            "SELECT id,player_id,payment_method,paid,payment_status,delivered_at FROM sales WHERE id=?",
+            (sale_id,),
+        ).fetchone()
+        if sale and sale["payment_status"] == "refunded":
+            return jsonify(ok=True, sale_id=sale_id, already_refunded=True)
+        if sale and sale["paid"] and sale["payment_status"] == "approved":
+            if sale["payment_method"] not in ("Dinheiro", "Créditos"):
+                return jsonify(error="Este pagamento exige o fluxo próprio de estorno."), 409
+            parts = db.execute(
+                "SELECT method,amount_cents,status FROM sale_payment_parts WHERE sale_id=?",
+                (sale_id,),
+            ).fetchall()
+            approved = {part["method"]: int(part["amount_cents"] or 0)
+                        for part in parts if part["status"] == "approved"}
+            if not parts or not approved or set(approved) - {"Créditos", "Dinheiro"}:
+                return jsonify(error="Esta venda não possui composição segura para estorno interno."), 409
+            delivered = db.execute(
+                """SELECT 1 FROM sale_item_deliveries sid
+                   JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=? LIMIT 1""",
+                (sale_id,),
+            ).fetchone()
+            if sale["delivered_at"] or delivered:
+                return jsonify(error="Pedido com retirada registrada exige tratamento manual."), 409
+            items = db.execute("SELECT product_id FROM sale_items WHERE sale_id=?", (sale_id,)).fetchall()
+            with db:
+                updated = db.execute(
+                    """UPDATE sales SET payment_status='refunded',ready_for_delivery=0,
+                       paid=CASE WHEN EXISTS(
+                           SELECT 1 FROM sale_payment_parts
+                           WHERE sale_id=sales.id AND method='Dinheiro' AND status='approved'
+                       ) THEN 1 ELSE 0 END
+                       WHERE id=? AND paid=1 AND payment_status='approved'""",
+                    (sale_id,),
+                )
+                if updated.rowcount != 1:
+                    return jsonify(ok=True, sale_id=sale_id, already_refunded=True)
+                returned_credit_cents, _ = refund_sale_credit(
+                    db, sale_id, sale["player_id"], g.user["id"]
+                )
+                converted_cash_cents, _ = convert_refunded_cash_to_credit(
+                    db, sale_id, sale["player_id"], g.user["id"]
+                )
+                db.execute(
+                    "INSERT INTO sale_cancellations(sale_id,reason,canceled_by) VALUES(?,?,?)",
+                    (sale_id, reason, g.user["id"]),
+                )
+                restore_reserved_stock(db, sale_id)
+            notify_low_stock(db, [item["product_id"] for item in items])
+            return jsonify(
+                ok=True, sale_id=sale_id, already_refunded=False,
+                returned_credit_cents=returned_credit_cents,
+                converted_cash_cents=converted_cash_cents,
+                credited_total_cents=returned_credit_cents + converted_cash_cents,
+            )
         items = db.execute("SELECT product_id FROM sale_items WHERE sale_id=?", (sale_id,)).fetchall()
         with db:
             updated = db.execute(

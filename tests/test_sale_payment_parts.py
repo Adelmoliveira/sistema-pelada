@@ -10,6 +10,7 @@ from src.services.sale_payment_parts import (
     cancel_active_payment_parts,
     create_payment_part,
     get_payment_parts,
+    refund_approved_payment_part,
     validate_approved_parts_total,
 )
 
@@ -84,6 +85,21 @@ class SalePaymentPartsTest(unittest.TestCase):
     def test_historical_paid_sale_without_parts_remains_valid(self):
         sale_id = self.create_sale(total=1000, paid=1, status="approved")
         self.assertTrue(validate_approved_parts_total(self.db, sale_id))
+
+    def test_only_approved_part_can_be_refunded(self):
+        for status in ("pending", "reserved", "canceled"):
+            with self.subTest(status=status):
+                sale_id = self.create_sale()
+                create_payment_part(self.db, sale_id, "Pix", 1000, status)
+                self.assertEqual(refund_approved_payment_part(self.db, sale_id, "Pix"), 0)
+                self.assertEqual(get_payment_parts(self.db, sale_id)[0]["status"], status)
+        sale_id = self.create_sale(paid=1, status="approved")
+        create_payment_part(self.db, sale_id, "Pix", 1000, "approved")
+        self.assertEqual(refund_approved_payment_part(self.db, sale_id, "Pix", "refund-1"), 1000)
+        self.assertEqual(refund_approved_payment_part(self.db, sale_id, "Pix", "refund-1"), 0)
+        part = get_payment_parts(self.db, sale_id)[0]
+        self.assertEqual((part["status"], part["payment_id"]), ("refunded", "refund-1"))
+        self.assertIsNotNone(part["refunded_at"])
 
 
 if __name__ == "__main__":

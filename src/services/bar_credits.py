@@ -247,6 +247,93 @@ def credit_cash_change(db, player_id, amount_cents, sale_id, created_by=None):
     return new_balance, True
 
 
+def refund_sale_credit(db, sale_id, player_id, actor_user_id=None):
+    """Return an approved credit payment part exactly once."""
+    part = db.execute(
+        """SELECT id,amount_cents FROM sale_payment_parts
+           WHERE sale_id=? AND method='Créditos' AND status='approved'""",
+        (sale_id,),
+    ).fetchone()
+    if not part:
+        return 0, False
+    updated = db.execute(
+        """UPDATE sale_payment_parts
+           SET status='refunded',refunded_at=COALESCE(refunded_at,CURRENT_TIMESTAMP)
+           WHERE id=? AND status='approved'""",
+        (part["id"],),
+    )
+    if updated.rowcount != 1:
+        return 0, False
+    if not player_id:
+        raise ValueError("A venda não possui peladeiro para receber o estorno de créditos.")
+    amount_cents = int(part["amount_cents"] or 0)
+    _lock_credit_account(db, player_id)
+    account = ensure_account(db, player_id)
+    new_balance = int(account["balance_cents"] or 0) + amount_cents
+    db.execute(
+        """UPDATE bar_credit_accounts
+           SET balance_cents=?,low_balance_notified=0,updated_at=CURRENT_TIMESTAMP
+           WHERE player_id=?""",
+        (new_balance, player_id),
+    )
+    transaction = db.execute(
+        """INSERT INTO bar_credit_transactions
+           (player_id,type,amount_cents,balance_after_cents,description,sale_id,created_by)
+           VALUES(?,'REFUND',?,?,?,?,?)""",
+        (player_id, amount_cents, new_balance, "Estorno de créditos da venda", sale_id, actor_user_id),
+    )
+    _audit(
+        db, player_id, "ESTORNO_VENDA", amount_cents,
+        transaction_id=transaction.lastrowid, actor_user_id=actor_user_id,
+        reason=f"Venda #{sale_id}",
+    )
+    return amount_cents, True
+
+
+def convert_refunded_cash_to_credit(db, sale_id, player_id, actor_user_id=None):
+    """Convert an approved cash part into wallet credit without reversing physical cash."""
+    existing = db.execute(
+        """SELECT amount_cents FROM bar_credit_transactions
+           WHERE sale_id=? AND type='REFUND'
+             AND description='Dinheiro convertido em crédito no estorno da venda'""",
+        (sale_id,),
+    ).fetchone()
+    if existing:
+        return int(existing["amount_cents"] or 0), False
+    part = db.execute(
+        """SELECT amount_cents FROM sale_payment_parts
+           WHERE sale_id=? AND method='Dinheiro' AND status='approved'""",
+        (sale_id,),
+    ).fetchone()
+    if not part:
+        return 0, False
+    if not player_id:
+        raise ValueError("A venda não possui peladeiro para receber os créditos do estorno.")
+    amount_cents = int(part["amount_cents"] or 0)
+    _lock_credit_account(db, player_id)
+    account = ensure_account(db, player_id)
+    new_balance = int(account["balance_cents"] or 0) + amount_cents
+    db.execute(
+        """UPDATE bar_credit_accounts
+           SET balance_cents=?,low_balance_notified=0,updated_at=CURRENT_TIMESTAMP
+           WHERE player_id=?""",
+        (new_balance, player_id),
+    )
+    transaction = db.execute(
+        """INSERT INTO bar_credit_transactions
+           (player_id,type,amount_cents,balance_after_cents,description,sale_id,created_by)
+           VALUES(?,'REFUND',?,?,?,?,?)""",
+        (player_id, amount_cents, new_balance,
+         "Dinheiro convertido em crédito no estorno da venda", sale_id, actor_user_id),
+    )
+    _audit(
+        db, player_id, "DINHEIRO_CONVERTIDO_ESTORNO", amount_cents,
+        transaction_id=transaction.lastrowid, actor_user_id=actor_user_id,
+        reason=f"Venda #{sale_id}; sem devolução em espécie",
+    )
+    return amount_cents, True
+
+
 def approve_topup(db, topup, payment_id=None, created_by=None):
     """Credit a Pix top-up exactly once."""
     topup_id = topup["id"] if hasattr(topup, "keys") else topup
