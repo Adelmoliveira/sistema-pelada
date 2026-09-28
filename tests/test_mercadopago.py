@@ -708,7 +708,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
     def test_sports_pix_ready_uses_variant_stock_and_is_idempotent(self):
         from src.routes.sales import apply_mercadopago_status
 
-        product_id, variant_id = self.create_sports_product("Camisa Pix", stock=5)
+        product_id, variant_id = self.create_sports_product("Kit Uniforme Pix", size="G", stock=5)
         order = {
             "id": "ORD-SPORTS-READY", "status": "action_required",
             "transactions": {"payments": [{
@@ -716,7 +716,15 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "payment_method": {"qr_code": "000201SPORTS"},
             }]},
         }
-        with patch("src.routes.sales.create_pix_order", return_value=order) as create_order:
+        executed_sql = []
+        original_execute = DbWrapper.execute
+
+        def record_execute(wrapper, sql, params=None):
+            executed_sql.append(sql)
+            return original_execute(wrapper, sql, params)
+
+        with patch.object(DbWrapper, "execute", new=record_execute), \
+             patch("src.routes.sales.create_pix_order", return_value=order) as create_order:
             response = self.client.post(
                 "/pix/mercadopago/orders", headers=self.headers(),
                 json={"department": "sports", "player_id": self.player_id,
@@ -727,6 +735,15 @@ class MercadoPagoFlowTest(unittest.TestCase):
                                  "order_mode": "ready"}]},
             )
         self.assertEqual(response.status_code, 201, response.get_json())
+        self.assertEqual(response.get_json()["payload"], "000201SPORTS")
+        self.assertTrue(response.get_json()["image"].startswith("data:image/png;base64,"))
+        detail_inserts = [
+            sql for sql in executed_sql
+            if sql.strip().upper().startswith("INSERT INTO SPORTS_SALE_ITEM_DETAILS")
+        ]
+        self.assertEqual(len(detail_inserts), 1)
+        self.assertIn("RETURNING sale_item_id", detail_inserts[0])
+        self.assertNotIn("RETURNING id", detail_inserts[0])
         sale_id = response.get_json()["sale_id"]
         self.assertEqual(create_order.call_args.args[2], 2000)
         with app.app_context():
@@ -763,7 +780,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual((sale["paid"], sale["payment_status"]), (1, "approved"))
         self.login_manager()
         queue = self.client.get("/material-esportivo/vendas")
-        self.assertIn("Camisa Pix", queue.get_data(as_text=True))
+        self.assertIn("Kit Uniforme Pix", queue.get_data(as_text=True))
 
     def test_sports_pix_terminal_restores_ready_stock_and_backorder_never_debits(self):
         from src.routes.sales import apply_mercadopago_status

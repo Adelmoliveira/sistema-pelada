@@ -2012,7 +2012,8 @@ def mercadopago_create_order():
                     db.execute(
                         """INSERT INTO sports_sale_item_details
                            (sale_item_id,variant_id,variant_size,custom_name,custom_number,
-                            order_mode,fulfillment_status) VALUES(?,?,?,?,?,?,?)""",
+                            order_mode,fulfillment_status) VALUES(?,?,?,?,?,?,?)
+                           RETURNING sale_item_id""",
                         (sale_item.lastrowid, item["variant_id"], product["size"],
                          item["custom_name"], item["custom_number"], item["order_mode"],
                          "reserved" if item["order_mode"] == "ready" else "requested"),
