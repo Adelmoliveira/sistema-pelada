@@ -4739,6 +4739,13 @@ class MercadoPagoFlowTest(unittest.TestCase):
             ).fetchone()
             self.assertEqual((sale["total_cents"], sale["paid"]), (1500, 0))
             self.assertEqual((reservation["amount_cents"], reservation["status"]), (400, "reserved"))
+            self.assertEqual(
+                [(row["method"], row["amount_cents"], row["status"]) for row in db.execute(
+                    "SELECT method,amount_cents,status FROM sale_payment_parts WHERE sale_id=? ORDER BY method",
+                    (sale_id,),
+                )],
+                [("Créditos", 400, "reserved"), ("Pix", 1100, "pending")],
+            )
             self.assertEqual(db.execute(
                 "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
             ).fetchone()[0], 400)
@@ -4761,6 +4768,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
             ).fetchone()[0], "consumed")
             self.assertEqual((sale["paid"], sale["payment_status"], sale["ready_for_delivery"]), (1, "approved", 1))
+            parts = db.execute(
+                "SELECT method,status,payment_id FROM sale_payment_parts WHERE sale_id=? ORDER BY method",
+                (sale_id,),
+            ).fetchall()
+            self.assertEqual([(part["method"], part["status"]) for part in parts], [("Créditos", "approved"), ("Pix", "approved")])
+            self.assertEqual(parts[1]["payment_id"], "PAY-APPROVED")
 
     def test_partial_credit_pix_terminal_and_creation_failure_release_reservation(self):
         from src.routes.sales import apply_mercadopago_status
@@ -4803,6 +4816,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 self.assertEqual(db.execute(
                     "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
                 ).fetchone()[0], 400)
+                self.assertEqual(
+                    {row[0] for row in db.execute(
+                        "SELECT status FROM sale_payment_parts WHERE sale_id=?", (sale_id,)
+                    )},
+                    {"canceled"},
+                )
 
         with patch("src.routes.sales.create_pix_order", side_effect=MercadoPagoError("falha simulada")):
             failed = self.client.post(
@@ -4817,6 +4836,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(db.execute(
                 "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (failed_sale["id"],)
             ).fetchone()[0], "released")
+            self.assertEqual(
+                {row[0] for row in db.execute(
+                    "SELECT status FROM sale_payment_parts WHERE sale_id=?", (failed_sale["id"],)
+                )},
+                {"canceled"},
+            )
 
     def test_pix_selection_with_full_credit_skips_mercadopago(self):
         with app.app_context():
@@ -4843,6 +4868,70 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertIsNone(db.execute(
                 "SELECT id FROM bar_credit_reservations WHERE sale_id=?", (sale["id"],)
             ).fetchone())
+            part = db.execute(
+                "SELECT method,amount_cents,status FROM sale_payment_parts WHERE sale_id=?", (sale["id"],)
+            ).fetchone()
+            self.assertEqual(tuple(part), ("Créditos", 300, "approved"))
+
+    def test_new_full_pix_and_cash_sales_record_payment_parts(self):
+        from src.routes.sales import apply_mercadopago_status
+
+        pix_order = {
+            "id": "ORD-FULL-PART",
+            "transactions": {"payments": [{
+                "id": "PAY-FULL-PART", "payment_method": {"qr_code": "000201FULL"},
+            }]},
+        }
+        with patch("src.routes.sales.create_pix_order", return_value=pix_order):
+            created = self.client.post(
+                "/pix/mercadopago/orders", headers=self.headers(),
+                json={"player_id": self.player_id,
+                      "items": [{"product_id": self.product_id, "quantity": 1}]},
+            )
+        self.assertEqual(created.status_code, 201, created.get_json())
+        pix_sale_id = created.get_json()["sale_id"]
+        with app.app_context():
+            db = get_db()
+            part = db.execute(
+                "SELECT method,amount_cents,status,payment_id FROM sale_payment_parts WHERE sale_id=?",
+                (pix_sale_id,),
+            ).fetchone()
+            self.assertEqual(tuple(part), ("Pix", 300, "pending", "PAY-FULL-PART"))
+            sale = db.execute("SELECT * FROM sales WHERE id=?", (pix_sale_id,)).fetchone()
+            approved = {
+                "status": "processed", "status_detail": "accredited", "total_paid_amount": "3.00",
+                "transactions": {"payments": [{"id": "PAY-FULL-PART"}]},
+            }
+            self.assertEqual(apply_mercadopago_status(db, sale, approved), "approved")
+            self.assertEqual(db.execute(
+                "SELECT status FROM sale_payment_parts WHERE sale_id=?", (pix_sale_id,)
+            ).fetchone()[0], "approved")
+
+        self.login_manager()
+        created_cash = self.client.post(
+            "/sale", data={
+                "sale_type": "player", "player_id": str(self.player_id),
+                "payment_method": "Dinheiro", "product_id": [str(self.product_id)],
+                "quantity": ["1"],
+            },
+        )
+        self.assertEqual(created_cash.status_code, 303)
+        with app.app_context():
+            db = get_db()
+            cash_sale = db.execute("SELECT * FROM sales ORDER BY id DESC LIMIT 1").fetchone()
+            part = db.execute(
+                "SELECT method,amount_cents,status FROM sale_payment_parts WHERE sale_id=?",
+                (cash_sale["id"],),
+            ).fetchone()
+            self.assertEqual(tuple(part), ("Dinheiro", 300, "pending"))
+        confirmed = self.client.post(
+            f"/orders/{cash_sale['id']}/confirm-payment", json={"amount_received_cents": 300}
+        )
+        self.assertEqual(confirmed.status_code, 200)
+        with app.app_context():
+            self.assertEqual(get_db().execute(
+                "SELECT status FROM sale_payment_parts WHERE sale_id=?", (cash_sale["id"],)
+            ).fetchone()[0], "approved")
 
     def test_webhook_simulator_acknowledges_unknown_order(self):
         data_id = "123456"
@@ -5243,6 +5332,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
             ).fetchone()
             self.assertEqual((sale["total_cents"], sale["payment_method"], sale["payment_status"]), (1500, "Dinheiro", "pending_cash"))
             self.assertEqual((reservation["amount_cents"], reservation["status"]), (400, "reserved"))
+            self.assertEqual(
+                [(row["method"], row["amount_cents"], row["status"]) for row in db.execute(
+                    "SELECT method,amount_cents,status FROM sale_payment_parts WHERE sale_id=? ORDER BY method", (sale_id,)
+                )],
+                [("Créditos", 400, "reserved"), ("Dinheiro", 1100, "pending")],
+            )
             self.assertEqual(db.execute(
                 "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
             ).fetchone()[0], 400)
@@ -5287,6 +5382,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "SELECT COUNT(*) FROM sale_item_deliveries sid JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=?",
                 (sale_id,),
             ).fetchone()[0], 0)
+            self.assertEqual(
+                {row[0] for row in db.execute(
+                    "SELECT status FROM sale_payment_parts WHERE sale_id=?", (sale_id,)
+                )},
+                {"approved"},
+            )
 
     def test_partial_credit_ui_has_safe_catalog_initialization_order(self):
         with app.app_context():
@@ -5413,6 +5514,12 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(db.execute(
                 "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
             ).fetchone()[0], 400)
+            self.assertEqual(
+                {row[0] for row in db.execute(
+                    "SELECT status FROM sale_payment_parts WHERE sale_id=?", (canceled_id,)
+                )},
+                {"canceled"},
+            )
 
     def test_partial_credit_backend_recalculates_and_full_credit_stays_immediate(self):
         self.login_manager()
