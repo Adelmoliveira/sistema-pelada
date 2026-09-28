@@ -2021,6 +2021,125 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Informe seu nome de usuário", response.get_data(as_text=True))
 
+    def test_login_offers_remember_device_with_personal_device_warning(self):
+        page = self.client.get("/login").get_data(as_text=True)
+        self.assertIn('name="remember_device"', page)
+        self.assertIn("Manter-me conectado neste dispositivo", page)
+        self.assertIn("Recomendado apenas em aparelho pessoal.", page)
+
+    def test_client_can_create_a_90_day_permanent_session(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("cliente-lembrado", "Cliente lembrado", make_password_hash("senha-lembrada"), self.player_id),
+            )
+            db.commit()
+
+        response = self.client.post(
+            "/login",
+            data={
+                "username": "cliente-lembrado",
+                "password": "senha-lembrada",
+                "remember_device": "1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("Expires=", response.headers.get("Set-Cookie", ""))
+        with self.client.session_transaction() as login_session:
+            self.assertTrue(login_session.permanent)
+            self.assertIn("user_id", login_session)
+        self.assertEqual(app.config["PERMANENT_SESSION_LIFETIME"], timedelta(days=90))
+        self.assertTrue(app.config["SESSION_COOKIE_HTTPONLY"])
+        self.assertEqual(app.config["SESSION_COOKIE_SAMESITE"], "Lax")
+
+    def test_client_without_remember_device_keeps_browser_session(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("cliente-temporario", "Cliente temporário", make_password_hash("senha-temporaria"), self.player_id),
+            )
+            db.commit()
+
+        response = self.client.post(
+            "/login",
+            data={"username": "cliente-temporario", "password": "senha-temporaria"},
+        )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertNotIn("Expires=", response.headers.get("Set-Cookie", ""))
+        with self.client.session_transaction() as login_session:
+            self.assertFalse(login_session.permanent)
+
+    def test_invalid_password_does_not_create_a_permanent_session(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("cliente-invalido", "Cliente inválido", make_password_hash("senha-correta"), self.player_id),
+            )
+            db.commit()
+
+        response = self.client.post(
+            "/login",
+            data={"username": "cliente-invalido", "password": "senha-errada", "remember_device": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        with self.client.session_transaction() as login_session:
+            self.assertNotIn("user_id", login_session)
+            self.assertFalse(login_session.permanent)
+
+    def test_remember_device_is_ignored_for_manager_and_staff(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "UPDATE users SET password_hash=? WHERE id=?",
+                (make_password_hash("senha-manager"), self.user_id),
+            )
+            db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'staff')",
+                ("staff-temporario", "Staff temporário", make_password_hash("senha-staff")),
+            )
+            db.commit()
+
+        for username, password in (("teste", "senha-manager"), ("staff-temporario", "senha-staff")):
+            with self.subTest(username=username):
+                response = self.client.post(
+                    "/login",
+                    data={"username": username, "password": password, "remember_device": "1"},
+                )
+                self.assertEqual(response.status_code, 303)
+                self.assertNotIn("Expires=", response.headers.get("Set-Cookie", ""))
+                with self.client.session_transaction() as login_session:
+                    self.assertFalse(login_session.permanent)
+                self.client.post("/logout")
+
+    def test_logout_clears_a_permanent_client_session(self):
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO users(username,name,password_hash,role,player_id) VALUES(?,?,?,'client',?)",
+                ("cliente-logout", "Cliente logout", make_password_hash("senha-logout"), self.player_id),
+            )
+            db.commit()
+        self.client.post(
+            "/login",
+            data={"username": "cliente-logout", "password": "senha-logout", "remember_device": "1"},
+        )
+
+        response = self.client.post("/logout")
+
+        self.assertEqual(response.status_code, 303)
+        with self.client.session_transaction() as login_session:
+            self.assertNotIn("user_id", login_session)
+            self.assertFalse(login_session.permanent)
+        protected = self.client.get("/orders")
+        self.assertEqual(protected.status_code, 302)
+        self.assertIn("/login", protected.headers["Location"])
+
     def test_credit_balance_get_is_read_only_and_returns_minimal_payload(self):
         with app.app_context():
             db = get_db()
