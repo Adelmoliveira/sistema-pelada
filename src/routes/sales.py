@@ -27,6 +27,13 @@ from src.services.bar_credits import (
 from src.services.pending_delivery_pdf import build_pending_delivery_pdf
 from src.services.sports_supplier_pdf import build_sports_supplier_pdf
 from src.services.notification_outbox import enqueue_sports_available_event
+from src.services.sale_payment_parts import (
+    approve_payment_part,
+    associate_payment_part,
+    cancel_active_payment_parts,
+    create_payment_part,
+    validate_approved_parts_total,
+)
 from src.catalog import SPORTS_MATERIAL_CATEGORY
 
 bp = Blueprint("sales", __name__)
@@ -191,6 +198,10 @@ def apply_mercadopago_status(db, sale, order):
         with db:
             if reservation and reservation["status"] == "reserved":
                 consume_reservation(db, sale["id"])
+                approve_payment_part(db, sale["id"], "Créditos")
+            approve_payment_part(
+                db, sale["id"], "Pix", sale["external_reference"], payment_id
+            )
             db.execute(
                 """UPDATE sports_stock_reservations SET status='consumed',updated_at=CURRENT_TIMESTAMP
                    WHERE sale_item_id IN (SELECT id FROM sale_items WHERE sale_id=?)
@@ -203,6 +214,7 @@ def apply_mercadopago_status(db, sale, order):
                    WHERE id=? AND paid=0""",
                 (payment_id, sale["id"]),
             )
+            validate_approved_parts_total(db, sale["id"])
         return "approved"
 
     if status == "refunded" and sale["paid"]:
@@ -221,6 +233,7 @@ def apply_mercadopago_status(db, sale, order):
                 (status, payment_id, sale["id"]),
             )
             if updated.rowcount:
+                cancel_active_payment_parts(db, sale["id"])
                 if reservation and reservation["status"] == "reserved":
                     release_reservation(db, sale["id"])
                 restore_reserved_stock(db, sale["id"])
@@ -412,19 +425,25 @@ def sale():
                     (player_id, event_id, guest_name, method, total, paid, payment_status, paid,
                      request.form.get("notes", "").strip())
                 )
+                sale_id = cur.lastrowid
                 if method == "Créditos":
                     if not player_id:
                         raise ValueError("Selecione um peladeiro para pagar com créditos.")
                     paid = 1
                     payment_status = "approved"
-                    db.execute("UPDATE sales SET paid=1,payment_status='approved',paid_at=CURRENT_TIMESTAMP WHERE id=?", (cur.lastrowid,))
+                    db.execute("UPDATE sales SET paid=1,payment_status='approved',paid_at=CURRENT_TIMESTAMP WHERE id=?", (sale_id,))
                 elif credit_amount:
-                    reserve_credit(db, player_id, cur.lastrowid, credit_amount)
+                    reserve_credit(db, player_id, sale_id, credit_amount)
+                    create_payment_part(db, sale_id, "Créditos", credit_amount, "reserved")
+                if method == "Dinheiro":
+                    create_payment_part(db, sale_id, "Dinheiro", total - credit_amount, "pending")
+                elif method == "Pix":
+                    create_payment_part(db, sale_id, "Pix", total, "approved")
                 for pid, qty in requested.items():
                     product = products_by_id[pid]
                     db.execute(
                         "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
-                        (cur.lastrowid, pid, qty, product["price_cents"], product["cost_cents"])
+                        (sale_id, pid, qty, product["price_cents"], product["cost_cents"])
                     )
                     updated = db.execute(
                         "UPDATE products SET stock=stock-? WHERE id=? AND stock>=?",
@@ -433,12 +452,14 @@ def sale():
                     if updated.rowcount != 1:
                         raise ValueError("O estoque mudou durante a venda. Tente novamente.")
                 if method == "Créditos":
-                    low_credit_balance, should_notify = consume_credit(db, player_id, total, cur.lastrowid, g.user["id"])
+                    low_credit_balance, should_notify = consume_credit(db, player_id, total, sale_id, g.user["id"])
+                    create_payment_part(db, sale_id, "Créditos", total, "approved")
+                validate_approved_parts_total(db, sale_id)
             notify_low_stock(db, requested.keys())
             if method == "Créditos" and low_credit_balance is not None:
                 notify_low_balance(db, player_id, low_credit_balance)
             
-            flash(f"Pedido registrado com sucesso! Pedido #{cur.lastrowid}.", "success")
+            flash(f"Pedido registrado com sucesso! Pedido #{sale_id}.", "success")
             return redirect(url_for("sales.sale", cart_cleared=1), code=303)
         except ValueError as exc:
             flash(str(exc), "danger")
@@ -1505,12 +1526,15 @@ def confirm_cash_payment(sale_id):
                 return jsonify(error="O estado do pagamento mudou. Atualize a fila."), 409
             if reserved_cents:
                 consume_reservation(db, sale_id, g.user["id"])
+                approve_payment_part(db, sale_id, "Créditos")
+            approve_payment_part(db, sale_id, "Dinheiro")
             credited = False
             balance_cents = None
             if convert_change and change_cents > 0:
                 balance_cents, credited = credit_cash_change(
                     db, sale["player_id"], change_cents, sale_id, g.user["id"]
                 )
+            validate_approved_parts_total(db, sale_id)
     except Exception as exc:
         current_app.logger.error("Erro ao confirmar pagamento em dinheiro do pedido %s: %s", sale_id, exc)
         return jsonify(error="Não foi possível confirmar o pagamento."), 500
@@ -1694,6 +1718,7 @@ def cancel_cash_order(sale_id):
                 "INSERT INTO sale_cancellations(sale_id,reason,canceled_by) VALUES(?,?,?)",
                 (sale_id, reason, g.user["id"]),
             )
+            cancel_active_payment_parts(db, sale_id)
             reservation = db.execute(
                 "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
             ).fetchone()
@@ -1893,6 +1918,12 @@ def mercadopago_create_order():
             sale_id = sale_cursor.lastrowid
             if credit_amount and not full_credit:
                 reserve_credit(db, player_id, sale_id, credit_amount)
+                if not sports_mode:
+                    create_payment_part(db, sale_id, "Créditos", credit_amount, "reserved")
+            if not sports_mode and not full_credit:
+                create_payment_part(
+                    db, sale_id, "Pix", external_cents, "pending", external_reference
+                )
             if sports_mode:
                 for item in sports_requested:
                     product = sports_by_variant[item["variant_id"]]
@@ -1948,6 +1979,9 @@ def mercadopago_create_order():
                        paid_at=CURRENT_TIMESTAMP,ready_for_delivery=1 WHERE id=?""",
                     (sale_id,),
                 )
+                if not sports_mode:
+                    create_payment_part(db, sale_id, "Créditos", total_cents, "approved")
+                    validate_approved_parts_total(db, sale_id)
     except ValueError as exc:
         return jsonify(error=str(exc)), 409
 
@@ -1970,12 +2004,16 @@ def mercadopago_create_order():
         qr_data = payment_method.get("qr_code")
         if not order_id or not qr_data:
             raise MercadoPagoError("O Mercado Pago não retornou o QR Code Pix.")
-        db.execute(
-            """UPDATE sales SET mercadopago_order_id=?,mercadopago_payment_id=?,
-               payment_status=CASE WHEN payment_status='creating' THEN 'pending' ELSE payment_status END WHERE id=?""",
-            (order_id, order_payment_id(order), sale_id),
-        )
-        db.commit()
+        with db:
+            db.execute(
+                """UPDATE sales SET mercadopago_order_id=?,mercadopago_payment_id=?,
+                   payment_status=CASE WHEN payment_status='creating' THEN 'pending' ELSE payment_status END WHERE id=?""",
+                (order_id, order_payment_id(order), sale_id),
+            )
+            if not sports_mode:
+                associate_payment_part(
+                    db, sale_id, "Pix", external_reference, order_payment_id(order)
+                )
         if not sports_mode:
             notify_low_stock(db, requested.keys())
         encoded_image = generate_qrcode_base64(qr_data)
@@ -1993,6 +2031,8 @@ def mercadopago_create_order():
         with db:
             sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
             if sale and sale["payment_status"] == "creating":
+                if not sports_mode:
+                    cancel_active_payment_parts(db, sale_id)
                 reservation = db.execute(
                     "SELECT status FROM bar_credit_reservations WHERE sale_id=?", (sale_id,)
                 ).fetchone()

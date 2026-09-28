@@ -160,6 +160,22 @@ CREATE TABLE IF NOT EXISTS sale_items (
     unit_price_cents INTEGER NOT NULL,
     unit_cost_cents INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS sale_payment_parts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+    method TEXT NOT NULL CHECK(method IN ('Créditos','Pix','Dinheiro')),
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    status TEXT NOT NULL CHECK(status IN ('reserved','pending','approved','canceled','refunded')),
+    external_reference TEXT,
+    payment_id TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    confirmed_at TEXT,
+    canceled_at TEXT,
+    refunded_at TEXT,
+    UNIQUE(sale_id,method)
+);
+CREATE INDEX IF NOT EXISTS idx_sale_payment_parts_sale ON sale_payment_parts(sale_id);
+CREATE INDEX IF NOT EXISTS idx_sale_payment_parts_status ON sale_payment_parts(status);
 CREATE TABLE IF NOT EXISTS bar_credit_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL UNIQUE REFERENCES players(id) ON DELETE CASCADE,
@@ -1988,6 +2004,18 @@ def init_postgres(wrapper):
     wrapper.execute("CREATE INDEX IF NOT EXISTS idx_sales_event ON sales(event_id,created_at)")
     wrapper.execute("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_payment_method_check")
     wrapper.execute("ALTER TABLE sales ADD CONSTRAINT sales_payment_method_check CHECK(payment_method IN ('Pix','Dinheiro','Débito','Cortesia','Créditos'))")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS sale_payment_parts (
+        id BIGSERIAL PRIMARY KEY,
+        sale_id BIGINT NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+        method TEXT NOT NULL CHECK(method IN ('Créditos','Pix','Dinheiro')),
+        amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+        status TEXT NOT NULL CHECK(status IN ('reserved','pending','approved','canceled','refunded')),
+        external_reference TEXT, payment_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        confirmed_at TIMESTAMPTZ, canceled_at TIMESTAMPTZ, refunded_at TIMESTAMPTZ,
+        UNIQUE(sale_id,method))""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_sale_payment_parts_sale ON sale_payment_parts(sale_id)")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_sale_payment_parts_status ON sale_payment_parts(status)")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS bar_credit_accounts (
         id SERIAL PRIMARY KEY, player_id INTEGER NOT NULL UNIQUE REFERENCES players(id) ON DELETE CASCADE,
         balance_cents INTEGER NOT NULL DEFAULT 0 CHECK(balance_cents >= 0), low_balance_notified INTEGER NOT NULL DEFAULT 0,
