@@ -5318,6 +5318,53 @@ class MercadoPagoFlowTest(unittest.TestCase):
             html.index("renderPlayerSummary();toggleSaleTarget();total();"),
         )
 
+    def test_staff_sale_summary_uses_available_credit_without_client_leak(self):
+        with app.app_context():
+            db = get_db()
+            staff_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES('staff-credit-view','Staff','hash','staff')"
+            ).lastrowid
+            client_id = db.execute(
+                """INSERT INTO users(username,name,password_hash,role,player_id)
+                   VALUES('client-credit-view','Cliente','hash','client',?)""",
+                (self.player_id,),
+            ).lastrowid
+            zero_player_id = db.execute(
+                "INSERT INTO players(name,war_name) VALUES('Saldo Zero','Zero')"
+            ).lastrowid
+            db.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,10000)",
+                (self.player_id,),
+            )
+            sale_id = db.execute(
+                """INSERT INTO sales
+                   (player_id,payment_method,total_cents,paid,payment_status)
+                   VALUES(?,'Pix',2450,0,'pending')""",
+                (self.player_id,),
+            ).lastrowid
+            db.execute(
+                """INSERT INTO bar_credit_reservations
+                   (sale_id,player_id,amount_cents,status)
+                   VALUES(?,?,2450,'reserved')""",
+                (sale_id, self.player_id),
+            )
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        staff_html = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn('"available_credit_cents": 7550', staff_html)
+        self.assertIn(f'"available_credit_cents": 0, "full_name": "Saldo Zero", "id": {zero_player_id}', staff_html)
+        self.assertIn("Créditos disponíveis: <strong>${formatMoney(player.available_credit_cents||0)}</strong>", staff_html)
+        self.assertIn("playerSummary.innerHTML='';return", staff_html)
+        self.assertIn("playerSelect.addEventListener('change',renderPlayerSummary)", staff_html)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+        client_html = self.client.get("/sale").get_data(as_text=True)
+        self.assertIn('"available_credit_cents": 7550', client_html)
+        self.assertNotIn('"full_name": "Saldo Zero"', client_html)
+
     def test_partial_credit_cash_change_and_cancel_are_atomic(self):
         self.login_manager()
         with app.app_context():
