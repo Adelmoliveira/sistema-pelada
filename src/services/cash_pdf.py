@@ -119,11 +119,10 @@ def build_cash_pdf(data, start_date, end_date, filter_text, account_labels, cate
 
     sale_rows = [[Paragraph(v, styles["CashHeader"]) for v in ("Data", "Pedido", "Peladeiro", "Pagamento", "Conta", "Valor")]]
     for row in data["sales"]:
-        account = "cash" if row["payment_method"] == "Dinheiro" else "bank"
         sale_rows.append([
             Paragraph(_datetime_br(row["payment_date"]), styles["CashCenter"]), Paragraph(f"#{row['id']}", styles["CashCenter"]),
-            Paragraph(escape(row["player_name"]), styles["CashCell"]), Paragraph(row["payment_method"], styles["CashCenter"]),
-            Paragraph(account_labels[account], styles["CashCell"]), Paragraph(money(row["total_cents"]), styles["CashRight"]),
+            Paragraph(escape(row["player_name"]), styles["CashCell"]), Paragraph(row["payment_label"], styles["CashCenter"]),
+            Paragraph(row["account_label"], styles["CashCell"]), Paragraph(money(row["display_amount_cents"]), styles["CashRight"]),
         ])
     if len(sale_rows) == 1:
         sale_rows.append([Paragraph("Nenhuma venda encontrada.", styles["CashCenter"])] + [""] * 5)
