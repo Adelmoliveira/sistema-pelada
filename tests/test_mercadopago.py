@@ -4933,6 +4933,221 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "SELECT status FROM sale_payment_parts WHERE sale_id=?", (cash_sale["id"],)
             ).fetchone()[0], "approved")
 
+    def test_mixed_credit_pix_refund_is_atomic_and_idempotent(self):
+        from src.routes.sales import apply_mercadopago_status
+
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE products SET stock=4 WHERE id=?", (self.product_id,))
+            db.execute(
+                "INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,0)",
+                (self.player_id,),
+            )
+            sale_id = db.execute(
+                """INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,paid_at)
+                   VALUES(?,'Pix',800,1,'approved',CURRENT_TIMESTAMP)""",
+                (self.player_id,),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents) VALUES(?,?,1,800)",
+                (sale_id, self.product_id),
+            )
+            db.execute(
+                """INSERT INTO sale_payment_parts(sale_id,method,amount_cents,status)
+                   VALUES(?, 'Créditos',600,'approved'),(?, 'Pix',200,'approved')""",
+                (sale_id, sale_id),
+            )
+            db.commit()
+            stale_sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+            refund = {"status": "refunded", "transactions": {"payments": [{"id": "PAY-REFUND"}]}}
+            self.assertEqual(apply_mercadopago_status(db, stale_sale, refund), "refunded")
+            self.assertEqual(apply_mercadopago_status(db, stale_sale, refund), "refunded")
+            parts = db.execute(
+                "SELECT method,amount_cents,status,refunded_at FROM sale_payment_parts WHERE sale_id=? ORDER BY method",
+                (sale_id,),
+            ).fetchall()
+            self.assertEqual([(part["method"], part["amount_cents"], part["status"]) for part in parts],
+                             [("Créditos", 600, "refunded"), ("Pix", 200, "refunded")])
+            self.assertTrue(all(part["refunded_at"] for part in parts))
+            self.assertEqual(db.execute(
+                "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
+            ).fetchone()[0], 600)
+            transaction = db.execute(
+                "SELECT type,amount_cents,description FROM bar_credit_transactions WHERE sale_id=?", (sale_id,)
+            ).fetchone()
+            self.assertEqual((transaction["type"], transaction["amount_cents"]), ("REFUND", 600))
+            self.assertIn("Estorno", transaction["description"])
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM bar_credit_transactions WHERE sale_id=? AND type='REFUND'", (sale_id,)
+            ).fetchone()[0], 1)
+            self.assertEqual(db.execute(
+                "SELECT stock FROM products WHERE id=?", (self.product_id,)
+            ).fetchone()[0], 5)
+
+    def test_full_pix_refund_and_historical_refund_preserve_legacy(self):
+        from src.routes.sales import apply_mercadopago_status
+
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE products SET stock=3 WHERE id=?", (self.product_id,))
+            pix_sale_id = db.execute(
+                """INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,paid_at)
+                   VALUES(?,'Pix',800,1,'approved',CURRENT_TIMESTAMP)""", (self.player_id,)
+            ).lastrowid
+            db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents) VALUES(?,?,1,800)",
+                       (pix_sale_id, self.product_id))
+            db.execute("INSERT INTO sale_payment_parts(sale_id,method,amount_cents,status) VALUES(?,'Pix',800,'approved')",
+                       (pix_sale_id,))
+            legacy_sale_id = db.execute(
+                """INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,paid_at)
+                   VALUES(?,'Pix',800,1,'approved',CURRENT_TIMESTAMP)""", (self.player_id,)
+            ).lastrowid
+            db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents) VALUES(?,?,1,800)",
+                       (legacy_sale_id, self.product_id))
+            db.commit()
+            refund = {"status": "refunded", "transactions": {"payments": [{"id": "PAY-REFUND"}]}}
+            pix_sale = db.execute("SELECT * FROM sales WHERE id=?", (pix_sale_id,)).fetchone()
+            legacy_sale = db.execute("SELECT * FROM sales WHERE id=?", (legacy_sale_id,)).fetchone()
+            self.assertEqual(apply_mercadopago_status(db, pix_sale, refund), "refunded")
+            self.assertEqual(db.execute(
+                "SELECT status FROM sale_payment_parts WHERE sale_id=?", (pix_sale_id,)
+            ).fetchone()[0], "refunded")
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM bar_credit_transactions").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()[0], 4)
+            self.assertEqual(apply_mercadopago_status(db, legacy_sale, refund), "refunded")
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()[0], 4)
+            self.assertIsNone(db.execute(
+                "SELECT id FROM sale_payment_parts WHERE sale_id=?", (legacy_sale_id,)
+            ).fetchone())
+
+    def test_refund_internal_failure_rolls_back_sale_part_credit_and_stock(self):
+        from src.routes.sales import apply_mercadopago_status
+
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE products SET stock=4 WHERE id=?", (self.product_id,))
+            db.execute("INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,0)", (self.player_id,))
+            sale_id = db.execute(
+                """INSERT INTO sales(player_id,payment_method,total_cents,paid,payment_status,paid_at)
+                   VALUES(?,'Pix',800,1,'approved',CURRENT_TIMESTAMP)""", (self.player_id,)
+            ).lastrowid
+            db.execute("INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents) VALUES(?,?,1,800)",
+                       (sale_id, self.product_id))
+            db.execute("INSERT INTO sale_payment_parts(sale_id,method,amount_cents,status) VALUES(?,'Créditos',600,'approved')",
+                       (sale_id,))
+            db.execute("INSERT INTO sale_payment_parts(sale_id,method,amount_cents,status) VALUES(?,'Pix',200,'approved')",
+                       (sale_id,))
+            db.commit()
+            sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+            refund = {"status": "refunded", "transactions": {"payments": [{"id": "PAY-REFUND"}]}}
+            with patch("src.routes.sales.refund_sale_credit", side_effect=RuntimeError("wallet unavailable")):
+                with self.assertRaises(RuntimeError):
+                    apply_mercadopago_status(db, sale, refund)
+            current = db.execute("SELECT paid,payment_status FROM sales WHERE id=?", (sale_id,)).fetchone()
+            self.assertEqual(tuple(current), (1, "approved"))
+            self.assertEqual({row[0] for row in db.execute(
+                "SELECT status FROM sale_payment_parts WHERE sale_id=?", (sale_id,)
+            )}, {"approved"})
+            self.assertEqual(db.execute(
+                "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()[0], 4)
+
+    def test_paid_cash_and_credit_cancellations_generate_credit_without_cash_outflow(self):
+        self.login_manager()
+        today = local_today().isoformat()
+        with app.app_context():
+            db = get_db()
+            db.execute("UPDATE products SET stock=7 WHERE id=?", (self.product_id,))
+            db.execute("INSERT INTO bar_credit_accounts(player_id,balance_cents) VALUES(?,0)", (self.player_id,))
+            db.execute(
+                """INSERT INTO cash_sessions
+                   (business_date,opening_cash_cents,opening_bank_cents,status,opened_by)
+                   VALUES(?,0,0,'open',?)""",
+                (today, self.user_id),
+            )
+
+            def paid_sale(payment_method, parts):
+                sale_id = db.execute(
+                    """INSERT INTO sales
+                       (player_id,payment_method,total_cents,paid,payment_status,paid_at,ready_for_delivery)
+                       VALUES(?,?,800,1,'approved',?,1)""",
+                    (self.player_id, payment_method, f"{today} 12:00:00"),
+                ).lastrowid
+                db.execute(
+                    "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents) VALUES(?,?,1,800)",
+                    (sale_id, self.product_id),
+                )
+                for method, amount in parts:
+                    db.execute(
+                        """INSERT INTO sale_payment_parts(sale_id,method,amount_cents,status)
+                           VALUES(?,?,?,'approved')""",
+                        (sale_id, method, amount),
+                    )
+                return sale_id
+
+            cash_sale = paid_sale("Dinheiro", (("Dinheiro", 800),))
+            mixed_sale = paid_sale("Dinheiro", (("Créditos", 600), ("Dinheiro", 200)))
+            credit_sale = paid_sale("Créditos", (("Créditos", 800),))
+            db.commit()
+
+        expected = {
+            cash_sale: (0, 800, 800),
+            mixed_sale: (600, 200, 800),
+            credit_sale: (800, 0, 800),
+        }
+        for sale_id, amounts in expected.items():
+            response = self.client.post(
+                f"/orders/{sale_id}/cancel", json={"reason": "Cancelamento aprovado pelo gestor"}
+            )
+            self.assertEqual(response.status_code, 200, response.get_json())
+            self.assertEqual(
+                (response.get_json()["returned_credit_cents"],
+                 response.get_json()["converted_cash_cents"],
+                 response.get_json()["credited_total_cents"]),
+                amounts,
+            )
+            repeated = self.client.post(
+                f"/orders/{sale_id}/cancel", json={"reason": "Cancelamento aprovado pelo gestor"}
+            )
+            self.assertEqual(repeated.status_code, 200)
+            self.assertTrue(repeated.get_json()["already_refunded"])
+
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute(
+                "SELECT balance_cents FROM bar_credit_accounts WHERE player_id=?", (self.player_id,)
+            ).fetchone()[0], 2400)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM cash_movements").fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM bar_credit_transactions WHERE type='REFUND'"
+            ).fetchone()[0], 4)
+            self.assertEqual(db.execute(
+                "SELECT stock FROM products WHERE id=?", (self.product_id,)
+            ).fetchone()[0], 10)
+            cash_part = db.execute(
+                "SELECT status FROM sale_payment_parts WHERE sale_id=? AND method='Dinheiro'", (cash_sale,)
+            ).fetchone()
+            mixed_parts = db.execute(
+                "SELECT method,status FROM sale_payment_parts WHERE sale_id=? ORDER BY method", (mixed_sale,)
+            ).fetchall()
+            credit_part = db.execute(
+                "SELECT status FROM sale_payment_parts WHERE sale_id=? AND method='Créditos'", (credit_sale,)
+            ).fetchone()
+            self.assertEqual(cash_part["status"], "approved")
+            self.assertEqual([(row["method"], row["status"]) for row in mixed_parts],
+                             [("Créditos", "refunded"), ("Dinheiro", "approved")])
+            self.assertEqual(credit_part["status"], "refunded")
+            sales = {row["id"]: (row["paid"], row["payment_status"]) for row in db.execute(
+                "SELECT id,paid,payment_status FROM sales WHERE id IN (?,?,?)",
+                (cash_sale, mixed_sale, credit_sale),
+            )}
+            self.assertEqual(sales[cash_sale], (1, "refunded"))
+            self.assertEqual(sales[mixed_sale], (1, "refunded"))
+            self.assertEqual(sales[credit_sale], (0, "refunded"))
+            summary = session_summary(db, get_session(db))
+            self.assertEqual(summary["cash_sales"], 1000)
+
     def test_webhook_simulator_acknowledges_unknown_order(self):
         data_id = "123456"
         request_id = "request-simulator"

@@ -62,6 +62,24 @@ def cancel_active_payment_parts(db, sale_id):
     ).rowcount
 
 
+def refund_approved_payment_part(db, sale_id, method, payment_id=None):
+    part = db.execute(
+        """SELECT id,amount_cents FROM sale_payment_parts
+           WHERE sale_id=? AND method=? AND status='approved'""",
+        (sale_id, method),
+    ).fetchone()
+    if not part:
+        return 0
+    updated = db.execute(
+        """UPDATE sale_payment_parts
+           SET status='refunded',refunded_at=COALESCE(refunded_at,CURRENT_TIMESTAMP),
+               payment_id=COALESCE(?,payment_id)
+           WHERE id=? AND status='approved'""",
+        (payment_id, part["id"]),
+    )
+    return int(part["amount_cents"] or 0) if updated.rowcount == 1 else 0
+
+
 def validate_approved_parts_total(db, sale_id):
     totals = db.execute(
         """SELECT s.total_cents,s.paid,s.payment_status,COUNT(pp.id) part_count,

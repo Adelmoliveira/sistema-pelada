@@ -13,6 +13,69 @@ CATEGORY_LABELS = {
 }
 
 
+def _sales_with_payment_breakdown(db, date_condition, date_params, query=""):
+    conditions = ["s.paid=1", "s.payment_method<>'Cortesia'", date_condition]
+    params = list(date_params)
+    if query:
+        conditions.append("(LOWER(COALESCE(p.name,s.guest_name,'')) LIKE ? OR CAST(s.id AS TEXT) LIKE ?)")
+        term = f"%{query.lower()}%"
+        params.extend([term, term])
+    rows = db.execute(
+        f"""SELECT s.id,s.payment_method,s.total_cents,
+        COALESCE(s.paid_at,s.created_at) payment_date,
+        COALESCE(p.name,s.guest_name,'Convidado') player_name,
+        date(COALESCE(s.paid_at,s.created_at)) business_date,
+        COALESCE(pp.part_count,0) payment_part_count,
+        CASE WHEN COALESCE(pp.part_count,0)>0 THEN COALESCE(pp.cash_cents,0)
+             WHEN s.payment_method='Dinheiro' THEN s.total_cents ELSE 0 END cash_cents,
+        CASE WHEN COALESCE(pp.part_count,0)>0 THEN COALESCE(pp.pix_cents,0)
+             WHEN s.payment_method IN ('Pix','Débito') THEN s.total_cents ELSE 0 END bank_cents,
+        CASE WHEN COALESCE(pp.part_count,0)>0 THEN COALESCE(pp.credit_cents,0)
+             WHEN s.payment_method='Créditos' THEN s.total_cents ELSE 0 END credit_cents
+        FROM sales s LEFT JOIN players p ON p.id=s.player_id
+        LEFT JOIN (
+            SELECT sale_id,COUNT(*) part_count,
+            COALESCE(SUM(CASE WHEN status='approved' AND method='Dinheiro' THEN amount_cents ELSE 0 END),0) cash_cents,
+            COALESCE(SUM(CASE WHEN status='approved' AND method='Pix' THEN amount_cents ELSE 0 END),0) pix_cents,
+            COALESCE(SUM(CASE WHEN status='approved' AND method='Créditos' THEN amount_cents ELSE 0 END),0) credit_cents
+            FROM sale_payment_parts GROUP BY sale_id
+        ) pp ON pp.sale_id=s.id
+        WHERE {' AND '.join(conditions)}
+        ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC""",
+        tuple(params),
+    ).fetchall()
+    result = []
+    for row in rows:
+        sale = dict(row)
+        breakdown = [
+            ("Créditos", int(sale["credit_cents"] or 0), "Créditos do bar"),
+            ("Pix", int(sale["bank_cents"] or 0), "Conta / Pix"),
+            ("Dinheiro", int(sale["cash_cents"] or 0), "Dinheiro físico"),
+        ]
+        used = [entry for entry in breakdown if entry[1] > 0]
+        sale["payment_label"] = " + ".join(entry[0] for entry in used) or sale["payment_method"]
+        sale["account_label"] = " + ".join(entry[2] for entry in used) or "Sem entrada aprovada"
+        result.append(sale)
+    return result
+
+
+def payment_breakdown(db, sale):
+    parts = db.execute(
+        """SELECT method,COALESCE(SUM(amount_cents),0) amount_cents
+           FROM sale_payment_parts WHERE sale_id=? AND status='approved' GROUP BY method""",
+        (sale["id"],),
+    ).fetchall()
+    has_parts = db.execute(
+        "SELECT 1 FROM sale_payment_parts WHERE sale_id=? LIMIT 1", (sale["id"],)
+    ).fetchone()
+    amounts = {"Dinheiro": 0, "Pix": 0, "Créditos": 0}
+    if has_parts:
+        amounts.update({row["method"]: int(row["amount_cents"] or 0) for row in parts})
+    elif sale["payment_method"] in amounts:
+        amounts[sale["payment_method"]] = int(sale["total_cents"] or 0)
+    return amounts
+
+
 def get_session(db, business_date=None):
     business_date = business_date or local_today().isoformat()
     return db.execute(
@@ -70,15 +133,12 @@ def create_movement(
 
 
 def session_summary(db, session):
-    sales = db.execute(
-        """SELECT
-        COALESCE(SUM(CASE WHEN payment_method='Dinheiro' THEN total_cents ELSE 0 END),0) cash_sales,
-        COALESCE(SUM(CASE WHEN payment_method IN ('Pix','Débito') THEN total_cents ELSE 0 END),0) bank_sales
-        FROM sales
-        WHERE paid=1 AND payment_method<>'Cortesia'
-          AND date(COALESCE(paid_at,created_at))=?""",
-        (session["business_date"],),
-    ).fetchone()
+    sale_rows = _sales_with_payment_breakdown(
+        db, "date(COALESCE(s.paid_at,s.created_at))=?", (session["business_date"],)
+    )
+    cash_sales = sum(row["cash_cents"] for row in sale_rows)
+    bank_sales = sum(row["bank_cents"] for row in sale_rows)
+    credit_sales = sum(row["credit_cents"] for row in sale_rows)
     totals = db.execute(
         """SELECT
         COALESCE(SUM(CASE WHEN account='cash' AND direction='in' THEN amount_cents ELSE 0 END),0) cash_in,
@@ -90,10 +150,10 @@ def session_summary(db, session):
     ).fetchone()
 
     calculated_cash = (
-        session["opening_cash_cents"] + sales["cash_sales"] + totals["cash_in"] - totals["cash_out"]
+        session["opening_cash_cents"] + cash_sales + totals["cash_in"] - totals["cash_out"]
     )
     calculated_bank = (
-        session["opening_bank_cents"] + sales["bank_sales"] + totals["bank_in"] - totals["bank_out"]
+        session["opening_bank_cents"] + bank_sales + totals["bank_in"] - totals["bank_out"]
     )
     closed = session["status"] == "closed"
     expected_cash = session["expected_cash_cents"] if closed else calculated_cash
@@ -107,18 +167,10 @@ def session_summary(db, session):
         WHERE m.session_id=? ORDER BY m.id DESC""",
         (session["id"],),
     ).fetchall()
-    sale_rows = db.execute(
-        """SELECT s.id,s.payment_method,s.total_cents,COALESCE(s.paid_at,s.created_at) payment_date,
-        COALESCE(p.name,s.guest_name,'Convidado') player_name
-        FROM sales s LEFT JOIN players p ON p.id=s.player_id
-        WHERE s.paid=1 AND s.payment_method<>'Cortesia'
-          AND date(COALESCE(s.paid_at,s.created_at))=?
-        ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC""",
-        (session["business_date"],),
-    ).fetchall()
     return {
-        "cash_sales": sales["cash_sales"],
-        "bank_sales": sales["bank_sales"],
+        "cash_sales": cash_sales,
+        "bank_sales": bank_sales,
+        "credit_sales": credit_sales,
         "cash_in": totals["cash_in"],
         "cash_out": totals["cash_out"],
         "bank_in": totals["bank_in"],
@@ -164,25 +216,23 @@ def history_rows(db, start_date, end_date, account="", direction="", category=""
     show_sales = direction != "out" and not category
     sale_rows = []
     if show_sales:
-        sale_conditions = ["sl.paid=1", "sl.payment_method<>'Cortesia'", "date(COALESCE(sl.paid_at,sl.created_at)) BETWEEN ? AND ?"]
-        sale_params = [start_date, end_date]
+        sale_rows = _sales_with_payment_breakdown(
+            db,
+            "date(COALESCE(s.paid_at,s.created_at)) BETWEEN ? AND ?",
+            (start_date, end_date),
+            query,
+        )
         if account == "cash":
-            sale_conditions.append("sl.payment_method='Dinheiro'")
+            sale_rows = [row for row in sale_rows if row["cash_cents"] > 0]
         elif account == "bank":
-            sale_conditions.append("sl.payment_method IN ('Pix','Débito')")
-        if query:
-            sale_conditions.append("(LOWER(COALESCE(p.name,sl.guest_name,'')) LIKE ? OR CAST(sl.id AS TEXT) LIKE ?)")
-            term = f"%{query.lower()}%"
-            sale_params.extend([term, term])
-        sale_rows = db.execute(
-            f"""SELECT sl.id,sl.payment_method,sl.total_cents,
-            COALESCE(sl.paid_at,sl.created_at) payment_date,COALESCE(p.name,sl.guest_name,'Convidado') player_name,
-            date(COALESCE(sl.paid_at,sl.created_at)) business_date
-            FROM sales sl LEFT JOIN players p ON p.id=sl.player_id
-            WHERE {' AND '.join(sale_conditions)}
-            ORDER BY COALESCE(sl.paid_at,sl.created_at) DESC,sl.id DESC LIMIT 1000""",
-            tuple(sale_params),
-        ).fetchall()
+            sale_rows = [row for row in sale_rows if row["bank_cents"] > 0]
+        sale_rows = sale_rows[:1000]
+        for row in sale_rows:
+            row["display_amount_cents"] = (
+                row["cash_cents"] if account == "cash"
+                else row["bank_cents"] if account == "bank"
+                else row["total_cents"]
+            )
 
     sessions = db.execute(
         """SELECT s.*,op.name opened_by_name,cl.name closed_by_name
@@ -192,11 +242,15 @@ def history_rows(db, start_date, end_date, account="", direction="", category=""
         (start_date, end_date),
     ).fetchall()
     totals = {
-        "sales": sum(int(row["total_cents"] or 0) for row in sale_rows),
+        "sales": sum(
+            int(row["cash_cents"] if account == "cash" else row["bank_cents"] if account == "bank" else row["total_cents"] or 0)
+            for row in sale_rows
+        ),
         "in": sum(int(row["amount_cents"] or 0) for row in movements if row["direction"] == "in"),
         "out": sum(int(row["amount_cents"] or 0) for row in movements if row["direction"] == "out"),
-        "cash_sales": sum(int(row["total_cents"] or 0) for row in sale_rows if row["payment_method"] == "Dinheiro"),
-        "bank_sales": sum(int(row["total_cents"] or 0) for row in sale_rows if row["payment_method"] in ("Pix", "Débito")),
+        "cash_sales": sum(int(row["cash_cents"] or 0) for row in sale_rows),
+        "bank_sales": sum(int(row["bank_cents"] or 0) for row in sale_rows),
+        "credit_sales": sum(int(row["credit_cents"] or 0) for row in sale_rows),
     }
     totals["net"] = totals["sales"] + totals["in"] - totals["out"]
     return {"movements": movements, "sales": sale_rows, "sessions": sessions, "totals": totals}
