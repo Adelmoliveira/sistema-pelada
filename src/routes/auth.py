@@ -179,11 +179,13 @@ def login():
         player = _client_player_for_username(db, username)
         if player and (not user or (user["role"] == "client" and not user["password_required"])):
             session["pending_client_player_id"] = player["id"]
+            session["pending_client_remember_device"] = request.form.get("remember_device") == "1"
             return _client_password_setup(player, user)
         passwordless_user = user and user["role"] in ("maintenance", "display") and not user["password_required"]
         if user and (passwordless_user or check_password_hash(user["password_hash"], request.form.get("password", ""))):
             session.clear()
             session["user_id"] = user["id"]
+            session.permanent = user["role"] == "client" and request.form.get("remember_device") == "1"
             return redirect(
                 safe_next_url(request.form.get("next")) or _client_home_redirect(db, user),
                 code=303,
@@ -306,9 +308,10 @@ def client_password_setup():
                                         (player["war_name"], player["war_name"], password_hash, player_id))
                     user_id = cursor.lastrowid
                 db.commit()
-                session.pop("pending_client_player_id", None)
+                remember_device = bool(session.get("pending_client_remember_device"))
                 session.clear()
                 session["user_id"] = user_id
+                session.permanent = remember_device
                 destination = url_for("auth.my_account")
                 flash("Senha criada. Complete seu cadastro para continuar.", "info")
                 return redirect(destination, code=303)

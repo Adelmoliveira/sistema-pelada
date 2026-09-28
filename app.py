@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from pathlib import Path
 from flask import Flask, g, redirect, request, session, url_for, flash, jsonify, render_template
 from flask_wtf.csrf import CSRFProtect, CSRFError
@@ -32,6 +33,7 @@ from src.routes.events import bp as events_bp
 app = Flask(__name__)
 
 is_vercel = bool(os.environ.get("VERCEL") or os.environ.get("NOW_REGION"))
+runtime_environment = environment_config()
 database_path = os.environ.get("DATABASE_PATH")
 if not database_path:
     database_path = "/tmp/bar.db" if is_vercel else os.path.join(app.root_path, "bar.db")
@@ -56,11 +58,12 @@ app.config.update(
     VAPID_SUBJECT=os.environ.get("VAPID_SUBJECT", "mailto:diretoriagpcta@gmail.com"),
     BAR_CREDIT_LOW_THRESHOLD_CENTS=int(os.environ.get("BAR_CREDIT_LOW_THRESHOLD_CENTS", "1000") or 1000),
     BAR_CREDIT_MAX_TOPUP_CENTS=int(os.environ.get("BAR_CREDIT_MAX_TOPUP_CENTS", "50000") or 50000),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=90),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=is_vercel,
+    SESSION_COOKIE_SECURE=is_vercel and runtime_environment["APP_ENV"] == "production",
 )
-app.config.update(environment_config())
+app.config.update(runtime_environment)
 
 if is_vercel:
     app.logger.info(f"[VERCEL] DATABASE_URL configurada: {bool(app.config['DATABASE_URL'])}")
