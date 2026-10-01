@@ -695,7 +695,10 @@ def my_purchases():
             f"""SELECT i.sale_id,i.id item_id,i.quantity,p.name product_name,p.category,p.thumbnail_data,
                        d.variant_size,d.custom_name,d.custom_number,d.order_mode,d.fulfillment_status,d.delivered_at sports_delivered_at,
                        t.code material_type_code,
-                       COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=i.id),0) bar_delivered_quantity
+                       COALESCE((SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
+                                 FROM sale_item_deliveries sid
+                                 LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                                 WHERE sid.sale_item_id=i.id),0) bar_delivered_quantity
                 FROM sale_items i JOIN products p ON p.id=i.product_id
                 LEFT JOIN sports_sale_item_details d ON d.sale_item_id=i.id
                 LEFT JOIN sports_product_config c ON c.product_id=p.id
@@ -785,13 +788,15 @@ def pending_purchase_count():
            FROM (
              SELECT CASE
                  WHEN i.quantity - COALESCE((
-                   SELECT SUM(sid.quantity)
+                   SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
                    FROM sale_item_deliveries sid
+                   LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
                    WHERE sid.sale_item_id=i.id
                  ), 0) > 0
                  THEN i.quantity - COALESCE((
-                   SELECT SUM(sid.quantity)
+                   SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
                    FROM sale_item_deliveries sid
+                   LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
                    WHERE sid.sale_item_id=i.id
                  ), 0)
                  ELSE 0

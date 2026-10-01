@@ -5453,6 +5453,9 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 ).fetchone()["total"],
                 0,
             )
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM sale_item_delivery_restorations"
+            ).fetchone()[0], 0)
             db.execute("DROP TRIGGER fail_delivery_restore")
             db.commit()
 
@@ -5479,16 +5482,42 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "SELECT COUNT(*) total FROM sale_item_deliveries sid JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=?",
                 (sale_id,),
             ).fetchone()["total"]
+            restoration = db.execute(
+                """SELECT r.quantity,r.reason,r.restored_by,r.restored_at,sid.quantity delivery_quantity
+                   FROM sale_item_delivery_restorations r
+                   JOIN sale_item_deliveries sid ON sid.id=r.delivery_id
+                   JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=?""",
+                (sale_id,),
+            ).fetchone()
             stock_after = db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"]
             self.assertEqual((sale["paid"], sale["payment_status"], sale["ready_for_delivery"]), (1, "approved", 1))
             self.assertIsNone(sale["delivered_at"])
             self.assertIsNone(sale["delivered_by"])
-            self.assertEqual(deliveries, 0)
+            self.assertGreater(deliveries, 0)
+            self.assertEqual(restoration["quantity"], restoration["delivery_quantity"])
+            self.assertEqual(restoration["reason"], "Entrega total registrada por engano.")
+            self.assertEqual(restoration["restored_by"], self.user_id)
+            self.assertIsNotNone(restoration["restored_at"])
             self.assertEqual(stock_after, stock_before)
             sale_item_id = db.execute(
                 "SELECT id FROM sale_items WHERE sale_id=? ORDER BY id LIMIT 1",
                 (sale_id,),
             ).fetchone()["id"]
+
+        duplicate = self.client.post(
+            f"/orders/{sale_id}/restore-delivery",
+            json={"reason": "Repetição da mesma correção."},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertTrue(duplicate.get_json()["already_restored"])
+        with app.app_context():
+            self.assertEqual(get_db().execute(
+                """SELECT COUNT(*) FROM sale_item_delivery_restorations r
+                   JOIN sale_item_deliveries sid ON sid.id=r.delivery_id
+                   JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=?""",
+                (sale_id,),
+            ).fetchone()[0], 1)
 
         partial = self.client.post(
             f"/orders/{sale_id}/deliver",
@@ -5504,6 +5533,115 @@ class MercadoPagoFlowTest(unittest.TestCase):
 
         history = self.client.get("/orders/delivered").get_data(as_text=True)
         self.assertIn("Corrigir entrega", history)
+
+    def test_partial_delivery_restoration_is_append_only_and_uses_net_quantity(self):
+        sale_id = self.create_order("ORD-PARTIAL-RESTORE", 5)
+        with app.app_context():
+            db = get_db()
+            db.execute(
+                "UPDATE sales SET paid=1,payment_status='approved',ready_for_delivery=1,paid_at=CURRENT_TIMESTAMP WHERE id=?",
+                (sale_id,),
+            )
+            staff_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'staff')",
+                ("staff.append.only", "Staff Append Only", "hash"),
+            ).lastrowid
+            sale_item_id = db.execute(
+                "SELECT id FROM sale_items WHERE sale_id=?", (sale_id,)
+            ).fetchone()["id"]
+            db.commit()
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        first = self.client.post(
+            f"/orders/{sale_id}/deliver",
+            json={"sale_item_id": sale_item_id, "quantity": 2},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(first.status_code, 200)
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = self.user_id
+        restored = self.client.post(
+            f"/orders/{sale_id}/restore-delivery",
+            json={"reason": "Retirada parcial lançada por engano."},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(restored.status_code, 200, restored.get_json())
+
+        with app.app_context():
+            db = get_db()
+            audit = db.execute(
+                """SELECT sid.sale_item_id,sid.quantity delivered_quantity,sid.delivered_by,sid.delivered_at,
+                          r.quantity restored_quantity,r.restored_by,r.restored_at,r.reason
+                   FROM sale_item_deliveries sid
+                   JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                   WHERE sid.sale_item_id=?""",
+                (sale_item_id,),
+            ).fetchone()
+            self.assertEqual((audit["delivered_quantity"], audit["restored_quantity"]), (2, 2))
+            self.assertEqual((audit["delivered_by"], audit["restored_by"]), (staff_id, self.user_id))
+            self.assertTrue(audit["delivered_at"])
+            self.assertTrue(audit["restored_at"])
+            self.assertEqual(audit["reason"], "Retirada parcial lançada por engano.")
+
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        second = self.client.post(
+            f"/orders/{sale_id}/deliver",
+            json={"sale_item_id": sale_item_id, "quantity": 1},
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.get_json()["remaining_items"][0]["quantity"], 4)
+
+        with app.app_context():
+            db = get_db()
+            totals = db.execute(
+                """SELECT SUM(sid.quantity) gross,
+                          SUM(sid.quantity-COALESCE(r.quantity,0)) net
+                   FROM sale_item_deliveries sid
+                   LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                   WHERE sid.sale_item_id=?""",
+                (sale_item_id,),
+            ).fetchone()
+            self.assertEqual((totals["gross"], totals["net"]), (3, 1))
+
+    def test_delivery_restoration_preserves_each_item_in_multi_product_order(self):
+        sale_id = self.create_order("ORD-MULTI-RESTORE", 2)
+        with app.app_context():
+            db = get_db()
+            second_product_id = db.execute(
+                "INSERT INTO products(name,category,price_cents,cost_cents,stock) VALUES(?,?,?,?,?)",
+                ("Refrigerante Auditável", "Bebida", 400, 150, 10),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+                (sale_id, second_product_id, 3, 400, 150),
+            )
+            db.execute(
+                "UPDATE sales SET paid=1,payment_status='approved',ready_for_delivery=1,paid_at=CURRENT_TIMESTAMP WHERE id=?",
+                (sale_id,),
+            )
+            db.commit()
+        self.login_manager()
+        self.assertEqual(self.client.post(f"/orders/{sale_id}/deliver").status_code, 200)
+        restored = self.client.post(
+            f"/orders/{sale_id}/restore-delivery",
+            json={"reason": "Operação completa registrada incorretamente."},
+        )
+        self.assertEqual(restored.status_code, 200)
+        with app.app_context():
+            rows = get_db().execute(
+                """SELECT si.product_id,sid.quantity,r.quantity restored_quantity
+                   FROM sale_item_deliveries sid
+                   JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                   JOIN sale_items si ON si.id=sid.sale_item_id
+                   WHERE si.sale_id=? ORDER BY si.id""",
+                (sale_id,),
+            ).fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual([(row["quantity"], row["restored_quantity"]) for row in rows], [(2, 2), (3, 3)])
 
     def test_cash_order_waits_for_staff_payment_delivery_or_cancel(self):
         with app.app_context():
@@ -8149,6 +8287,134 @@ NILSON"""
         self.assertEqual(failed_connection.rollbacks, 1)
         self.assertTrue(failed_connection.closed)
         self.assertNotIn("003_pending.sql", failed_connection.applied)
+
+
+    def test_player_statement_balances_history_filters_and_roles(self):
+        self.login_manager()
+        with app.app_context():
+            db = get_db()
+            other_product = db.execute(
+                """INSERT INTO products(name,category,price_cents,cost_cents,stock)
+                   VALUES('Refrigerante Extrato','Bebida',500,200,20)"""
+            ).lastrowid
+
+            def sale_item(quantity, created_at, product_id=None, status="approved"):
+                sale_id = db.execute(
+                    """INSERT INTO sales(player_id,payment_method,total_cents,paid,
+                       payment_status,ready_for_delivery,created_at)
+                       VALUES(?,'Dinheiro',?,1,?,1,?)""",
+                    (self.player_id, quantity * 300, status, created_at),
+                ).lastrowid
+                item_id = db.execute(
+                    """INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents)
+                       VALUES(?,?,?,300)""",
+                    (sale_id, product_id or self.product_id, quantity),
+                ).lastrowid
+                return sale_id, item_id
+
+            pending_sale, _ = sale_item(3, "2026-01-01 10:00:00")
+            partial_sale, partial_item = sale_item(5, "2026-01-02 10:00:00")
+            restored_sale, restored_item = sale_item(3, "2026-01-03 10:00:00")
+            complete_sale, complete_item = sale_item(2, "2026-01-04 10:00:00")
+            other_sale, _ = sale_item(4, "2026-01-05 10:00:00", other_product)
+            canceled_sale, _ = sale_item(7, "2026-01-06 10:00:00", status="refunded")
+
+            def delivery(sale_id, item_id, quantity, timestamp):
+                operation = db.execute(
+                    """INSERT INTO sale_delivery_operations(sale_id,delivered_by,delivered_at)
+                       VALUES(?,?,?)""", (sale_id, self.user_id, timestamp)
+                ).lastrowid
+                return db.execute(
+                    """INSERT INTO sale_item_deliveries
+                       (delivery_operation_id,sale_item_id,quantity,delivered_by,delivered_at)
+                       VALUES(?,?,?,?,?)""",
+                    (operation, item_id, quantity, self.user_id, timestamp),
+                ).lastrowid
+
+            delivery(partial_sale, partial_item, 2, "2026-02-01 12:00:00")
+            delivery(partial_sale, partial_item, 1, "2026-02-02 12:00:00")
+            restored_delivery = delivery(restored_sale, restored_item, 1, "2026-02-03 12:00:00")
+            db.execute(
+                """INSERT INTO sale_item_delivery_restorations
+                   (delivery_id,quantity,restored_by,restored_at,reason)
+                   VALUES(?,?,?,?,?)""",
+                (restored_delivery, 1, self.user_id, "2026-02-04 12:00:00", "Entrega desfeita"),
+            )
+            delivery(complete_sale, complete_item, 2, "2026-02-05 12:00:00")
+            db.execute(
+                "INSERT INTO sale_cancellations(sale_id,reason,canceled_by,canceled_at) VALUES(?,?,?,?)",
+                (canceled_sale, "Estorno solicitado", self.user_id, "2026-02-06 12:00:00"),
+            )
+            db.commit()
+
+        empty = self.client.get("/orders/player-statement").get_data(as_text=True)
+        self.assertIn("Selecione um peladeiro para carregar o extrato", empty)
+        self.assertNotIn(f"#{pending_sale}</td>", empty)
+
+        base = f"/orders/player-statement?player_id={self.player_id}"
+        html = self.client.get(base).get_data(as_text=True)
+        self.assertIn("Extrato do Peladeiro", html)
+        self.assertIn(f"#{pending_sale}", html)
+        self.assertIn(f"#{partial_sale}", html)
+        self.assertIn(f"#{restored_sale}", html)
+        self.assertIn(f"#{complete_sale}", html)
+        self.assertIn("RETIRADA", html)
+        self.assertIn("RESTAURAÇÃO", html)
+        self.assertIn("Entrega desfeita", html)
+        self.assertIn("Cancelado/Estornado", html)
+        self.assertIn("Estorno solicitado", html)
+        self.assertRegex(html, rf"#{pending_sale}</td>.*?<td>3</td><td>0</td><td>3</td><td>A retirar</td>")
+        self.assertRegex(html, rf"#{partial_sale}</td>.*?<td>5</td><td>3</td><td>2</td><td>A retirar</td>")
+        self.assertRegex(html, rf"#{restored_sale}</td>.*?<td>3</td><td>0</td><td>3</td><td>Restaurado</td>")
+        self.assertRegex(html, rf"#{complete_sale}</td>.*?<td>2</td><td>2</td><td>0</td><td>Retirado</td>")
+
+        period = self.client.get(
+            base + "&start_date=2026-01-02&end_date=2026-01-02"
+        ).get_data(as_text=True)
+        self.assertIn(f"#{partial_sale}", period)
+        self.assertIn("RETIRADA", period)
+        self.assertNotIn(f"#{pending_sale}", period)
+
+        pending = self.client.get(base + "&situation=pending").get_data(as_text=True)
+        self.assertIn(f"#{pending_sale}", pending)
+        self.assertIn(f"#{partial_sale}", pending)
+        self.assertIn(f"#{restored_sale}", pending)
+        self.assertNotIn(f"#{complete_sale}", pending)
+        self.assertNotIn(f"#{canceled_sale}", pending)
+
+        delivered = self.client.get(base + "&situation=delivered").get_data(as_text=True)
+        self.assertIn(f"#{complete_sale}", delivered)
+        self.assertNotIn(f"#{pending_sale}", delivered)
+        restored = self.client.get(base + "&situation=restored").get_data(as_text=True)
+        self.assertIn(f"#{restored_sale}", restored)
+        canceled = self.client.get(base + "&situation=canceled").get_data(as_text=True)
+        self.assertIn(f"#{canceled_sale}", canceled)
+        self.assertRegex(canceled, rf"#{canceled_sale}</td>.*?<td>7</td><td>0</td><td>0</td><td>Cancelado/Estornado</td>")
+
+        product_filtered = self.client.get(
+            base + f"&product_id={other_product}"
+        ).get_data(as_text=True)
+        self.assertIn("Refrigerante Extrato", product_filtered)
+        self.assertNotIn(f"#{pending_sale}", product_filtered)
+        self.assertIn(f"#{other_sale}", product_filtered)
+        self.assertEqual(self.client.get(base + "&product_id=invalid").status_code, 200)
+        self.assertEqual(self.client.get("/orders/player-statement?player_id=invalid").status_code, 200)
+
+        with app.app_context():
+            db = get_db()
+            staff_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES('statement-staff','Staff','hash','staff')"
+            ).lastrowid
+            client_id = db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES('statement-client','Client','hash','client')"
+            ).lastrowid
+            db.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = staff_id
+        self.assertEqual(self.client.get(base).status_code, 200)
+        with self.client.session_transaction() as session:
+            session["user_id"] = client_id
+        self.assertNotEqual(self.client.get(base).status_code, 200)
 
 
 if __name__ == "__main__":
