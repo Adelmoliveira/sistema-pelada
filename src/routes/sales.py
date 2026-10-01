@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from flask import Blueprint, render_template, request, redirect, url_for, flash, g, jsonify, current_app, send_file
 from itsdangerous import BadData, URLSafeTimedSerializer
 from src.db import get_db
@@ -721,6 +721,257 @@ def orders():
     if department not in ('bar', 'sports'):
         department = 'bar'
     return render_template("orders.html", department=department)
+
+
+def _statement_int_arg(name):
+    value = (request.args.get(name) or "").strip()
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+@bp.get("/orders/player-statement")
+@roles_allowed("manager", "staff")
+def player_statement():
+    db = get_db()
+    players = db.execute(
+        """SELECT id,name,war_name FROM players
+           WHERE active=1 ORDER BY LOWER(COALESCE(NULLIF(war_name,''),name)),id"""
+    ).fetchall()
+    products = db.execute(
+        "SELECT id,name FROM products ORDER BY LOWER(name),id"
+    ).fetchall()
+    situations = {"", "pending", "delivered", "restored", "canceled"}
+    raw_player_id = (request.args.get("player_id") or "").strip()
+    raw_product_id = (request.args.get("product_id") or "").strip()
+    player_id = _statement_int_arg("player_id")
+    product_id = _statement_int_arg("product_id")
+    situation = (request.args.get("situation") or "").strip()
+    if situation not in situations:
+        situation = ""
+    start_raw = (request.args.get("start_date") or "").strip()
+    end_raw = (request.args.get("end_date") or "").strip()
+    start_date = end_date = None
+    invalid_filter = bool(raw_player_id and player_id is None) or bool(
+        raw_product_id and product_id is None
+    )
+    try:
+        start_date = date.fromisoformat(start_raw) if start_raw else None
+        end_date = date.fromisoformat(end_raw) if end_raw else None
+        if start_date and end_date and start_date > end_date:
+            invalid_filter = True
+    except ValueError:
+        invalid_filter = True
+
+    selected_player = None
+    if player_id:
+        selected_player = db.execute(
+            "SELECT id,name,war_name FROM players WHERE id=?", (player_id,)
+        ).fetchone()
+        if selected_player is None:
+            invalid_filter = True
+    if product_id and not any(int(row["id"]) == product_id for row in products):
+        invalid_filter = True
+
+    context = {
+        "players": players,
+        "products": products,
+        "selected_player": selected_player,
+        "filters": {
+            "player_id": raw_player_id,
+            "product_id": raw_product_id,
+            "start_date": start_raw,
+            "end_date": end_raw,
+            "situation": situation,
+        },
+        "invalid_filter": invalid_filter,
+        "summary": None,
+        "balances": [],
+        "purchases": [],
+        "movements": [],
+    }
+    if not player_id or invalid_filter:
+        return render_template("player_statement.html", **context)
+
+    where = ["s.player_id=?"]
+    params = [player_id]
+    if start_date:
+        where.append("s.created_at>=?")
+        params.append(start_date.isoformat())
+    if end_date:
+        where.append("s.created_at<?")
+        params.append((end_date + timedelta(days=1)).isoformat())
+    if product_id:
+        where.append("p.id=?")
+        params.append(product_id)
+    where_sql = " AND ".join(where)
+
+    item_rows = db.execute(
+        f"""WITH delivery_totals AS (
+                SELECT sid.sale_item_id,
+                       SUM(sid.quantity) gross_delivered,
+                       SUM(COALESCE(r.quantity,0)) restored_quantity,
+                       SUM(sid.quantity-COALESCE(r.quantity,0)) net_delivered
+                FROM sale_item_deliveries sid
+                LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                GROUP BY sid.sale_item_id
+            )
+            SELECT s.id sale_id,s.created_at sale_created_at,s.payment_status,
+                   s.delivered_at legacy_delivered_at,
+                   si.id sale_item_id,si.quantity,p.id product_id,p.name product_name,
+                   d.variant_size,
+                   COALESCE(dt.gross_delivered,0) gross_delivered,
+                   COALESCE(dt.restored_quantity,0) restored_quantity,
+                   COALESCE(dt.net_delivered,0) net_delivered,
+                   sc.canceled_at,sc.reason cancellation_reason,cu.name cancellation_operator
+            FROM sales s
+            JOIN sale_items si ON si.sale_id=s.id
+            JOIN products p ON p.id=si.product_id
+            LEFT JOIN sports_sale_item_details d ON d.sale_item_id=si.id
+            LEFT JOIN delivery_totals dt ON dt.sale_item_id=si.id
+            LEFT JOIN sale_cancellations sc ON sc.sale_id=s.id
+            LEFT JOIN users cu ON cu.id=sc.canceled_by
+            WHERE {where_sql}
+            ORDER BY s.created_at DESC,s.id DESC,si.id""",
+        tuple(params),
+    ).fetchall()
+
+    purchases = []
+    included_item_ids = set()
+    for source in item_rows:
+        row = dict(source)
+        canceled = (row["payment_status"] or "").lower() in {"canceled", "refunded"}
+        bought = int(row["quantity"] or 0)
+        net = max(0, int(row["net_delivered"] or 0))
+        restored = int(row["restored_quantity"] or 0)
+        legacy_unknown = bool(row["legacy_delivered_at"] and not row["gross_delivered"])
+        pending = 0 if canceled or legacy_unknown else max(0, bought - net)
+        row.update({
+            "bought": bought,
+            "net_delivered": None if legacy_unknown else net,
+            "pending": pending,
+            "canceled": canceled,
+            "legacy_unknown": legacy_unknown,
+            "variant_label": row["variant_size"] or "",
+        })
+        if canceled:
+            row["status_label"] = "Cancelado/Estornado"
+        elif restored:
+            row["status_label"] = "Restaurado"
+        elif pending == 0:
+            row["status_label"] = "Retirado"
+        else:
+            row["status_label"] = "A retirar"
+        matches = (
+            not situation
+            or (situation == "pending" and not canceled and pending > 0)
+            or (situation == "delivered" and not canceled and pending == 0)
+            or (situation == "restored" and not canceled and restored > 0)
+            or (situation == "canceled" and canceled)
+        )
+        if matches:
+            purchases.append(row)
+            included_item_ids.add(int(row["sale_item_id"]))
+
+    # Movement queries intentionally use the purchase date predicates above;
+    # their own timestamps are not filtered, so later pickup history remains visible.
+    deliveries = db.execute(
+        f"""SELECT sid.id delivery_id,sid.sale_item_id,sid.quantity,sid.delivered_at,
+                   du.name operator_name,s.id sale_id,p.id product_id,p.name product_name,
+                   d.variant_size
+            FROM sale_item_deliveries sid
+            JOIN sale_items si ON si.id=sid.sale_item_id
+            JOIN sales s ON s.id=si.sale_id
+            JOIN products p ON p.id=si.product_id
+            LEFT JOIN sports_sale_item_details d ON d.sale_item_id=si.id
+            LEFT JOIN users du ON du.id=sid.delivered_by
+            WHERE {where_sql}""",
+        tuple(params),
+    ).fetchall()
+    restorations = db.execute(
+        f"""SELECT r.delivery_id,r.quantity,r.restored_at,r.reason,
+                   ru.name operator_name,sid.sale_item_id,s.id sale_id,
+                   p.id product_id,p.name product_name,d.variant_size
+            FROM sale_item_delivery_restorations r
+            JOIN sale_item_deliveries sid ON sid.id=r.delivery_id
+            JOIN sale_items si ON si.id=sid.sale_item_id
+            JOIN sales s ON s.id=si.sale_id
+            JOIN products p ON p.id=si.product_id
+            LEFT JOIN sports_sale_item_details d ON d.sale_item_id=si.id
+            LEFT JOIN users ru ON ru.id=r.restored_by
+            WHERE {where_sql}""",
+        tuple(params),
+    ).fetchall()
+
+    movements = []
+    for row in purchases:
+        movements.append({
+            "kind": "COMPRA", "occurred_at": row["sale_created_at"],
+            "product_name": row["product_name"], "variant_size": row["variant_size"],
+            "quantity": row["bought"], "sale_id": row["sale_id"],
+            "operator_name": None, "reason": None,
+        })
+        if row["canceled"]:
+            movements.append({
+                "kind": "CANCELAMENTO/ESTORNO", "occurred_at": row["canceled_at"],
+                "product_name": row["product_name"], "variant_size": row["variant_size"],
+                "quantity": None, "sale_id": row["sale_id"],
+                "operator_name": row["cancellation_operator"],
+                "reason": row["cancellation_reason"],
+            })
+    for source in deliveries:
+        row = dict(source)
+        if int(row["sale_item_id"]) in included_item_ids:
+            movements.append({
+                "kind": "RETIRADA", "occurred_at": row["delivered_at"],
+                "product_name": row["product_name"], "variant_size": row["variant_size"],
+                "quantity": row["quantity"], "sale_id": row["sale_id"],
+                "operator_name": row["operator_name"], "reason": None,
+            })
+    for source in restorations:
+        row = dict(source)
+        if int(row["sale_item_id"]) in included_item_ids:
+            movements.append({
+                "kind": "RESTAURAÇÃO", "occurred_at": row["restored_at"],
+                "product_name": row["product_name"], "variant_size": row["variant_size"],
+                "quantity": row["quantity"], "sale_id": row["sale_id"],
+                "operator_name": row["operator_name"], "reason": row["reason"],
+            })
+    movements.sort(key=lambda item: (item["occurred_at"] is None, str(item["occurred_at"] or "")))
+
+    balance_map = {}
+    for row in purchases:
+        if row["canceled"]:
+            continue
+        key = (row["product_id"], row["product_name"], row["variant_label"])
+        balance = balance_map.setdefault(key, {"product_name": row["product_name"],
+                                               "variant_label": row["variant_label"],
+                                               "bought": 0, "net_delivered": 0,
+                                               "pending": 0, "has_legacy": False})
+        balance["bought"] += row["bought"]
+        balance["pending"] += row["pending"]
+        if row["net_delivered"] is None:
+            balance["has_legacy"] = True
+        else:
+            balance["net_delivered"] += row["net_delivered"]
+    known_net = [row["net_delivered"] for row in purchases
+                 if not row["canceled"] and row["net_delivered"] is not None]
+    context.update({
+        "summary": {
+            "sales": len({row["sale_id"] for row in purchases}),
+            "bought": sum(row["bought"] for row in purchases),
+            "net_delivered": sum(known_net),
+            "pending": sum(row["pending"] for row in purchases if not row["canceled"]),
+        },
+        "balances": list(balance_map.values()),
+        "purchases": purchases,
+        "movements": movements,
+    })
+    return render_template("player_statement.html", **context)
 
 @bp.get("/material-esportivo/vendas")
 @roles_allowed("manager", "staff")
