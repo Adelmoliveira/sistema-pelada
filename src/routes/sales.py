@@ -27,6 +27,7 @@ from src.services.bar_credits import (
     reserve_credit,
 )
 from src.services.pending_delivery_pdf import build_pending_delivery_pdf
+from src.services.player_statement_pdf import build_player_statement_pdf
 from src.services.sports_supplier_pdf import build_sports_supplier_pdf
 from src.services.notification_outbox import enqueue_sports_available_event
 from src.services.sale_payment_parts import (
@@ -734,10 +735,7 @@ def _statement_int_arg(name):
     return parsed if parsed > 0 else None
 
 
-@bp.get("/orders/player-statement")
-@roles_allowed("manager", "staff")
-def player_statement():
-    db = get_db()
+def _player_statement_context(db):
     players = db.execute(
         """SELECT id,name,war_name FROM players
            WHERE active=1 ORDER BY LOWER(COALESCE(NULLIF(war_name,''),name)),id"""
@@ -795,7 +793,7 @@ def player_statement():
         "movements": [],
     }
     if not player_id or invalid_filter:
-        return render_template("player_statement.html", **context)
+        return context
 
     where = ["s.player_id=?"]
     params = [player_id]
@@ -971,7 +969,31 @@ def player_statement():
         "purchases": purchases,
         "movements": movements,
     })
-    return render_template("player_statement.html", **context)
+    return context
+
+
+@bp.get("/orders/player-statement")
+@roles_allowed("manager", "staff")
+def player_statement():
+    return render_template("player_statement.html", **_player_statement_context(get_db()))
+
+
+@bp.get("/orders/player-statement.pdf")
+@roles_allowed("manager", "staff")
+def player_statement_pdf():
+    context = _player_statement_context(get_db())
+    player = context["selected_player"]
+    if context["invalid_filter"] or player is None:
+        flash("Selecione um peladeiro e informe filtros válidos para gerar o PDF.", "warning")
+        return redirect(url_for("sales.player_statement", **context["filters"]))
+    player_id = int(player["id"])
+    generated_at = datetime.now().astimezone()
+    return send_file(
+        build_player_statement_pdf(context, generated_at),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"extrato_peladeiro_{player_id}_{generated_at:%Y-%m-%d}.pdf",
+    )
 
 @bp.get("/material-esportivo/vendas")
 @roles_allowed("manager", "staff")
