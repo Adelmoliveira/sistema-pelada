@@ -1362,7 +1362,10 @@ def delivery_order_data(db, sale, items_for_sales=None):
     else:
         items = db.execute(
             """SELECT si.id,si.quantity,p.name,
-                      COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=si.id),0) delivered_quantity
+                      COALESCE((SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
+                                FROM sale_item_deliveries sid
+                                LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                                WHERE sid.sale_item_id=si.id),0) delivered_quantity
                FROM sale_items si
                JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
             (sale["id"],),
@@ -1463,10 +1466,11 @@ def orders_feed():
         placeholders = ",".join("?" for _ in all_sale_ids)
         items_rows = db.execute(
             f"""SELECT si.id AS sale_item_id, si.sale_id, si.quantity, p.id AS product_id, p.name,
-                         COALESCE(SUM(sid.quantity), 0) AS delivered_quantity
+                         COALESCE(SUM(sid.quantity-COALESCE(r.quantity,0)), 0) AS delivered_quantity
                   FROM sale_items si
                   JOIN products p ON p.id=si.product_id
                   LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
+                  LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
                   WHERE si.sale_id IN ({placeholders})
                   GROUP BY si.id, si.sale_id, si.quantity, p.id, p.name
                   ORDER BY si.sale_id, si.id""",
@@ -1579,7 +1583,10 @@ def deliver_order(sale_id):
         return jsonify(error="Confirme o pagamento em dinheiro antes da entrega."), 409
     item_rows = db.execute(
         """SELECT si.id,si.quantity,p.name,
-                  COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=si.id),0) delivered_quantity
+                  COALESCE((SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
+                            FROM sale_item_deliveries sid
+                            LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                            WHERE sid.sale_item_id=si.id),0) delivered_quantity
            FROM sale_items si JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
         (sale_id,),
     ).fetchall()
@@ -1623,8 +1630,9 @@ def deliver_order(sale_id):
                    (delivery_operation_id, item_id, quantity, g.user["id"]),
                )
            delivered_totals = db.execute(
-               """SELECT si.quantity,COALESCE(SUM(sid.quantity),0) delivered_quantity
+               """SELECT si.quantity,COALESCE(SUM(sid.quantity-COALESCE(r.quantity,0)),0) delivered_quantity
                    FROM sale_items si LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
+                   LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
                    WHERE si.sale_id=? GROUP BY si.id,si.quantity""", (sale_id,)
            ).fetchall()
            fully_delivered = all(int(item["delivered_quantity"] or 0) >= int(item["quantity"] or 0) for item in delivered_totals)
@@ -1676,22 +1684,42 @@ def restore_delivered_order(sale_id):
         "SELECT id,delivered_at,paid,payment_status,ready_for_delivery FROM sales WHERE id=?",
         (sale_id,),
     ).fetchone()
-    if not sale or not sale["delivered_at"]:
-        return jsonify(error="Pedido não encontrado ou não está totalmente entregue."), 409
+    if not sale:
+        return jsonify(error="Pedido não encontrado."), 409
 
     try:
         with db:
-            removed = db.execute(
-                "DELETE FROM sale_item_deliveries WHERE sale_item_id IN "
-                "(SELECT id FROM sale_items WHERE sale_id=?)",
+            deliveries = db.execute(
+                """SELECT sid.id,sid.quantity FROM sale_item_deliveries sid
+                   JOIN sale_items si ON si.id=sid.sale_item_id
+                   LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                   WHERE si.sale_id=? AND r.id IS NULL""",
                 (sale_id,),
-            ).rowcount
-            updated = db.execute(
-                "UPDATE sales SET delivered_at=NULL,delivered_by=NULL WHERE id=? AND delivered_at IS NOT NULL",
-                (sale_id,),
-            )
-            if updated.rowcount != 1:
-                raise RuntimeError("pedido deixou de estar entregue durante a restauração")
+            ).fetchall()
+            if not deliveries:
+                historical = db.execute(
+                    """SELECT 1 FROM sale_item_deliveries sid
+                       JOIN sale_items si ON si.id=sid.sale_item_id
+                       WHERE si.sale_id=? LIMIT 1""",
+                    (sale_id,),
+                ).fetchone()
+                if historical:
+                    return jsonify(ok=True, sale_id=sale_id, already_restored=True)
+                return jsonify(error="Pedido não possui retirada para restaurar."), 409
+            for delivery in deliveries:
+                db.execute(
+                    """INSERT INTO sale_item_delivery_restorations
+                       (delivery_id,quantity,restored_by,reason)
+                       VALUES(?,?,?,?)""",
+                    (delivery["id"], delivery["quantity"], g.user["id"], reason),
+                )
+            if sale["delivered_at"]:
+                updated = db.execute(
+                    "UPDATE sales SET delivered_at=NULL,delivered_by=NULL WHERE id=? AND delivered_at IS NOT NULL",
+                    (sale_id,),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("pedido deixou de estar entregue durante a restauração")
     except Exception as exc:
         current_app.logger.error(
             "ORDER_DELIVERY_RESTORE_ERROR sale_id=%s manager_id=%s exception_type=%s",
@@ -1700,8 +1728,8 @@ def restore_delivered_order(sale_id):
         return jsonify(error="Não foi possível restaurar o pedido."), 500
 
     current_app.logger.warning(
-        "ORDER_DELIVERY_RESTORED sale_id=%s manager_id=%s removed_deliveries=%s reason=%s",
-        sale_id, g.user["id"], removed, reason,
+        "ORDER_DELIVERY_RESTORED sale_id=%s manager_id=%s restored_deliveries=%s reason=%s",
+        sale_id, g.user["id"], len(deliveries), reason,
     )
     return jsonify(ok=True, sale_id=sale_id)
 
@@ -1735,7 +1763,9 @@ def cancel_cash_order(sale_id):
                 return jsonify(error="Esta venda não possui composição segura para estorno interno."), 409
             delivered = db.execute(
                 """SELECT 1 FROM sale_item_deliveries sid
-                   JOIN sale_items si ON si.id=sid.sale_item_id WHERE si.sale_id=? LIMIT 1""",
+                   JOIN sale_items si ON si.id=sid.sale_item_id
+                   LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                   WHERE si.sale_id=? AND sid.quantity>COALESCE(r.quantity,0) LIMIT 1""",
                 (sale_id,),
             ).fetchone()
             if sale["delivered_at"] or delivered:
@@ -1814,7 +1844,10 @@ def receipt(sale_id):
         return "O comprovante estará disponível após a confirmação do pagamento.", 409
     items = db.execute(
         """SELECT i.id item_id,i.quantity,i.unit_price_cents,p.name product_name,
-                  COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid WHERE sid.sale_item_id=i.id),0) delivered_quantity
+                  COALESCE((SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
+                            FROM sale_item_deliveries sid
+                            LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                            WHERE sid.sale_item_id=i.id),0) delivered_quantity
            FROM sale_items i JOIN products p ON p.id=i.product_id
            WHERE i.sale_id=? ORDER BY i.id""",
         (sale_id,),

@@ -72,8 +72,11 @@ def send_delivery_update(db, sale_id, delivered_items, remaining_items, sender, 
     sale = db.execute(
         """SELECT s.id,s.player_id,s.payment_method,s.total_cents,s.paid_at,s.created_at,
                   s.delivered_at,p.email,COALESCE(p.name,s.guest_name,'Convidado') player_name,p.cpf,
-                  (SELECT MAX(sid.delivered_at) FROM sale_item_deliveries sid
-                   JOIN sale_items si2 ON si2.id=sid.sale_item_id WHERE si2.sale_id=s.id) pickup_at
+                  (SELECT MAX(CASE WHEN r.id IS NULL THEN sid.delivered_at END)
+                   FROM sale_item_deliveries sid
+                   JOIN sale_items si2 ON si2.id=sid.sale_item_id
+                   LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                   WHERE si2.sale_id=s.id) pickup_at
            FROM sales s LEFT JOIN players p ON p.id=s.player_id WHERE s.id=?""",
         (sale_id,),
     ).fetchone()
@@ -84,7 +87,9 @@ def send_delivery_update(db, sale_id, delivered_items, remaining_items, sender, 
     pickup_time = sale["pickup_at"] or sale["delivered_at"] or purchase_time
     item_rows = db.execute(
         """SELECT si.quantity,si.unit_price_cents,p.name,
-                  COALESCE((SELECT SUM(sid.quantity) FROM sale_item_deliveries sid
+                  COALESCE((SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
+                            FROM sale_item_deliveries sid
+                            LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
                             WHERE sid.sale_item_id=si.id),0) delivered_quantity
            FROM sale_items si JOIN products p ON p.id=si.product_id
            WHERE si.sale_id=? ORDER BY si.id""",

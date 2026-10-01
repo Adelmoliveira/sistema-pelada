@@ -259,6 +259,16 @@ CREATE TABLE IF NOT EXISTS sale_item_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_item ON sale_item_deliveries(sale_item_id);
 CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_operation ON sale_item_deliveries(delivery_operation_id);
+CREATE TABLE IF NOT EXISTS sale_item_delivery_restorations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_id INTEGER NOT NULL UNIQUE REFERENCES sale_item_deliveries(id) ON DELETE RESTRICT,
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    restored_by INTEGER REFERENCES users(id),
+    restored_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reason TEXT NOT NULL CHECK(length(trim(reason)) > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_sale_item_delivery_restorations_delivery
+    ON sale_item_delivery_restorations(delivery_id);
 CREATE TABLE IF NOT EXISTS notification_outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_key TEXT NOT NULL UNIQUE,
@@ -2052,6 +2062,15 @@ def init_postgres(wrapper):
         delivered_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""")
     wrapper.execute("CREATE INDEX IF NOT EXISTS idx_sale_item_deliveries_item ON sale_item_deliveries(sale_item_id)")
+    wrapper.execute("""CREATE TABLE IF NOT EXISTS sale_item_delivery_restorations (
+        id SERIAL PRIMARY KEY,
+        delivery_id INTEGER NOT NULL UNIQUE REFERENCES sale_item_deliveries(id) ON DELETE RESTRICT,
+        quantity INTEGER NOT NULL CHECK(quantity > 0),
+        restored_by INTEGER REFERENCES users(id),
+        restored_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        reason TEXT NOT NULL CHECK(length(trim(reason)) > 0)
+    )""")
+    wrapper.execute("CREATE INDEX IF NOT EXISTS idx_sale_item_delivery_restorations_delivery ON sale_item_delivery_restorations(delivery_id)")
     wrapper.execute("ALTER TABLE football_sumulas ADD COLUMN IF NOT EXISTS locked_at TIMESTAMP")
     wrapper.execute("ALTER TABLE football_sumulas ADD COLUMN IF NOT EXISTS locked_by INTEGER REFERENCES users(id)")
     wrapper.execute("ALTER TABLE load_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
