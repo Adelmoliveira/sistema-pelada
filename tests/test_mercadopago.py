@@ -8400,6 +8400,53 @@ NILSON"""
         self.assertEqual(self.client.get(base + "&product_id=invalid").status_code, 200)
         self.assertEqual(self.client.get("/orders/player-statement?player_id=invalid").status_code, 200)
 
+        pdf_url = f"/orders/player-statement.pdf?player_id={self.player_id}"
+        pdf_response = self.client.get(pdf_url)
+        self.assertEqual(pdf_response.status_code, 200)
+        self.assertEqual(pdf_response.mimetype, "application/pdf")
+        self.assertTrue(pdf_response.data.startswith(b"%PDF-"))
+        self.assertIn(
+            f"extrato_peladeiro_{self.player_id}_",
+            pdf_response.headers["Content-Disposition"],
+        )
+        with patch(
+            "src.routes.sales.build_player_statement_pdf",
+            return_value=BytesIO(b"%PDF-1.4\n%%EOF"),
+        ) as build_pdf:
+            filtered_pdf = self.client.get(
+                pdf_url
+                + f"&start_date=2026-01-01&end_date=2026-01-31"
+                + f"&product_id={self.product_id}&situation=restored"
+            )
+        self.assertEqual(filtered_pdf.status_code, 200)
+        pdf_context = build_pdf.call_args.args[0]
+        self.assertEqual(pdf_context["filters"], {
+            "player_id": str(self.player_id),
+            "product_id": str(self.product_id),
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-31",
+            "situation": "restored",
+        })
+        self.assertEqual([row["sale_id"] for row in pdf_context["purchases"]], [restored_sale])
+        self.assertEqual(
+            [row["kind"] for row in pdf_context["movements"]],
+            ["COMPRA", "RETIRADA", "RESTAURAÇÃO"],
+        )
+        with patch(
+            "src.routes.sales.build_player_statement_pdf",
+            return_value=BytesIO(b"%PDF-1.4\n%%EOF"),
+        ) as build_pdf:
+            self.assertEqual(self.client.get(pdf_url + "&situation=delivered").status_code, 200)
+        self.assertIn(
+            complete_sale,
+            [row["sale_id"] for row in build_pdf.call_args.args[0]["purchases"]],
+        )
+        self.assertEqual(self.client.get("/orders/player-statement.pdf").status_code, 302)
+        self.assertEqual(
+            self.client.get("/orders/player-statement.pdf?player_id=invalid").status_code,
+            302,
+        )
+
         with app.app_context():
             db = get_db()
             staff_id = db.execute(
@@ -8412,9 +8459,11 @@ NILSON"""
         with self.client.session_transaction() as session:
             session["user_id"] = staff_id
         self.assertEqual(self.client.get(base).status_code, 200)
+        self.assertEqual(self.client.get(pdf_url).status_code, 200)
         with self.client.session_transaction() as session:
             session["user_id"] = client_id
         self.assertNotEqual(self.client.get(base).status_code, 200)
+        self.assertNotEqual(self.client.get(pdf_url).status_code, 200)
 
 
 if __name__ == "__main__":
