@@ -29,11 +29,13 @@ def preview_checkout(db, items):
             raise ValueError('Produto, variante ou quantidade inválida.') from exc
         row=db.execute('''SELECT v.id,v.product_id,v.size,v.stock,v.active variant_active,
                           p.category,p.active,p.price_cents,p.cost_cents,p.name,
-                          c.ready_sale_enabled,c.allow_custom_name,c.allow_custom_number
+                          c.ready_sale_enabled,c.allow_custom_name,c.allow_custom_number,c.installment_pix_enabled
                           FROM sports_product_variants v JOIN products p ON p.id=v.product_id
                           JOIN sports_product_config c ON c.product_id=p.id WHERE v.id=?''',(vid,)).fetchone()
         if not row or row['product_id'] != pid or row['category'] != SPORTS_MATERIAL_CATEGORY or not row['active'] or not row['variant_active'] or not row['ready_sale_enabled']:
             raise ValueError('Produto não elegível para pronta entrega.')
+        if not row['installment_pix_enabled']:
+            raise ValueError('Este material não permite pagamento via Pix em 3x.')
         name=' '.join(str(item.get('custom_name') or '').split())
         number=' '.join(str(item.get('custom_number') or '').split())
         if len(name)>40 or len(number)>10 or (name and not row['allow_custom_name']) or (number and not row['allow_custom_number']):

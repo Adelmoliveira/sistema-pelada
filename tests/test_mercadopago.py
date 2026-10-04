@@ -195,6 +195,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
                     allow_custom_number INTEGER NOT NULL DEFAULT 0,
                     allow_backorder INTEGER NOT NULL DEFAULT 0,
                     ready_sale_enabled INTEGER NOT NULL DEFAULT 1,
+                    installment_pix_enabled INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE sports_product_variants (

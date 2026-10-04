@@ -25,10 +25,11 @@ class SportsInstallmentClientTest(unittest.TestCase):
         self.db.execute('ALTER TABLE sports_product_variants ADD COLUMN updated_at TEXT')
         self.db.execute('ALTER TABLE sports_product_variants ADD COLUMN min_stock INTEGER DEFAULT 0')
         self.db.execute("CREATE TABLE sports_material_types(id INTEGER PRIMARY KEY,code TEXT,name TEXT DEFAULT 'Camisa')")
-        self.db.execute('CREATE TABLE sports_product_config(product_id INTEGER PRIMARY KEY,type_id INTEGER,ready_sale_enabled INTEGER DEFAULT 1,allow_custom_name INTEGER DEFAULT 0,allow_custom_number INTEGER DEFAULT 0,allow_backorder INTEGER DEFAULT 0)')
+        for column in ('type_id INTEGER','ready_sale_enabled INTEGER DEFAULT 1','allow_custom_name INTEGER DEFAULT 0','allow_custom_number INTEGER DEFAULT 0','allow_backorder INTEGER DEFAULT 0'):
+            self.db.execute('ALTER TABLE sports_product_config ADD COLUMN '+column)
         self.db.execute("INSERT INTO sports_material_types(id,code) VALUES(1,'shirt')")
         product=self.db.execute('SELECT product_id FROM sale_items WHERE id=?',(self.item_id,)).fetchone()[0]
-        self.db.execute('INSERT INTO sports_product_config(product_id,type_id) VALUES(?,1)',(product,))
+        self.db.execute('UPDATE sports_product_config SET type_id=1 WHERE product_id=?',(product,))
         self.product_id=product
         self.variant_id=self.db.execute('SELECT variant_id FROM sports_sale_item_details WHERE sale_item_id=?',(self.item_id,)).fetchone()[0]
         self.user=self.db.execute("INSERT INTO users(username,name,password_hash,role,player_id) VALUES('client3x','Cliente','hash','client',?)",(self.player_id,)).lastrowid
