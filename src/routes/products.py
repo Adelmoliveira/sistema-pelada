@@ -280,17 +280,18 @@ def _save_sports_config(db, product_id, type_id, variants, form):
                      "min_stock": variant["min_stock"], "active": True}]
     db.execute(
         """INSERT INTO sports_product_config
-           (product_id,type_id,allow_custom_name,allow_custom_number,allow_backorder,ready_sale_enabled,updated_at)
-           VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
+           (product_id,type_id,allow_custom_name,allow_custom_number,allow_backorder,ready_sale_enabled,installment_pix_enabled,updated_at)
+           VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
            ON CONFLICT(product_id) DO UPDATE SET type_id=excluded.type_id,
            allow_custom_name=excluded.allow_custom_name,
            allow_custom_number=excluded.allow_custom_number,
            allow_backorder=excluded.allow_backorder,ready_sale_enabled=excluded.ready_sale_enabled,
+           installment_pix_enabled=excluded.installment_pix_enabled,
            updated_at=CURRENT_TIMESTAMP
            RETURNING product_id""",
         (product_id, type_id, False if is_coin else form.get("allow_custom_name") == "1",
          False if is_coin else form.get("allow_custom_number") == "1",
-         allow_backorder, ready_sale_enabled),
+         allow_backorder, ready_sale_enabled, form.get("installment_pix_enabled") == "1"),
     )
     db.execute("UPDATE sports_product_variants SET active=FALSE,updated_at=CURRENT_TIMESTAMP WHERE product_id=?", (product_id,))
     for variant in variants:
@@ -394,7 +395,7 @@ def edit_sports_material(product_id):
     product = db.execute(
         """SELECT p.id,p.name,p.price_cents,p.cost_cents,p.photo_data,p.thumbnail_data,p.active,
                   config.type_id,config.allow_custom_name,config.allow_custom_number,config.allow_backorder,
-                  config.ready_sale_enabled
+                  config.ready_sale_enabled,config.installment_pix_enabled
            FROM products p LEFT JOIN sports_product_config config ON config.product_id=p.id
            WHERE p.id=? AND p.category=?""", (product_id, SPORTS_MATERIAL_CATEGORY),
     ).fetchone()

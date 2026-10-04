@@ -22,20 +22,21 @@
     const current = ++sequence;
     const cart = items();
     const eligible = document.querySelector('#sale-department').value==='sports' && document.querySelector('#payment-method').value==='Pix' && cart.length && cart.every(item=>item.order_mode==='ready');
-    choice.classList.toggle('d-none', !eligible);
+    choice.classList.add('d-none');
     if (!eligible) {mode.value='cash';return;}
     mode.querySelector('[value="three"]').disabled=true;
     preview.textContent='Consultando valores e disponibilidade...';
     try {
       const data=await request(config.dataset.preview,{items:cart});
       if (current!==sequence) return;
+      choice.classList.remove('d-none');
       mode.querySelector('[value="three"]').disabled=false;
       if(!restoredMode){
         restoredMode=true;
         try {const saved=JSON.parse(localStorage.getItem('sports-3x-checkout')||'null');if(saved?.signature===JSON.stringify(cart))mode.value='three';}catch(_error){}
       }
       preview.textContent=`Total: ${money(data.total_cents)} · `+data.installments.map(i=>`${i.installment_number}/3: ${money(i.amount_cents)} · ${i.due_date.split('-').reverse().join('/')}`).join(' | ');
-    } catch (error) {if(current===sequence){mode.value='cash';preview.textContent=error.message;}}
+    } catch (error) {if(current===sequence){mode.value='cash';choice.classList.add('d-none');preview.textContent=error.message;}}
   }
   function schedulePreview() {clearTimeout(previewTimer);previewTimer=setTimeout(updatePreview,200);}
   if (choice) {
@@ -89,8 +90,9 @@
     finally {busy=false;button.disabled=false;}
   }
   pixButton?.addEventListener('click',event=>{
-    if(!mode||mode.value!=='three'||choice.classList.contains('d-none'))return;
+    if(!mode||mode.value!=='three'||document.querySelector('#sale-department').value!=='sports'||document.querySelector('#payment-method').value!=='Pix')return;
     event.preventDefault();event.stopImmediatePropagation();
+    if(choice.classList.contains('d-none'))return;
     const cart=items();let saved=savedCheckout;
     try {saved=JSON.parse(localStorage.getItem('sports-3x-checkout')||'null');}catch(_error){}
     const signature=JSON.stringify(cart);

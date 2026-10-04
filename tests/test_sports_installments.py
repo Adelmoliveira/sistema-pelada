@@ -19,12 +19,15 @@ class SportsInstallmentsTest(unittest.TestCase):
         self.db.execute('CREATE TABLE sports_product_variants(id INTEGER PRIMARY KEY, product_id INTEGER REFERENCES products(id))')
         schema = Path('supabase/migrations/20260813170000_sports_sale_item_details.sql').read_text()
         self.db.conn.executescript(schema)
+        self.db.execute('CREATE TABLE sports_product_config(product_id INTEGER PRIMARY KEY,installment_pix_enabled INTEGER NOT NULL DEFAULT 0)')
         self.base_date = date(2026, 10, 4)
 
     def sale(self, total=10000, category='Material Esportivo', mode='ready', details=True):
         db = self.db
         product_id = db.execute('INSERT INTO products(name,category,price_cents) VALUES(?,?,?)',
                                 (f'Produto {db.execute("SELECT COUNT(*) FROM products").fetchone()[0]}', category, total)).lastrowid
+        if category == 'Material Esportivo':
+            db.execute('INSERT INTO sports_product_config(product_id,installment_pix_enabled) VALUES(?,1)',(product_id,))
         sale_id = db.execute("INSERT INTO sales(payment_method,total_cents,paid,payment_status) VALUES('Pix',?,0,'pending')", (total,)).lastrowid
         item_id = db.execute('INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents) VALUES(?,?,1,?)', (sale_id, product_id, total)).lastrowid
         if details:

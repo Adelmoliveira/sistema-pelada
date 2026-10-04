@@ -54,6 +54,14 @@ def create_installment_plan(db, sale_id, total_cents, purchase_date):
                             row["fulfillment_status"] == "cancelled" or
                             (not existing and row["fulfillment_status"] not in {"reserved", "available"}) for row in items):
             raise ValueError("Parcelamento disponível somente para Material Esportivo de pronta entrega.")
+        if not existing:
+            eligible = db.execute(
+                """SELECT config.installment_pix_enabled FROM sale_items si
+                   LEFT JOIN sports_product_config config ON config.product_id=si.product_id
+                   WHERE si.sale_id=?""", (sale_id,),
+            ).fetchall()
+            if any(not row["installment_pix_enabled"] for row in eligible):
+                raise ValueError("Todos os materiais devem permitir pagamento via Pix em 3x.")
         inserted = db.execute(
             """INSERT INTO sports_installment_plans(sale_id,total_cents)
                VALUES(?,?) ON CONFLICT(sale_id) DO NOTHING""", (sale_id, total_cents),
