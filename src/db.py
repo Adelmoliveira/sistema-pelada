@@ -161,6 +161,48 @@ CREATE TABLE IF NOT EXISTS sale_items (
     unit_price_cents INTEGER NOT NULL,
     unit_cost_cents INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS sports_installment_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id INTEGER NOT NULL UNIQUE REFERENCES sales(id) ON DELETE RESTRICT,
+    total_cents INTEGER NOT NULL CHECK(total_cents >= 3),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','active','paid')),
+    first_installment_paid_at TEXT,
+    fully_paid_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS sports_installments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id INTEGER NOT NULL REFERENCES sports_installment_plans(id) ON DELETE RESTRICT,
+    installment_number INTEGER NOT NULL CHECK(installment_number IN (1,2,3)),
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    due_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','paid')),
+    paid_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(plan_id,installment_number)
+);
+CREATE INDEX IF NOT EXISTS idx_sports_installments_status_due
+    ON sports_installments(status,due_date);
+CREATE TABLE IF NOT EXISTS sports_installment_payment_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    installment_id INTEGER NOT NULL REFERENCES sports_installments(id) ON DELETE RESTRICT,
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    status TEXT NOT NULL DEFAULT 'creating' CHECK(status IN ('creating','pending','approved','expired','failed','canceled')),
+    mercado_pago_order_id TEXT UNIQUE,
+    mercado_pago_payment_id TEXT UNIQUE,
+    external_reference TEXT NOT NULL UNIQUE,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    qr_code TEXT,
+    qr_code_base64 TEXT,
+    ticket_url TEXT,
+    expires_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sports_installment_attempts_installment
+    ON sports_installment_payment_attempts(installment_id,id);
 CREATE TABLE IF NOT EXISTS sale_payment_parts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,

@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block title %}Contas a Receber · Material Esportivo{% endblock %}
+{% block content %}
+<h1 class="h3">Contas a Receber · Material Esportivo</h1>
+<p class="text-muted">Pix 3x de pronta entrega. Consulta somente leitura.</p>
+<form method="get" class="row g-3 mb-4">
+  <div class="col-md-3"><label for="player-id" class="form-label">Peladeiro</label><select id="player-id" name="player_id" class="form-select"><option value="">Todos</option>{% for player in players %}<option value="{{player.id}}" {{'selected' if filters.player_id == player.id|string}}>{{player.name}}</option>{% endfor %}</select></div>
+  <div class="col-md-3"><label for="situation" class="form-label">Situação</label><select id="situation" name="situation" class="form-select">{% for value,label in [('','Todos'),('open','Em aberto'),('overdue','Vencidos'),('paid','Quitados')] %}<option value="{{value}}" {{'selected' if filters.situation == value}}>{{label}}</option>{% endfor %}</select></div>
+  <div class="col-md-2"><label for="due-from" class="form-label">Vencimento inicial</label><input id="due-from" type="date" name="due_from" value="{{filters.due_from}}" class="form-control"></div>
+  <div class="col-md-2"><label for="due-to" class="form-label">Vencimento final</label><input id="due-to" type="date" name="due_to" value="{{filters.due_to}}" class="form-control"></div>
+  <div class="col-md-2 d-flex align-items-end gap-2"><button class="btn btn-primary" type="submit">Filtrar</button><a class="btn btn-outline-secondary" href="{{url_for('sales.sports_receivables')}}">Limpar</a></div>
+</form>
+<p class="small text-muted">O período seleciona compras com alguma parcela vencendo entre as datas informadas. Os indicadores consideram todas as parcelas dessas compras. “Em aberto” indica saldo sem parcelas vencidas.</p>
+<div class="row g-3 mb-4">
+{% for label,value,monetary in [('Total a receber',summary.receivable_cents,true),('Vencido',summary.overdue_cents,true),('A vencer',summary.upcoming_cents,true),('Recebido',summary.received_cents,true),('Peladeiros com saldo',summary.players_with_balance,false),('Parcelas vencidas',summary.overdue_count,false)] %}
+<div class="col-sm-6 col-lg-4"><div class="card h-100"><div class="card-body"><div class="text-muted">{{label}}</div><strong class="fs-4">{{value|money if monetary else value}}</strong></div></div></div>
+{% endfor %}
+</div>
+<div class="card"><div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Peladeiro</th><th>Pedido / data</th><th>Total</th><th>Recebido</th><th>Saldo</th><th>Próximo vencimento</th><th>Pagas</th><th>Situação</th><th>Retirada</th><th></th></tr></thead><tbody>
+{% for plan in plans %}<tr><td>{{plan.player_name}}</td><td>#{{plan.sale_id}}<small class="d-block text-muted">{{plan.purchase_date|brdate}}</small></td><td>{{plan.total_cents|money}}</td><td>{{plan.received_cents|money}}</td><td>{{plan.balance_cents|money}}</td><td>{{plan.next_due_date|brdate if plan.next_due_date else '—'}}</td><td>{{plan.paid_count}}/3</td><td><span class="badge text-bg-{{'success' if plan.situation == 'paid' else 'danger' if plan.situation == 'overdue' else 'warning'}}">{{plan.situation_label}}</span></td><td>{{plan.withdrawal_label}}</td><td><a class="btn btn-sm btn-outline-primary" href="{{url_for('sales.sports_receivable_detail',plan_id=plan.id)}}">Detalhes</a></td></tr>
+{% else %}<tr><td colspan="10" class="text-muted p-4">Nenhum parcelamento corresponde aos filtros.</td></tr>{% endfor %}
+</tbody></table></div></div>
+{% endblock %}

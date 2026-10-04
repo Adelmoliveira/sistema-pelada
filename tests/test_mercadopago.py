@@ -122,6 +122,13 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertFalse(any(self.SCHEMA_SQL.match(statement) for statement in statements))
 
     def setUp(self):
+        original_config = dict(app.config)
+
+        def restore_config():
+            app.config.clear()
+            app.config.update(original_config)
+
+        self.addCleanup(restore_config)
         self.tempdir = tempfile.TemporaryDirectory()
         app.config.update(
             TESTING=True,
@@ -595,6 +602,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT stock FROM sports_product_variants WHERE id=?", (allowed_variant,)).fetchone()["stock"], 0)
 
     def test_sports_backorder_quick_sale_has_no_advance_payment(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         product_id, variant_id = self.create_sports_product(
             "Produto misto sem pagamento antecipado", stock=2, allow_backorder=1
         )
@@ -706,6 +714,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             )
 
     def test_sports_pix_ready_uses_variant_stock_and_is_idempotent(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         from src.routes.sales import apply_mercadopago_status
 
         product_id, variant_id = self.create_sports_product("Kit Uniforme Pix", size="G", stock=5)
@@ -783,6 +792,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Kit Uniforme Pix", queue.get_data(as_text=True))
 
     def test_sports_pix_terminal_restores_ready_stock_and_backorder_never_debits(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         from src.routes.sales import apply_mercadopago_status
 
         ready_product, ready_variant = self.create_sports_product("Camisa Cancelada", stock=2)
@@ -1395,6 +1405,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertIsNotNone(sale["paid_at"])
 
     def test_sports_available_pix_and_full_credit_unlock_delivery(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         from src.routes.sales import apply_mercadopago_status
 
         self.login_manager()
@@ -1572,6 +1583,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('"id": row["sale_item_id"]', route_source)
 
     def test_payment_approval_and_expiration_are_idempotent(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         sale_id = self.create_order("ORD-APPROVED", 2)
         with app.app_context():
             db = get_db()
@@ -1966,6 +1978,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual(payload["payer"]["email"], "peladeiro@example.com")
 
     def test_pix_requires_player_email_before_reserving_stock(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         with app.app_context():
             db = get_db()
             db.execute("UPDATE players SET email='' WHERE id=?", (self.player_id,))
@@ -4484,6 +4497,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Lembrete de pendência financeira", html_part)
 
     def test_manager_edits_reminder_and_cron_requires_secret(self):
+        app.config["CRON_ENABLED"] = True
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
         page = self.client.get("/finance/reminders")
@@ -4794,6 +4808,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertTrue(response.get_json()["image"].startswith("data:image/png;base64,"))
 
     def test_webhook_approves_order_and_api_failure_restores_stock(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         sale_id = self.create_order("ORD-WEBHOOK", 1)
         data_id = "ORD-WEBHOOK"
         request_id = "request-webhook"
@@ -4836,6 +4851,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.product_id,)).fetchone()["stock"], 4)
 
     def test_partial_credit_pix_charges_remainder_and_consumes_once_on_approval(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         from src.routes.sales import apply_mercadopago_status
 
         with app.app_context():
@@ -4912,6 +4928,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(parts[1]["payment_id"], "PAY-APPROVED")
 
     def test_partial_credit_pix_terminal_and_creation_failure_release_reservation(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         from src.routes.sales import apply_mercadopago_status
 
         with app.app_context():
@@ -4980,6 +4997,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             )
 
     def test_pix_selection_with_full_credit_skips_mercadopago(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         with app.app_context():
             db = get_db()
             db.execute("UPDATE products SET price_cents=300 WHERE id=?", (self.product_id,))
@@ -5010,6 +5028,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual(tuple(part), ("Créditos", 300, "approved"))
 
     def test_new_full_pix_and_cash_sales_record_payment_parts(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         from src.routes.sales import apply_mercadopago_status
 
         pix_order = {
@@ -5316,6 +5335,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         get_db_mock.assert_not_called()
 
     def test_paid_pix_enters_delivery_queue_and_staff_confirms_it(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         sale_id = self.create_order("ORD-DELIVERY", 2)
         data_id = "ORD-DELIVERY"
         request_id = "request-delivery"
@@ -5399,6 +5419,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertEqual([order["id"] for order in build_pdf.call_args.args[0]], expected)
 
     def test_manager_restores_accidental_full_delivery_without_changing_payment_or_stock(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         sale_id = self.create_order("ORD-RESTORE-DELIVERY", 2)
         with app.app_context():
             db = get_db()
@@ -5535,6 +5556,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("Corrigir entrega", history)
 
     def test_partial_delivery_restoration_is_append_only_and_uses_net_quantity(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         sale_id = self.create_order("ORD-PARTIAL-RESTORE", 5)
         with app.app_context():
             db = get_db()
@@ -5608,6 +5630,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             self.assertEqual((totals["gross"], totals["net"]), (3, 1))
 
     def test_delivery_restoration_preserves_each_item_in_multi_product_order(self):
+        app.config["EXTERNAL_PAYMENTS_ENABLED"] = True
         sale_id = self.create_order("ORD-MULTI-RESTORE", 2)
         with app.app_context():
             db = get_db()

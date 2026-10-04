@@ -1,3 +1,6 @@
+from src.services.sports_installment_reconciliation import (
+    find_installment_attempt, installment_withdrawal_allowed, reconcile_installment_order,
+)
 import uuid
 import json
 from datetime import date, datetime, timedelta
@@ -137,6 +140,8 @@ def order_payment_id(order):
     return str(payments[0].get("id")) if payments and payments[0].get("id") else None
 
 def restore_reserved_stock(db, sale_id):
+    if installment_withdrawal_allowed(db, sale_id):
+        return
     items = db.execute(
         """SELECT si.product_id,si.quantity,d.variant_id,d.order_mode,r.status reservation_status
            FROM sale_items si
@@ -165,6 +170,9 @@ def restore_reserved_stock(db, sale_id):
             db.execute("UPDATE products SET stock=stock+? WHERE id=?", (item["quantity"], item["product_id"]))
 
 def apply_mercadopago_status(db, sale, order):
+    # Independent installments must never enter whole-sale reconciliation.
+    if db.execute("SELECT 1 FROM sports_installment_plans WHERE sale_id=?", (sale["id"],)).fetchone():
+        return sale["payment_status"]
     status = order.get("status", "")
     detail = order.get("status_detail", "")
     payment_id = order_payment_id(order)
@@ -1083,7 +1091,8 @@ def sports_material_sales():
             (row["order_mode"], row["fulfillment_status"])
         ) if row["order_mode"] == "ready" or row["fulfillment_status"] == "available" else None
         if next_status == "delivered" and not (
-            bool(row["paid"]) and (row["payment_status"] or "").lower() == "approved"
+            (bool(row["paid"]) and (row["payment_status"] or "").lower() == "approved")
+            or installment_withdrawal_allowed(db, row["sale_id"])
         ):
             next_status = None
         row["next_status"] = next_status
@@ -1406,6 +1415,141 @@ def resolve_sports_cancellation(sale_item_id):
     return jsonify(error="Escolha uma resolução administrativa válida."), 400
 
 
+@bp.get('/sports/installments/receivables')
+@roles_allowed('manager', 'staff')
+def sports_receivables():
+    from src.services.sports_receivables import receivables
+    try:
+        context = receivables(get_db(), request.args)
+    except ValueError as exc:
+        return str(exc), 400
+    return render_template('sports_receivables.html', **context)
+
+
+@bp.get('/sports/installments/receivables/<int:plan_id>')
+@roles_allowed('manager', 'staff')
+def sports_receivable_detail(plan_id):
+    from src.services.sports_receivables import receivable_detail
+    plan = receivable_detail(get_db(), plan_id)
+    if not plan:
+        return 'Parcelamento não encontrado.', 404
+    return render_template('sports_receivable_detail.html', plan=plan)
+
+
+def _client_installment_access(db, installment_id):
+    return db.execute("""SELECT i.*,p.sale_id,s.player_id FROM sports_installments i
+                         JOIN sports_installment_plans p ON p.id=i.plan_id
+                         JOIN sales s ON s.id=p.sale_id WHERE i.id=? AND s.player_id=?""",
+                      (installment_id,g.user["player_id"])).fetchone()
+
+
+def _client_pix_response(db, installment, attempt=None):
+    from src.services.sports_installment_client import plan_summary, public_attempt
+    summary=plan_summary(db,installment['sale_id'],g.user['player_id'])
+    result=dict(plan=summary,installment_id=installment['id'],paid=installment['status']=='paid',
+                status=installment['status'],amount=money(installment['amount_cents']),
+                status_url=url_for('sales.sports_installment_status',installment_id=installment['id']))
+    if attempt:
+        result.update(attempt=public_attempt(attempt),payload=attempt['qr_code'],
+                      image=('data:image/png;base64,'+attempt['qr_code_base64']) if attempt['qr_code_base64'] else None)
+    return result
+
+
+@bp.post('/material-esportivo/pix-3x/preview')
+@roles_allowed('client')
+def sports_installment_preview():
+    from src.services.sports_installment_client import preview_checkout
+    try:
+        preview,_=preview_checkout(get_db(),(request.get_json(silent=True) or {}).get('items'))
+        return jsonify(preview)
+    except (ValueError,TypeError,AttributeError) as exc:
+        return jsonify(error=str(exc)),400
+
+
+@bp.post('/material-esportivo/pix-3x/comprar')
+@roles_allowed('client')
+def sports_installment_checkout():
+    from src.services.sports_installment_client import create_checkout
+    from src.services.sports_installment_payments import create_installment_payment_attempt
+    if not g.user['player_id']:
+        return jsonify(error='Peladeiro não vinculado.'),403
+    if not current_app.config.get('EXTERNAL_PAYMENTS_ENABLED',True):
+        return jsonify(error='Pix indisponível neste ambiente.'),403
+    access_token,_=mercadopago_config()
+    if not access_token:
+        return jsonify(error='Mercado Pago não configurado.'),503
+    body=request.get_json(silent=True) or {}
+    db=get_db()
+    try:
+        sale_id=create_checkout(db,g.user['player_id'],body.get('items'),body.get('idempotency_key'),body.get('notes',''))
+        first=db.execute("""SELECT i.*,p.sale_id FROM sports_installments i JOIN sports_installment_plans p ON p.id=i.plan_id
+                           WHERE p.sale_id=? AND i.installment_number=1""",(sale_id,)).fetchone()
+        attempt=None if first['status']=='paid' else create_installment_payment_attempt(db,first['id'],access_token,player_id=g.user['player_id'])
+        return jsonify(_client_pix_response(db,first,attempt))
+    except (ValueError,TypeError,AttributeError) as exc:
+        return jsonify(error=str(exc)),409
+    except MercadoPagoError:
+        return jsonify(error='Cobrança não concluída. Sua compra está em Minhas Compras; tente novamente por lá.'),502
+
+
+@bp.get('/material-esportivo/parcelas/<int:installment_id>/status')
+@roles_allowed('client')
+def sports_installment_status(installment_id):
+    db=get_db()
+    installment=_client_installment_access(db,installment_id)
+    if not installment:
+        return jsonify(error='Parcela não encontrada.'),404
+    attempts=db.execute("""SELECT * FROM sports_installment_payment_attempts WHERE installment_id=?
+                          AND status IN ('creating','pending') ORDER BY id""",(installment_id,)).fetchall()
+    if installment['status']=='pending':
+        access_token,_=mercadopago_config()
+        if access_token and current_app.config.get('EXTERNAL_PAYMENTS_ENABLED',True):
+            try:
+                for attempt in attempts:
+                    if attempt['mercado_pago_order_id']:
+                        order=get_order(access_token,attempt['mercado_pago_order_id'])
+                        matched=find_installment_attempt(db,order)
+                        if not matched or matched['id'] != attempt['id']:
+                            raise ValueError('Cobrança incompatível com a parcela.')
+                        reconcile_installment_order(db,order)
+            except (MercadoPagoError,ValueError):
+                return jsonify(error='Não foi possível confirmar o pagamento. Tente novamente.'),502
+    installment=_client_installment_access(db,installment_id)
+    return jsonify(_client_pix_response(db,installment))
+
+
+@bp.post("/material-esportivo/parcelas/<int:installment_id>/pix")
+@roles_allowed("manager", "staff", "client")
+def create_sports_installment_pix(installment_id):
+    from src.services.sports_installment_payments import create_installment_payment_attempt
+
+    if not current_app.config.get("EXTERNAL_PAYMENTS_ENABLED", True):
+        return jsonify(error="Pagamento Pix indisponível neste ambiente."), 403
+    access_token, _ = mercadopago_config()
+    if not access_token:
+        return jsonify(error="Mercado Pago não configurado."), 503
+    if g.user["role"] == "client" and not g.user["player_id"]:
+        return jsonify(error="Usuário sem peladeiro vinculado."), 403
+    if g.user["role"] == "client" and not _client_installment_access(get_db(), installment_id):
+        return jsonify(error="Parcela não encontrada."), 404
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify(error="Solicitação inválida."), 400
+    try:
+        attempt = create_installment_payment_attempt(
+            get_db(), installment_id, access_token,
+            request.headers.get("X-Idempotency-Key") or body.get("idempotency_key"),
+            player_id=g.user["player_id"] if g.user["role"] == "client" else None,
+        )
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 409
+    except MercadoPagoError as exc:
+        return jsonify(error=str(exc)), 502
+    if g.user["role"] == "client":
+        return jsonify(_client_pix_response(get_db(), _client_installment_access(get_db(), installment_id), attempt)), 202 if attempt["status"] == "creating" else 200
+    return jsonify(attempt=attempt), 202 if attempt["status"] == "creating" else 200
+
+
 @bp.post("/material-esportivo/vendas/<int:sale_item_id>/pagamento")
 @roles_allowed("manager", "staff")
 def start_sports_backorder_payment(sale_item_id):
@@ -1545,13 +1689,14 @@ def update_sports_fulfillment(sale_item_id):
         return jsonify(error="Transição operacional não permitida."), 409
     payment_status = (item["payment_status"] or "").lower()
     is_delivery = target == "delivered"
+    payment_confirmed = (bool(item["paid"]) and payment_status == "approved") or installment_withdrawal_allowed(db, item["sale_id"])
     if payment_status in {"failed", "expired", "canceled", "refunded"}:
         return jsonify(error="O estado do pagamento bloqueia esta operação."), 409
-    if is_delivery and (not item["paid"] or payment_status != "approved"):
+    if is_delivery and not payment_confirmed:
         return jsonify(error="Pedido ainda não está pago."), 409
     if is_delivery and item["reservation_status"] == "released":
         return jsonify(error="A reserva deste item foi liberada e ele não pode ser entregue."), 409
-    if item["payment_method"] != "Dinheiro" and (not item["paid"] or payment_status != "approved"):
+    if item["payment_method"] != "Dinheiro" and not payment_confirmed:
         return jsonify(error="O pagamento ainda não foi confirmado."), 409
     try:
         with db:
@@ -1885,6 +2030,8 @@ def deliver_order(sale_id):
     sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
     if not sale or not sale["ready_for_delivery"] or sale["delivered_at"]:
         return jsonify(error="Pedido não encontrado ou já entregue."), 409
+    if db.execute("SELECT 1 FROM sports_installment_plans WHERE sale_id=?", (sale_id,)).fetchone() and not installment_withdrawal_allowed(db, sale_id):
+        return jsonify(error="A primeira parcela ainda não foi confirmada."), 409
     if sale["payment_method"] == "Dinheiro" and (
         not sale["paid"] or sale["payment_status"] != "approved"
     ):
@@ -2511,6 +2658,20 @@ def mercadopago_webhook():
 
     try:
         db = get_db()
+        installment_order = dict(notification_data)
+        installment_order['id'] = str(data_id or '')
+        attempt = find_installment_attempt(db, installment_order)
+        if attempt:
+            # Financial confirmation always uses the authenticated provider response.
+            access_token, _ = mercadopago_config()
+            if not access_token:
+                return "", 503
+            order = get_order(access_token, str(data_id or attempt['mercado_pago_order_id']))
+            confirmed_attempt = find_installment_attempt(db, order)
+            if not confirmed_attempt or confirmed_attempt['id'] != attempt['id']:
+                raise ValueError("A consulta retornou outra tentativa Pix.")
+            reconcile_installment_order(db, order)
+            return "", 200
         sale = db.execute(
             "SELECT * FROM sales WHERE mercadopago_order_id=? OR external_reference=?",
             (str(data_id or ""), notification_data.get("external_reference")),

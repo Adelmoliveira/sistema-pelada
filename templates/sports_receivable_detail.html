@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block title %}Pix 3x · Pedido #{{plan.sale_id}}{% endblock %}
+{% block content %}
+<a href="{{url_for('sales.sports_receivables')}}" class="btn btn-outline-secondary mb-3">Voltar às Contas a Receber</a>
+<h1 class="h3">Pix 3x · Pedido #{{plan.sale_id}}</h1>
+<p>{{plan.player_name}} · Compra em {{plan.purchase_date|brdate}} · <strong>{{plan.situation_label}}</strong></p>
+<div class="card mb-4"><div class="card-body"><dl class="row mb-0">
+<dt class="col-sm-4">Valor total</dt><dd class="col-sm-8">{{plan.total_cents|money}}</dd>
+<dt class="col-sm-4">Total recebido</dt><dd class="col-sm-8">{{plan.received_cents|money}}</dd>
+<dt class="col-sm-4">Saldo a receber</dt><dd class="col-sm-8">{{plan.balance_cents|money}}</dd>
+<dt class="col-sm-4">Retirada</dt><dd class="col-sm-8">{{plan.withdrawal_label}} · {{'Liberada após primeira parcela' if plan.withdrawal_allowed else 'Primeira parcela pendente'}}</dd>
+<dt class="col-sm-4">Primeira parcela paga em</dt><dd class="col-sm-8">{{plan.first_installment_paid_at|brdate if plan.first_installment_paid_at else '—'}}</dd>
+<dt class="col-sm-4">Quitação em</dt><dd class="col-sm-8">{{plan.fully_paid_at|brdate if plan.fully_paid_at else '—'}}</dd>
+</dl><h2 class="h5 mt-3">Produtos</h2><ul>{% for item in plan['items'] %}<li>{{item.quantity}} × {{item.name}} · {{item.variant_size}}{% if item.custom_name %} · {{item.custom_name}}{% endif %}{% if item.custom_number %} · nº {{item.custom_number}}{% endif %}</li>{% endfor %}</ul></div></div>
+<h2 class="h5">Parcelas</h2><div class="table-responsive"><table class="table"><thead><tr><th>Parcela</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>Pagamento confirmado em</th></tr></thead><tbody>
+{% for part in plan.installments %}<tr data-installment="{{part.installment_number}}"><td>{{part.installment_number}}/3</td><td>{{part.amount_cents|money}}</td><td>{{part.due_date|brdate}}</td><td>{{part.display_status}}</td><td>{{part.paid_at|brdate if part.paid_at else '—'}}</td></tr>{% endfor %}
+</tbody></table></div><p class="text-muted small">Consulta somente leitura. Vencidos são derivados da data; tentativas Pix não representam receita.</p>
+{% endblock %}
