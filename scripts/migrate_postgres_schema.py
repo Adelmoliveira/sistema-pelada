@@ -18,11 +18,15 @@ if str(ROOT) not in sys.path:
 
 try:
     from dotenv import load_dotenv
-    # Load local variables without requiring users to `source` the file.
-    # This safely handles tokens/passwords containing shell metacharacters.
-    load_dotenv(".env.local")
 except ImportError:
-    pass
+    load_dotenv = None
+
+from src.environment import configure_runtime_environment
+
+# A migration is a remote operation. On a developer machine, default to the
+# isolated local environment; loading .env.local requires an explicit
+# non-local APP_ENV in addition to APPLY_POSTGRES_MIGRATIONS=1.
+configure_runtime_environment(ROOT, loader=load_dotenv)
 
 from src.db import run_postgres_migrations
 

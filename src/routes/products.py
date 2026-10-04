@@ -116,6 +116,13 @@ def _safe_rollback(db, operation):
     except Exception:
         current_app.logger.exception("Falha no rollback (%s)", operation)
 
+def _case_sale_config(form, units_per_case):
+    enabled = form.get("case_sale_enabled") == "1"
+    if enabled and units_per_case <= 0:
+        raise ValueError("Para vender por caixa, informe unidades por caixa maiores que zero.")
+    return int(enabled)
+
+
 @bp.route("/products", methods=["GET", "POST"])
 @roles_allowed("manager", "staff")
 def products():
@@ -130,6 +137,7 @@ def products():
             processed_photo = process_material_photo(request.files.get("photo"))
             photo_data, thumbnail_data = processed_photo or ("", "")
             units_per_case = int(request.form.get("units_per_case") or 0)
+            case_enabled = _case_sale_config(request.form, units_per_case)
             loose_units = int(request.form.get("stock") or 0)
             cases = int(request.form.get("initial_cases") or 0)
             if min(units_per_case, loose_units, cases) < 0:
@@ -139,8 +147,8 @@ def products():
             
             initial_stock = loose_units + cases * units_per_case
             created = db.execute(
-                """INSERT INTO products(name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,supplier_email,photo_data,thumbnail_data,expiry_date)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                """INSERT INTO products(name,category,package_type,units_per_case,price_cents,cost_cents,stock,min_stock,supplier_email,photo_data,thumbnail_data,expiry_date,case_sale_enabled)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     request.form["name"].strip(),
                     category,
@@ -154,6 +162,7 @@ def products():
                     photo_data,
                     thumbnail_data,
                     request.form.get("expiry_date", ""),
+                    case_enabled,
                 )
             )
             db.commit()
@@ -496,6 +505,7 @@ def edit_product(product_id):
             if processed_photo:
                 photo_data, thumbnail_data = processed_photo
             units_per_case = int(request.form.get("units_per_case") or 0)
+            case_enabled = _case_sale_config(request.form, units_per_case)
             min_stock = int(request.form.get("min_stock") or 0)
             new_stock = int(request.form.get("stock") or 0)
             if units_per_case < 0 or min_stock < 0 or new_stock < 0:
@@ -508,7 +518,7 @@ def edit_product(product_id):
 
             db.execute(
                 """UPDATE products SET name=?,category=?,package_type=?,units_per_case=?,
-                price_cents=?,cost_cents=?,min_stock=?,stock=?,supplier_email=?,photo_data=?,thumbnail_data=?,expiry_date=? WHERE id=?""",
+                price_cents=?,cost_cents=?,min_stock=?,stock=?,supplier_email=?,photo_data=?,thumbnail_data=?,expiry_date=?,case_sale_enabled=? WHERE id=?""",
                 (
                     request.form["name"].strip(),
                     category,
@@ -522,6 +532,7 @@ def edit_product(product_id):
                     photo_data,
                     thumbnail_data,
                     request.form.get("expiry_date", ""),
+                    case_enabled,
                     product_id
                 )
             )

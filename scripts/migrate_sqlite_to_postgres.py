@@ -1,13 +1,23 @@
 import os
 import sqlite3
+import sys
+from pathlib import Path
+
 import psycopg2
 from psycopg2 import sql
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 try:
     from dotenv import load_dotenv
-    load_dotenv('.env.local')
 except ImportError:
-    pass
+    load_dotenv = None
+
+from src.environment import configure_runtime_environment
+
+configure_runtime_environment(ROOT, loader=load_dotenv)
 
 SQLITE_DB = 'bar.db'
 POSTGRES_URL = os.environ.get('DATABASE_URL')

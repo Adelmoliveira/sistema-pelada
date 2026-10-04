@@ -1,4 +1,5 @@
 import uuid
+import json
 from datetime import date, datetime, timedelta
 from flask import Blueprint, render_template, request, redirect, url_for, flash, g, jsonify, current_app, send_file
 from itsdangerous import BadData, URLSafeTimedSerializer
@@ -345,6 +346,42 @@ def _create_sports_sale(db):
             consume_credit(db, player_id, total, sale.lastrowid, g.user["id"])
     return sale.lastrowid
 
+def _record_bar_request(requested, cases, product_id, quantity, mode):
+    if mode not in {"unit", "case"}:
+        raise ValueError("Escolha Unidade ou Caixa.")
+    if quantity > 0:
+        requested[product_id] = requested.get(product_id, 0) + quantity
+        if mode == "case":
+            cases[product_id] = cases.get(product_id, 0) + quantity
+
+
+def _price_bar_requests(requested, cases, products):
+    """Convert cases to units and price all units from current product data."""
+    lines = {}
+    total = 0
+    for pid, quantity in list(requested.items()):
+        product = products[pid]
+        case_count = cases.get(pid, 0)
+        if case_count:
+            size = int(product["units_per_case"] or 0)
+            if (product["category"] == SPORTS_MATERIAL_CATEGORY or
+                    not product["case_sale_enabled"] or size <= 0):
+                raise ValueError(f"Venda por caixa indisponível para {product['name']}.")
+            quantity = quantity - case_count + case_count * size
+        requested[pid] = quantity
+        lines[pid] = [(quantity, product["price_cents"])]
+        total += quantity * product["price_cents"]
+    return lines, total
+
+
+def _insert_bar_items(db, sale_id, product_id, product, lines):
+    for quantity, price in lines:
+        db.execute(
+            "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
+            (sale_id, product_id, quantity, price, product["cost_cents"]),
+        )
+
+
 @bp.route("/sale", methods=["GET", "POST"])
 @roles_allowed("manager", "staff", "client")
 def sale():
@@ -364,6 +401,7 @@ def sale():
         product_ids = request.form.getlist("product_id")
         quantities = request.form.getlist("quantity")
         requested = {}
+        case_requests = {}
         try:
             sale_type = request.form.get("sale_type", "player").strip().lower()
             event_id = None
@@ -389,28 +427,29 @@ def sale():
                     raise ValueError("Este evento não está aberto para vendas.")
             else:
                 player_id = int(request.form["player_id"])
-            for raw_id, raw_qty in zip(product_ids, quantities):
-                qty = int(raw_qty or 0)
-                if qty > 0:
-                    requested[int(raw_id)] = requested.get(int(raw_id), 0) + qty
+            modes = request.form.getlist("sale_mode")
+            if modes and len(modes) != len(product_ids):
+                raise ValueError("Modalidade de venda inválida.")
+            for index, (raw_id, raw_qty) in enumerate(zip(product_ids, quantities)):
+                _record_bar_request(requested, case_requests, int(raw_id), int(raw_qty or 0), modes[index] if modes else "unit")
             if not requested:
                 raise ValueError("Escolha ao menos um produto.")
             
             placeholders = ",".join("?" for _ in requested)
             products_by_id = {
                 r["id"]: r for r in db.execute(
-                    f"SELECT id,name,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
+                    f"SELECT id,name,category,units_per_case,case_sale_enabled,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
                     tuple(requested)
                 )
             }
             if len(products_by_id) != len(requested):
                 raise ValueError("Produto inválido ou inativo.")
             
+            bar_lines, total = _price_bar_requests(requested, case_requests, products_by_id)
             for pid, qty in requested.items():
                 if products_by_id[pid]["stock"] < qty:
                     raise ValueError(f"Estoque insuficiente de {products_by_id[pid]['name']}.")
-            
-            total = sum(products_by_id[pid]["price_cents"] * qty for pid, qty in requested.items())
+
             method = request.form["payment_method"]
             use_bar_credit = request.form.get("use_bar_credit") == "1"
             if method == "Pix" and mercadopago_enabled():
@@ -454,10 +493,7 @@ def sale():
                     create_payment_part(db, sale_id, "Pix", total, "approved")
                 for pid, qty in requested.items():
                     product = products_by_id[pid]
-                    db.execute(
-                        "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
-                        (sale_id, pid, qty, product["price_cents"], product["cost_cents"])
-                    )
+                    _insert_bar_items(db, sale_id, pid, product, bar_lines[pid])
                     updated = db.execute(
                         "UPDATE products SET stock=stock-? WHERE id=? AND stock>=?",
                         (qty, pid, qty)
@@ -493,7 +529,7 @@ def sale():
         key=lambda player: alphabetical_key(player["war_name"] or player["name"]),
     )
     product_rows = db.execute(
-        """SELECT p.id,p.name,p.category,p.package_type,p.units_per_case,p.price_cents,
+        """SELECT p.id,p.name,p.category,p.package_type,p.units_per_case,p.case_sale_enabled,p.price_cents,
                   p.cost_cents,p.stock,p.min_stock,p.thumbnail_data,
                   COALESCE(SUM(CASE WHEN s.paid=1 THEN si.quantity ELSE 0 END), 0) sold_quantity
            FROM products p
@@ -584,6 +620,7 @@ def guest_event_sale(token):
         return "Este evento já foi encerrado.", 410
     if request.method == "POST":
         requested = {}
+        case_requests = {}
         try:
             guest_name = request.form.get("guest_name", "").strip()
             method = request.form.get("payment_method", "").strip()
@@ -593,24 +630,25 @@ def guest_event_sale(token):
                 raise ValueError("Para pagar via Pix, gere o QR Code e aguarde a confirmação.")
             if method not in ("Pix", "Dinheiro", "Débito", "Cortesia"):
                 raise ValueError("Escolha uma forma de pagamento válida.")
-            for raw_id, raw_qty in zip(request.form.getlist("product_id"), request.form.getlist("quantity")):
-                qty = int(raw_qty or 0)
-                if qty > 0:
-                    requested[int(raw_id)] = requested.get(int(raw_id), 0) + qty
+            modes = request.form.getlist("sale_mode")
+            if modes and len(modes) != len(request.form.getlist("product_id")):
+                raise ValueError("Modalidade de venda inválida.")
+            for index, (raw_id, raw_qty) in enumerate(zip(request.form.getlist("product_id"), request.form.getlist("quantity"))):
+                _record_bar_request(requested, case_requests, int(raw_id), int(raw_qty or 0), modes[index] if modes else "unit")
             if not requested:
                 raise ValueError("Escolha ao menos um produto.")
             placeholders = ",".join("?" for _ in requested)
             products = db.execute(
-                f"SELECT id,name,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
+                f"SELECT id,name,category,units_per_case,case_sale_enabled,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
                 tuple(requested),
             ).fetchall()
             products_by_id = {row["id"]: row for row in products}
             if len(products_by_id) != len(requested):
                 raise ValueError("Produto inválido ou inativo.")
+            bar_lines, total_cents = _price_bar_requests(requested, case_requests, products_by_id)
             for product_id, quantity in requested.items():
                 if products_by_id[product_id]["stock"] < quantity:
                     raise ValueError(f"Estoque insuficiente de {products_by_id[product_id]['name']}.")
-            total_cents = sum(products_by_id[pid]["price_cents"] * qty for pid, qty in requested.items())
             with db:
                 paid = 0 if method == "Dinheiro" else 1
                 payment_status = "pending_cash" if method == "Dinheiro" else "approved"
@@ -621,10 +659,7 @@ def guest_event_sale(token):
                 )
                 for product_id, quantity in requested.items():
                     product = products_by_id[product_id]
-                    db.execute(
-                        "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
-                        (cur.lastrowid, product_id, quantity, product["price_cents"], product["cost_cents"]),
-                    )
+                    _insert_bar_items(db, cur.lastrowid, product_id, product, bar_lines[product_id])
                     updated = db.execute("UPDATE products SET stock=stock-? WHERE id=? AND stock>=?", (quantity, product_id, quantity))
                     if updated.rowcount != 1:
                         raise ValueError("O estoque mudou durante a venda. Tente novamente.")
@@ -638,7 +673,7 @@ def guest_event_sale(token):
             flash("Erro interno ao processar a venda. Tente novamente.", "danger")
 
     product_rows = db.execute(
-        """SELECT p.id,p.name,p.category,p.package_type,p.units_per_case,p.price_cents,
+        """SELECT p.id,p.name,p.category,p.package_type,p.units_per_case,p.case_sale_enabled,p.price_cents,
                   p.cost_cents,p.stock,p.min_stock,p.thumbnail_data,
                   COALESCE(SUM(CASE WHEN s.paid=1 THEN si.quantity ELSE 0 END),0) sold_quantity
            FROM products p LEFT JOIN sale_items si ON si.product_id=p.id LEFT JOIN sales s ON s.id=si.sale_id
@@ -2144,9 +2179,26 @@ def pix_qrcode():
 
     try:
         amount_cents = int(request.args.get("amount_cents", 0))
+        if request.args.get("items"):
+            requested, cases = {}, {}
+            for item in json.loads(request.args["items"]):
+                _record_bar_request(requested, cases, int(item["product_id"]), int(item["quantity"]), item.get("sale_mode") or "unit")
+            if not requested:
+                raise ValueError
+            db = get_db()
+            placeholders = ",".join("?" for _ in requested)
+            products = {row["id"]: row for row in db.execute(
+                f"SELECT * FROM products WHERE active=1 AND category<>? AND id IN ({placeholders})",
+                (SPORTS_MATERIAL_CATEGORY, *requested),
+            ).fetchall()}
+            if len(products) != len(requested):
+                raise ValueError
+            _, amount_cents = _price_bar_requests(requested, cases, products)
+            if any(products[pid]["stock"] < quantity for pid, quantity in requested.items()):
+                return jsonify(error="Estoque insuficiente para gerar o Pix."), 409
         if amount_cents <= 0 or amount_cents > 100_000_000:
             raise ValueError
-    except ValueError:
+    except (ValueError, TypeError, KeyError):
         return jsonify(error="Selecione produtos para gerar um Pix com valor válido."), 400
     
     try:
@@ -2192,6 +2244,7 @@ def mercadopago_create_order():
         if not event_id and not player_id:
             raise ValueError("Selecione o peladeiro ou o evento.")
         requested = {}
+        case_requests = {}
         sports_requested = []
         for item in body.get("items") or []:
             product_id = int(item.get("product_id"))
@@ -2207,7 +2260,7 @@ def mercadopago_create_order():
                         "order_mode": str(item.get("order_mode") or ""),
                     })
                 else:
-                    requested[product_id] = requested.get(product_id, 0) + quantity
+                    _record_bar_request(requested, case_requests, product_id, quantity, item.get("sale_mode") or "unit")
         if not requested and not sports_requested:
             raise ValueError("Escolha ao menos um produto.")
     except (TypeError, ValueError):
@@ -2234,7 +2287,7 @@ def mercadopago_create_order():
     else:
         placeholders = ",".join("?" for _ in requested)
         products = db.execute(
-            f"SELECT id,name,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
+            f"SELECT id,name,category,units_per_case,case_sale_enabled,price_cents,cost_cents,stock FROM products WHERE active=1 AND id IN ({placeholders})",
             tuple(requested),
         ).fetchall()
         products_by_id = {product["id"]: product for product in products}
@@ -2266,6 +2319,10 @@ def mercadopago_create_order():
             if item["order_mode"] == "ready" and row["stock"] < item["quantity"]:
                 return jsonify(error=f"Estoque insuficiente para {row['name']} — {row['size']}."), 409
     else:
+        try:
+            bar_lines, bar_total = _price_bar_requests(requested, case_requests, products_by_id)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
         for product_id, quantity in requested.items():
             if products_by_id[product_id]["stock"] < quantity:
                 return jsonify(error=f"Estoque insuficiente de {products_by_id[product_id]['name']}."), 409
@@ -2273,7 +2330,7 @@ def mercadopago_create_order():
     total_cents = (
         sum(sports_by_variant[item["variant_id"]]["price_cents"] * item["quantity"] for item in sports_requested)
         if sports_mode else
-        sum(products_by_id[product_id]["price_cents"] * quantity for product_id, quantity in requested.items())
+        bar_total
     )
     use_bar_credit = body.get("use_bar_credit") is True and bool(player_id) and not sports_mode
     credit_amount = min(available_credit_balance(db, player_id), total_cents) if use_bar_credit else 0
@@ -2333,10 +2390,7 @@ def mercadopago_create_order():
             else:
                 for product_id, quantity in requested.items():
                     product = products_by_id[product_id]
-                    db.execute(
-                        "INSERT INTO sale_items(sale_id,product_id,quantity,unit_price_cents,unit_cost_cents) VALUES(?,?,?,?,?)",
-                        (sale_id, product_id, quantity, product["price_cents"], product["cost_cents"]),
-                    )
+                    _insert_bar_items(db, sale_id, product_id, product, bar_lines[product_id])
                     updated = db.execute(
                         "UPDATE products SET stock=stock-? WHERE id=? AND stock>=?",
                         (quantity, product_id, quantity),
