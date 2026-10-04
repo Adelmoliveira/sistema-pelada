@@ -762,6 +762,14 @@ def my_purchases():
                 sale["display_status_label"] = f"Parcial · restam {sale['pending_quantity']}"
                 sale["display_status_class"] = "warning"
 
+    from src.services.sports_installment_client import plan_summary
+    for sale in sales:
+        sale['installment_plan'] = plan_summary(db, sale['id'], player_id)
+        plan = sale['installment_plan']
+        if plan:
+            sale['display_status_label'] = 'Quitado' if plan['status'] == 'paid' else 'Compra confirmada · saldo pendente' if plan['withdrawal_allowed'] else 'Aguardando primeira parcela'
+            sale['display_status_class'] = 'success' if plan['withdrawal_allowed'] else 'warning'
+
     pending_pickups = [
         sale for sale in sales
         if sale["display_status"] in ("AGUARDANDO_RETIRADA", "PARCIAL")
@@ -771,6 +779,7 @@ def my_purchases():
         sales=sales,
         pending_pickups=pending_pickups,
         total_consumed_cents=int(total_consumed_cents or 0),
+        external_payments_enabled=current_app.config.get('EXTERNAL_PAYMENTS_ENABLED', True),
     )
 
 
