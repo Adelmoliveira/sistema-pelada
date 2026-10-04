@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS products (
     category TEXT NOT NULL,
     package_type TEXT NOT NULL DEFAULT '',
     units_per_case INTEGER NOT NULL DEFAULT 0 CHECK(units_per_case >= 0),
+    case_sale_enabled INTEGER NOT NULL DEFAULT 0 CHECK(case_sale_enabled IN (0,1)),
     price_cents INTEGER NOT NULL CHECK(price_cents >= 0),
     cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents >= 0),
     stock INTEGER NOT NULL DEFAULT 0 CHECK(stock >= 0),
@@ -1516,6 +1517,8 @@ def init_sqlite(wrapper):
     if "body_html" not in push_inbox_columns:
         conn.execute("ALTER TABLE push_inbox ADD COLUMN body_html TEXT DEFAULT ''")
     product_columns = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
+    if "case_sale_enabled" not in product_columns:
+        conn.execute("ALTER TABLE products ADD COLUMN case_sale_enabled INTEGER NOT NULL DEFAULT 0 CHECK(case_sale_enabled IN (0,1))")
     if "expiry_date" not in product_columns:
         conn.execute("ALTER TABLE products ADD COLUMN expiry_date TEXT DEFAULT ''")
     conn.execute("""CREATE TABLE IF NOT EXISTS tribute_settings (
@@ -1962,6 +1965,7 @@ def init_postgres(wrapper):
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS thumbnail_data TEXT DEFAULT ''")
     wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS expiry_date TEXT DEFAULT ''")
+    wrapper.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS case_sale_enabled INTEGER NOT NULL DEFAULT 0 CHECK(case_sale_enabled IN (0,1))")
     wrapper.execute("""CREATE TABLE IF NOT EXISTS tribute_settings (
         id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 1,
         title TEXT NOT NULL DEFAULT 'PELADEIROS GPCTA', body TEXT NOT NULL DEFAULT '🗣️ VEEENHAAAMMM...',
