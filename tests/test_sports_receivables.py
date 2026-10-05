@@ -1,5 +1,6 @@
 import unittest
 from datetime import date
+from pathlib import Path
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -21,6 +22,8 @@ class SportsReceivablesTest(unittest.TestCase):
 
     def fixture(self):
         self.prepare()
+        sql=Path('supabase/migrations/20261005010000_pix_checkout_closures.sql').read_text()
+        self.db.conn.executescript(sql.replace('BIGSERIAL PRIMARY KEY','INTEGER PRIMARY KEY').replace('TIMESTAMPTZ','TEXT'))
         self.addCleanup(patch.stopall)
         patch('src.services.sports_receivables.today',return_value=date(2026,11,4)).start()
         self.overdue_id=self.db.execute('SELECT id FROM sports_installment_plans WHERE sale_id=?',(self.sale_id,)).fetchone()[0]
@@ -32,6 +35,9 @@ class SportsReceivablesTest(unittest.TestCase):
         self.db.execute('UPDATE sales SET player_id=? WHERE id=?',(other_player,self.open_sale));self.db.commit()
         self.other_player=other_player
         self.open_id=create_installment_plan(self.db,self.open_sale,30000,date(2026,12,1))['plan']['id']
+        self.db.execute("UPDATE sports_installments SET status='paid',paid_at='2026-10-04' WHERE plan_id=? AND installment_number=1",(self.open_id,))
+        self.db.execute("UPDATE sports_installment_plans SET status='active',first_installment_paid_at='2026-10-04' WHERE id=?",(self.open_id,))
+        self.db.commit()
         self.paid_sale=self.sale(total=9000)
         self.db.execute('UPDATE sales SET player_id=? WHERE id=?',(self.player_id,self.paid_sale));self.db.commit()
         self.paid_id=create_installment_plan(self.db,self.paid_sale,9000,date(2026,10,1))['plan']['id']
@@ -64,17 +70,17 @@ class SportsReceivablesTest(unittest.TestCase):
             self.assertEqual(self.client.get(path,headers={'Accept':'application/json'}).status_code,403)
 
     def test_receivable_total(self):
-        self.fixture();self.assertEqual(self.view()['summary']['receivable_cents'],36667)
+        self.fixture();self.assertEqual(self.view()['summary']['receivable_cents'],26667)
 
     def test_received_total(self):
-        self.fixture();self.assertEqual(self.view()['summary']['received_cents'],12333)
+        self.fixture();self.assertEqual(self.view()['summary']['received_cents'],22333)
 
     def test_overdue_total_and_count(self):
         self.fixture();summary=self.view()['summary']
         self.assertEqual((summary['overdue_cents'],summary['overdue_count']),(3333,1))
 
     def test_upcoming_total(self):
-        self.fixture();self.assertEqual(self.view()['summary']['upcoming_cents'],33334)
+        self.fixture();self.assertEqual(self.view()['summary']['upcoming_cents'],23334)
 
     def test_distinct_players_with_balance(self):
         self.fixture();self.assertEqual(self.view()['summary']['players_with_balance'],2)
@@ -157,6 +163,32 @@ class SportsReceivablesTest(unittest.TestCase):
         html=response.get_data(as_text=True)
         self.assertIn('value="2026-11-01"',html)
         self.assertIn('value="overdue" selected',html)
+
+    def test_unconfirmed_plan_excluded_everywhere(self):
+        self.fixture()
+        self.db.execute("UPDATE sports_installments SET status='pending',paid_at=NULL WHERE plan_id=?",(self.open_id,));self.db.commit()
+        result=self.view()
+        self.assertNotIn(self.open_id,{p['id'] for p in result['plans']})
+        self.assertNotIn(self.other_player,{p['id'] for p in result['players']})
+        self.assertIsNone(receivable_detail(self.db,self.open_id))
+        self.assertEqual(result['summary']['receivable_cents'],6667)
+
+    def test_advance_second_or_third_included(self):
+        self.fixture()
+        for number in (2,3):
+            self.db.execute("UPDATE sports_installments SET status=CASE WHEN installment_number=? THEN 'paid' ELSE 'pending' END WHERE plan_id=?",(number,self.open_id));self.db.commit()
+            self.assertIsNotNone(receivable_detail(self.db,self.open_id))
+            self.assertIn(self.open_id,{p['id'] for p in self.view()['plans']})
+
+    def test_terminal_or_completed_closure_excluded(self):
+        self.fixture()
+        for status in ('canceled','expired'):
+            self.db.execute('UPDATE sales SET payment_status=? WHERE id=?',(status,self.sale_id));self.db.commit()
+            self.assertIsNone(receivable_detail(self.db,self.overdue_id))
+        self.db.execute("UPDATE sales SET payment_status='pending' WHERE id=?",(self.sale_id,))
+        self.db.execute("INSERT INTO pix_checkout_closures(sale_id,reason,status) VALUES(?,'timeout','completed')",(self.sale_id,));self.db.commit()
+        self.assertIsNone(receivable_detail(self.db,self.overdue_id))
+        self.assertNotIn(self.overdue_id,{p['id'] for p in self.view()['plans']})
 
 
 if __name__=='__main__':unittest.main()

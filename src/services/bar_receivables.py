@@ -3,6 +3,16 @@ from datetime import date
 from src.utils import local_today
 
 
+
+ELIGIBILITY = """p.checkout_origin='case_only'
+    AND s.payment_method='Pix'
+    AND s.payment_status NOT IN ('canceled','expired','failed','refunded')
+    AND EXISTS (SELECT 1 FROM bar_installments confirmed
+                WHERE confirmed.plan_id=p.id AND confirmed.status='paid')
+    AND NOT EXISTS (SELECT 1 FROM pix_checkout_closures closure
+                    WHERE closure.sale_id=s.id AND closure.status='completed')"""
+
+
 def parse_filters(args):
     filters={key:str(args.get(key) or '').strip() for key in ('player_id','situation','due_from','due_to')}
     if filters['situation'] not in {'','open','overdue','paid'}: raise ValueError('Situação inválida.')
@@ -20,7 +30,7 @@ def parse_filters(args):
 
 
 def _plans(db,filters,plan_id=None):
-    where=["p.checkout_origin='case_only'"]
+    where=[ELIGIBILITY]
     params=[]
     if plan_id is not None: where.append('p.id=?');params.append(plan_id)
     if filters.get('player_id'): where.append('s.player_id=?');params.append(int(filters['player_id']))
@@ -61,9 +71,9 @@ def receivables(db,args):
                  upcoming_cents=sum(p['balance_cents']-p['overdue_cents'] for p in plans),received_cents=sum(p['received_cents'] for p in plans),
                  players_with_balance=len({p['player_id'] for p in plans if p['player_id'] is not None and p['balance_cents']>0}),
                  overdue_count=sum(p['overdue_count'] for p in plans))
-    players=db.execute("""SELECT DISTINCT pl.id,COALESCE(NULLIF(pl.war_name,''),pl.name) name
+    players=db.execute(f"""SELECT DISTINCT pl.id,COALESCE(NULLIF(pl.war_name,''),pl.name) name
                            FROM players pl JOIN sales s ON s.player_id=pl.id JOIN bar_installment_plans p ON p.sale_id=s.id
-                           WHERE p.checkout_origin='case_only' ORDER BY name,pl.id""").fetchall()
+                           WHERE {ELIGIBILITY} ORDER BY name,pl.id""").fetchall()
     return dict(plans=plans,summary=summary,filters=filters,players=players)
 
 
