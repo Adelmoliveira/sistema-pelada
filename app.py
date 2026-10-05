@@ -212,6 +212,7 @@ def load_user_and_protect_routes():
         "finance.payment_reminders_cron",
         "finance.weekly_tribute_cron",
         "finance.process_notification_outbox_cron",
+        "finance.expire_pix_checkouts_cron",
         "football.tribute_image",
     }:
         return None
