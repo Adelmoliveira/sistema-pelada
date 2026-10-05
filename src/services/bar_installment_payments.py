@@ -52,6 +52,8 @@ def create_installment_payment_attempt(db, installment_id, access_token, idempot
         ).fetchone()
         if not installment or (player_id is not None and installment['player_id'] != player_id):
             raise ValueError('Parcela inexistente ou sem permissão de acesso.')
+        from src.services.pix_checkout_closures import assert_checkout_not_closing
+        assert_checkout_not_closing(db, installment['sale_id'])
         if installment['status'] != 'pending' or installment['plan_status'] == 'paid':
             raise ValueError('Parcela já paga ou indisponível para cobrança.')
         if installment['payment_status'] in {'canceled', 'refunded', 'failed', 'expired'}:

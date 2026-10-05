@@ -198,6 +198,9 @@ def apply_mercadopago_status(db, sale, order):
 
     if status == "processed" and detail == "accredited" and paid_cents == expected_external_cents:
         if int(sale["paid"] or 0) and sale["payment_status"] == "approved":
+            from src.services.pix_checkout_closures import abort_closure_on_payment
+            with db:
+                abort_closure_on_payment(db, sale["id"])
             return "approved"
         if reservation and reservation["status"] == "released":
             return sale["payment_status"]
@@ -235,6 +238,8 @@ def apply_mercadopago_status(db, sale, order):
                 (payment_id, sale["id"]),
             )
             validate_approved_parts_total(db, sale["id"])
+            from src.services.pix_checkout_closures import abort_closure_on_payment
+            abort_closure_on_payment(db, sale["id"])
         return "approved"
 
     if status == "refunded" and sale["paid"]:
