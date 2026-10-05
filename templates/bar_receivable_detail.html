@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}Contas a Receber · Bar · Pedido #{{plan.sale_id}}{% endblock %}
+{% block content %}
+{% include 'receivables_domains.html' %}
+<h1 class="h3">Pix 2x · Bar · Pedido #{{plan.sale_id}}</h1>
+<p>{{plan.player_name}} · Compra em {{plan.purchase_date|brdate}} · <strong>{{plan.situation_label}}</strong></p>
+<p>Total: {{plan.total_cents|money}} · Recebido: {{plan.received_cents|money}} · Saldo devedor: {{plan.balance_cents|money}}</p>
+<div class="table-responsive"><table class="table"><thead><tr><th>Parcela</th><th>Valor</th><th>Vencimento</th><th>Situação</th><th>Pagamento</th></tr></thead><tbody>
+{% for installment in plan.installments %}<tr><td>{{installment.installment_number}}/2</td><td>{{installment.amount_cents|money}}</td><td>{{installment.due_date|brdate}}</td><td>{{installment.display_status}}</td><td>{{installment.paid_at|brdate if installment.paid_at else '—'}}</td></tr>{% endfor %}
+</tbody></table></div>
+<p class="text-muted">Consulta somente leitura. Valores recebidos correspondem às parcelas pagas.</p>
+<a class="btn btn-outline-secondary" href="{{url_for('sales.bar_receivables')}}">Voltar</a>
+{% endblock %}

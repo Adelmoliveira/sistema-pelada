@@ -1,0 +1,4 @@
+<nav class="nav nav-pills gap-2 mb-3" aria-label="Domínio de Contas a Receber">
+<a class="nav-link {{'active' if request.endpoint in ('sales.bar_receivables','sales.bar_receivable_detail')}}" href="{{url_for('sales.bar_receivables')}}">Bar</a>
+<a class="nav-link {{'active' if request.endpoint in ('sales.sports_receivables','sales.sports_receivable_detail')}}" href="{{url_for('sales.sports_receivables')}}">Material Esportivo</a>
+</nav>

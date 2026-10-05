@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Pix 3x · Pedido #{{plan.sale_id}}{% endblock %}
 {% block content %}
+{% include "receivables_domains.html" %}
 <a href="{{url_for('sales.sports_receivables')}}" class="btn btn-outline-secondary mb-3">Voltar às Contas a Receber</a>
 <h1 class="h3">Pix 3x · Pedido #{{plan.sale_id}}</h1>
 <p>{{plan.player_name}} · Compra em {{plan.purchase_date|brdate}} · <strong>{{plan.situation_label}}</strong></p>

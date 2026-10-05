@@ -1424,6 +1424,27 @@ def resolve_sports_cancellation(sale_item_id):
     return jsonify(error="Escolha uma resolução administrativa válida."), 400
 
 
+@bp.get('/bar/installments/receivables')
+@roles_allowed('manager', 'staff')
+def bar_receivables():
+    from src.services.bar_receivables import receivables
+    try:
+        context = receivables(get_db(), request.args)
+    except ValueError as exc:
+        return str(exc), 400
+    return render_template('bar_receivables.html', **context)
+
+
+@bp.get('/bar/installments/receivables/<int:plan_id>')
+@roles_allowed('manager', 'staff')
+def bar_receivable_detail(plan_id):
+    from src.services.bar_receivables import receivable_detail
+    plan = receivable_detail(get_db(), plan_id)
+    if not plan:
+        return 'Parcelamento não encontrado.', 404
+    return render_template('bar_receivable_detail.html', plan=plan)
+
+
 @bp.get('/sports/installments/receivables')
 @roles_allowed('manager', 'staff')
 def sports_receivables():
