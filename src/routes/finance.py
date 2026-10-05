@@ -999,6 +999,24 @@ def process_notification_outbox_cron():
     return jsonify(ok=True, **result)
 
 
+@bp.get("/cron/expire-pix-checkouts")
+def expire_pix_checkouts_cron():
+    if not _cron_authorized():
+        return jsonify(error="Não autorizado."), 401
+    if not current_app.config.get('CRON_ENABLED', False) or not current_app.config.get('EXTERNAL_PAYMENTS_ENABLED', False):
+        return jsonify(error="Expiração Pix indisponível neste ambiente."), 403
+    cutoff = current_app.config.get('PIX_ABANDONMENT_NOT_BEFORE')
+    token = current_app.config.get('MERCADOPAGO_ACCESS_TOKEN')
+    if not cutoff or not token:
+        return jsonify(error="Configure o marco do deploy e Mercado Pago antes de habilitar a expiração."), 503
+    from src.services.pix_checkout_abandonment import expire_recent_checkouts
+    try:
+        result = expire_recent_checkouts(get_db(), token, cutoff)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 503
+    return jsonify(ok=True, **result)
+
+
 @bp.get("/cron/payment-reminders")
 def payment_reminders_cron():
     secret = current_app.config.get("CRON_SECRET") or ""

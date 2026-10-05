@@ -659,7 +659,7 @@ def my_purchases():
         (player_id,),
     ).fetchone()["total_cents"]
     rows = db.execute(
-        """SELECT s.id,s.total_cents,s.payment_method,s.paid,s.payment_status,
+        """SELECT s.id,s.player_id,s.total_cents,s.payment_method,s.paid,s.payment_status,
                   s.paid_at,s.ready_for_delivery,s.delivered_at,s.created_at
            FROM sales s
            WHERE s.player_id=?
@@ -782,6 +782,10 @@ def my_purchases():
             if plan['withdrawal_allowed'] and sale['pending_quantity']:
                 sale['display_status'] = 'PARCIAL' if sale['delivered_quantity'] else 'AGUARDANDO_RETIRADA'
 
+    from src.services.pix_checkout_abandonment import decorate_purchase_closure
+    for sale in sales:
+        decorate_purchase_closure(db, sale)
+
     pending_pickups = [
         sale for sale in sales
         if sale["display_status"] in ("AGUARDANDO_RETIRADA", "PARCIAL")
@@ -793,6 +797,25 @@ def my_purchases():
         total_consumed_cents=int(total_consumed_cents or 0),
         external_payments_enabled=current_app.config.get('EXTERNAL_PAYMENTS_ENABLED', True),
     )
+
+
+@bp.post("/minhas-compras/<int:sale_id>/cancelar")
+@roles_allowed("client")
+def cancel_pix_purchase(sale_id):
+    if not current_app.config.get('EXTERNAL_PAYMENTS_ENABLED', False):
+        return jsonify(error="Cancelamento Pix indisponível neste ambiente."), 403
+    token = current_app.config.get('MERCADOPAGO_ACCESS_TOKEN')
+    if not token:
+        return jsonify(error="Mercado Pago não configurado."), 503
+    from src.services.pix_checkout_abandonment import cancel_client_checkout
+    try:
+        closure = cancel_client_checkout(get_db(), sale_id, g.user['player_id'], g.user['id'], token)
+    except PermissionError as exc:
+        return jsonify(error=str(exc)), 403
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 409
+    message = ('Compra expirada' if closure['reason']=='timeout' else 'Compra cancelada') if closure['status']=='completed' else 'Compra preservada: pagamento confirmado' if closure['status']=='aborted_payment' else 'Cancelamento em processamento'
+    return jsonify(status=closure['status'], message=message), 200 if closure['status'] in {'completed','aborted_payment'} else 202
 
 
 @bp.get("/minhas-compras/pending-count")
