@@ -74,3 +74,16 @@ def validate_webhook_signature(x_signature, x_request_id, data_id, secret):
     template = f"id:{data_id.lower()};request-id:{x_request_id};ts:{timestamp};"
     expected = hmac.new(secret.encode("utf-8"), template.encode("utf-8"), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, received)
+
+
+def cancel_order(access_token, order_id, idempotency_key):
+    """Cancel an unpaid order; callers must verify the returned terminal state.
+
+    A timeout/error is an unknown outcome, never proof of cancellation. Reuse
+    the key on retries and read the order before retrying a terminal operation.
+    """
+    from urllib.parse import quote
+    if not order_id or not idempotency_key:
+        raise ValueError('Order e chave de idempotência obrigatórias.')
+    return _request('POST', f'/v1/orders/{quote(str(order_id), safe="")}/cancel',
+                    access_token, idempotency_key=idempotency_key)

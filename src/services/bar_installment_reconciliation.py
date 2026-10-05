@@ -121,6 +121,9 @@ def reconcile_installment_order(db, order):
                           WHERE id=?''',
                        (new_status, str(order['id']) if order.get('id') else None,
                         str(order_payment_id(order)) if order_payment_id(order) else None, attempt['id']))
+        if approved:
+            from src.services.pix_checkout_closures import abort_closure_on_payment
+            abort_closure_on_payment(db, sale['id'])
         if not approved or installment['status'] == 'paid':
             return 'approved' if attempt['status'] == 'approved' or approved else new_status
         db.execute("UPDATE bar_installments SET status='paid',paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP),updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'",
