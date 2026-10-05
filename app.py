@@ -52,6 +52,7 @@ app.config.update(
     GMAIL_SMTP_USER=os.environ.get("GMAIL_SMTP_USER"),
     GMAIL_APP_PASSWORD=os.environ.get("GMAIL_APP_PASSWORD"),
     CRON_SECRET=os.environ.get("CRON_SECRET"),
+    PIX_ABANDONMENT_NOT_BEFORE=os.environ.get("PIX_ABANDONMENT_NOT_BEFORE"),
     VAPID_PUBLIC_KEY=os.environ.get("VAPID_PUBLIC_KEY"),
     VAPID_PRIVATE_KEY=os.environ.get("VAPID_PRIVATE_KEY"),
     VAPID_SUBJECT=os.environ.get("VAPID_SUBJECT", "mailto:diretoriagpcta@gmail.com"),
