@@ -4,6 +4,7 @@
 {% include "receivables_domains.html" %}
 <h1 class="h3">Contas a Receber · Material Esportivo</h1>
 <p class="text-muted">Pix 3x de pronta entrega. Consulta somente leitura.</p>
+<div class="d-flex gap-2 mb-3"><a class="btn btn-sm btn-outline-secondary" href="{{url_for('sales.sports_receivables_pdf',**request.args.to_dict())}}">Exportar PDF</a><a class="btn btn-sm btn-outline-secondary" href="{{url_for('sales.consolidated_receivables_pdf',**request.args.to_dict())}}">PDF Consolidado</a></div>
 <form method="get" class="row g-3 mb-4">
   <div class="col-md-3"><label for="player-id" class="form-label">Peladeiro</label><select id="player-id" name="player_id" class="form-select"><option value="">Todos</option>{% for player in players %}<option value="{{player.id}}" {{'selected' if filters.player_id == player.id|string}}>{{player.name}}</option>{% endfor %}</select></div>
   <div class="col-md-3"><label for="situation" class="form-label">Situação</label><select id="situation" name="situation" class="form-select">{% for value,label in [('','Todos'),('open','Em aberto'),('overdue','Vencidos'),('paid','Quitados')] %}<option value="{{value}}" {{'selected' if filters.situation == value}}>{{label}}</option>{% endfor %}</select></div>

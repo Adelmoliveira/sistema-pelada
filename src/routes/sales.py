@@ -1424,6 +1424,34 @@ def resolve_sports_cancellation(sale_item_id):
     return jsonify(error="Escolha uma resolução administrativa válida."), 400
 
 
+def _receivables_pdf_response(domain):
+    from src.services.receivables_pdf import report_context, build_receivables_pdf
+    try:
+        context = report_context(get_db(), request.args, domain)
+    except ValueError as exc:
+        return str(exc), 400
+    return send_file(build_receivables_pdf(context), mimetype='application/pdf',
+                     as_attachment=True, download_name=f'contas-a-receber-{domain}.pdf')
+
+
+@bp.get('/bar/installments/receivables/pdf')
+@roles_allowed('manager', 'staff')
+def bar_receivables_pdf():
+    return _receivables_pdf_response('bar')
+
+
+@bp.get('/sports/installments/receivables/pdf')
+@roles_allowed('manager', 'staff')
+def sports_receivables_pdf():
+    return _receivables_pdf_response('sports')
+
+
+@bp.get('/installments/receivables/pdf')
+@roles_allowed('manager', 'staff')
+def consolidated_receivables_pdf():
+    return _receivables_pdf_response('all')
+
+
 @bp.get('/bar/installments/receivables')
 @roles_allowed('manager', 'staff')
 def bar_receivables():
