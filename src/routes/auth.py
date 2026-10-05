@@ -770,6 +770,18 @@ def my_purchases():
             sale['display_status_label'] = 'Quitado' if plan['status'] == 'paid' else 'Compra confirmada · saldo pendente' if plan['withdrawal_allowed'] else 'Aguardando primeira parcela'
             sale['display_status_class'] = 'success' if plan['withdrawal_allowed'] else 'warning'
 
+    from src.services.bar_installment_client import plan_summary as bar_plan_summary
+    for sale in sales:
+        sale['bar_installment_plan'] = bar_plan_summary(db,sale['id'],player_id)
+        plan = sale['bar_installment_plan']
+        if plan:
+            sale['display_status_label'] = 'Quitado' if plan['status']=='paid' else 'Compra confirmada · saldo pendente' if plan['withdrawal_allowed'] else 'Aguardando primeira parcela'
+            sale['display_status_class'] = 'success' if plan['withdrawal_allowed'] else 'warning'
+            if sale['delivered_at']:
+                sale['display_status'] = 'ENTREGUE'
+            if plan['withdrawal_allowed'] and sale['pending_quantity']:
+                sale['display_status'] = 'PARCIAL' if sale['delivered_quantity'] else 'AGUARDANDO_RETIRADA'
+
     pending_pickups = [
         sale for sale in sales
         if sale["display_status"] in ("AGUARDANDO_RETIRADA", "PARCIAL")
@@ -792,8 +804,10 @@ def pending_purchase_count():
     refresh frequently without changing the order or delivery state.
     """
     player_id = g.user["player_id"]
-    row = get_db().execute(
-        """SELECT COALESCE(SUM(pending_quantity), 0) pending_quantity
+    from src.services.bar_installment_reconciliation import withdrawal_sql
+    db = get_db()
+    row = db.execute(
+        f"""SELECT COALESCE(SUM(pending_quantity), 0) pending_quantity
            FROM (
              SELECT CASE
                  WHEN i.quantity - COALESCE((
@@ -813,7 +827,7 @@ def pending_purchase_count():
              FROM sales s
              JOIN sale_items i ON i.sale_id=s.id
              WHERE s.player_id=?
-               AND s.paid=1
+               AND (s.paid=1 OR ({withdrawal_sql(db)}))
                AND s.delivered_at IS NULL
                AND (s.ready_for_delivery=1 OR s.event_id IS NOT NULL)
            ) pending_items""",

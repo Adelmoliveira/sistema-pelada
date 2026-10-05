@@ -1,6 +1,11 @@
 from src.services.sports_installment_reconciliation import (
     find_installment_attempt, installment_withdrawal_allowed, reconcile_installment_order,
 )
+from src.services.bar_installment_reconciliation import (
+    find_installment_attempt as find_bar_attempt,
+    reconcile_installment_order as reconcile_bar_order,
+    has_bar_plan, withdrawal_allowed as bar_withdrawal_allowed, withdrawal_sql as bar_withdrawal_sql,
+)
 import uuid
 import json
 from datetime import date, datetime, timedelta
@@ -140,7 +145,7 @@ def order_payment_id(order):
     return str(payments[0].get("id")) if payments and payments[0].get("id") else None
 
 def restore_reserved_stock(db, sale_id):
-    if installment_withdrawal_allowed(db, sale_id):
+    if bar_withdrawal_allowed(db, sale_id) or installment_withdrawal_allowed(db, sale_id):
         return
     items = db.execute(
         """SELECT si.product_id,si.quantity,d.variant_id,d.order_mode,r.status reservation_status
@@ -170,6 +175,8 @@ def restore_reserved_stock(db, sale_id):
             db.execute("UPDATE products SET stock=stock+? WHERE id=?", (item["quantity"], item["product_id"]))
 
 def apply_mercadopago_status(db, sale, order):
+    if str(order.get('external_reference') or '').startswith('bar2x_') or has_bar_plan(db, sale['id']):
+        raise ValueError('Pix 2x exige reconciliação por parcela.')
     # Independent installments must never enter whole-sale reconciliation.
     if db.execute("SELECT 1 FROM sports_installment_plans WHERE sale_id=?", (sale["id"],)).fetchone():
         return sale["payment_status"]
@@ -716,6 +723,8 @@ def delete_sale(sale_id):
         flash("Venda não encontrada ou já apagada.", "warning")
         return redirect(request.referrer or url_for("finance.reports"))
     
+    if has_bar_plan(db, sale_id):
+        return jsonify(error="Venda parcelada exige tratamento administrativo próprio."), 409
     try:
         items = db.execute(
             "SELECT product_id, quantity FROM sale_items WHERE sale_id=?", (sale_id,)
@@ -1550,6 +1559,107 @@ def create_sports_installment_pix(installment_id):
     return jsonify(attempt=attempt), 202 if attempt["status"] == "creating" else 200
 
 
+def _bar_pix_response(db, installment, attempt=None):
+    from src.services.bar_installment_client import plan_summary
+    return dict(installment=dict(installment), paid=installment['status']=='paid',
+                plan=plan_summary(db,installment['sale_id'],installment['player_id']),
+                amount=money(installment['amount_cents']),attempt=attempt,
+                payload=attempt['qr_code'] if attempt else None,
+                image=('data:image/png;base64,'+attempt['qr_code_base64']) if attempt and attempt['qr_code_base64'] else None,
+                status_url=url_for('sales.bar_installment_status',installment_id=installment['id']))
+
+
+@bp.post('/bar/parcelamento/preview')
+@roles_allowed('client')
+def bar_installment_preview():
+    from src.services.bar_installment_client import preview_checkout
+    body=request.get_json(silent=True) or {}
+    if not isinstance(body,dict): return jsonify(error='Solicitação inválida.'),400
+    try: return jsonify(preview_checkout(get_db(),body.get('items'),body.get('use_bar_credit',False)))
+    except ValueError as exc: return jsonify(error=str(exc)),400
+
+
+@bp.post('/bar/parcelamento/checkout')
+@roles_allowed('client')
+def bar_installment_checkout():
+    from src.services.bar_installment_client import create_checkout
+    from src.services.bar_installment_payments import create_installment_payment_attempt
+    if not current_app.config.get('EXTERNAL_PAYMENTS_ENABLED',True): return jsonify(error='Pix indisponível neste ambiente.'),403
+    token,_=mercadopago_config()
+    if not token: return jsonify(error='Mercado Pago não configurado.'),503
+    body=request.get_json(silent=True) or {}
+    if not isinstance(body,dict) or body.get('event_id') or body.get('department','bar')!='bar': return jsonify(error='Checkout inválido.'),400
+    try:
+        db=get_db()
+        sale_id=create_checkout(db,g.user['player_id'],body.get('items'),body.get('idempotency_key'),body.get('use_bar_credit',False),body.get('notes',''))
+        first=db.execute('SELECT i.id FROM bar_installments i JOIN bar_installment_plans p ON p.id=i.plan_id WHERE p.sale_id=? AND i.installment_number=1',(sale_id,)).fetchone()
+        installment=_bar_installment_access(db,first['id'])
+        if installment['status']=='paid': return jsonify(_bar_pix_response(db,installment))
+        attempt=create_installment_payment_attempt(db,first['id'],token,player_id=g.user['player_id'])
+        return jsonify(_bar_pix_response(db,_bar_installment_access(db,first['id']),attempt)),202 if attempt['status']=='creating' else 200
+    except ValueError as exc: return jsonify(error=str(exc)),409
+    except MercadoPagoError: return jsonify(error='Compra registrada. Tente pagar em Minhas Compras.'),502
+
+
+def _bar_installment_access(db, installment_id):
+    row = db.execute('''SELECT i.*,p.sale_id,p.status plan_status,s.player_id
+                        FROM bar_installments i JOIN bar_installment_plans p ON p.id=i.plan_id
+                        JOIN sales s ON s.id=p.sale_id WHERE i.id=?''', (installment_id,)).fetchone()
+    if row and (g.user['role'] != 'client' or (g.user['player_id'] and row['player_id'] == g.user['player_id'])):
+        return row
+    return None
+
+
+@bp.post('/bar/parcelas/<int:installment_id>/pix')
+@roles_allowed('manager', 'staff', 'client')
+def create_bar_installment_pix(installment_id):
+    from src.services.bar_installment_payments import create_installment_payment_attempt
+    if not current_app.config.get('EXTERNAL_PAYMENTS_ENABLED', True):
+        return jsonify(error='Pagamento Pix indisponível neste ambiente.'), 403
+    db = get_db()
+    if not _bar_installment_access(db, installment_id):
+        return jsonify(error='Parcela não encontrada.'), 404
+    token, _ = mercadopago_config()
+    if not token:
+        return jsonify(error='Mercado Pago não configurado.'), 503
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify(error='Solicitação inválida.'), 400
+    try:
+        attempt = create_installment_payment_attempt(db, installment_id, token,
+            request.headers.get('X-Idempotency-Key') or body.get('idempotency_key'),
+            player_id=g.user['player_id'] if g.user['role'] == 'client' else None)
+        return jsonify(_bar_pix_response(db, _bar_installment_access(db, installment_id), attempt)), 202 if attempt['status'] == 'creating' else 200
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 409
+    except MercadoPagoError:
+        return jsonify(error='Não foi possível gerar a cobrança.'), 502
+
+
+@bp.get('/bar/parcelas/<int:installment_id>/status')
+@roles_allowed('manager', 'staff', 'client')
+def bar_installment_status(installment_id):
+    db = get_db()
+    installment = _bar_installment_access(db, installment_id)
+    if not installment:
+        return jsonify(error='Parcela não encontrada.'), 404
+    token, _ = mercadopago_config()
+    if installment['status'] == 'pending' and token and current_app.config.get('EXTERNAL_PAYMENTS_ENABLED', True):
+        attempts = db.execute("SELECT * FROM bar_installment_payment_attempts WHERE installment_id=? AND status IN ('creating','pending') ORDER BY id",
+                              (installment_id,)).fetchall()
+        try:
+            for attempt in attempts:
+                if attempt['mercado_pago_order_id']:
+                    order = get_order(token, attempt['mercado_pago_order_id'])
+                    matched = find_bar_attempt(db, order)
+                    if not matched or matched['id'] != attempt['id']:
+                        raise ValueError('Cobrança incompatível com a parcela.')
+                    reconcile_bar_order(db, order)
+        except (MercadoPagoError, ValueError):
+            return jsonify(error='Não foi possível confirmar o pagamento.'), 502
+    return jsonify(_bar_pix_response(db, _bar_installment_access(db, installment_id)))
+
+
 @bp.post("/material-esportivo/vendas/<int:sale_item_id>/pagamento")
 @roles_allowed("manager", "staff")
 def start_sports_backorder_payment(sale_item_id):
@@ -1763,7 +1873,7 @@ def pending_delivery_orders(db):
                 LEFT JOIN users u ON u.id=s.delivered_by"""
     sales = db.execute(
         f"""{select}
-             WHERE s.paid=1 AND s.delivered_at IS NULL
+             WHERE (s.paid=1 OR ({bar_withdrawal_sql(db)})) AND s.delivered_at IS NULL
                AND (s.ready_for_delivery=1 OR s.event_id IS NOT NULL)
              ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC"""
     ).fetchall()
@@ -1900,7 +2010,7 @@ def orders_feed():
     pending = db.execute(
         f"""{select} WHERE (s.ready_for_delivery=1 OR (s.event_id IS NOT NULL AND s.delivered_at IS NULL))
              AND s.delivered_at IS NULL
-             AND (s.paid=1 OR s.payment_status='pending_cash'){payment_clause}
+             AND (s.paid=1 OR ({bar_withdrawal_sql(db)}) OR s.payment_status='pending_cash'){payment_clause}
              ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC""", payment_params
     ).fetchall()
     delivered = db.execute(
@@ -2030,6 +2140,8 @@ def deliver_order(sale_id):
     sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
     if not sale or not sale["ready_for_delivery"] or sale["delivered_at"]:
         return jsonify(error="Pedido não encontrado ou já entregue."), 409
+    if has_bar_plan(db, sale_id) and not bar_withdrawal_allowed(db, sale_id):
+        return jsonify(error="A primeira parcela ainda não foi confirmada."), 409
     if db.execute("SELECT 1 FROM sports_installment_plans WHERE sale_id=?", (sale_id,)).fetchone() and not installment_withdrawal_allowed(db, sale_id):
         return jsonify(error="A primeira parcela ainda não foi confirmada."), 409
     if sale["payment_method"] == "Dinheiro" and (
@@ -2192,6 +2304,8 @@ def restore_delivered_order(sale_id):
 @roles_allowed("manager", "staff")
 def cancel_cash_order(sale_id):
     db = get_db()
+    if has_bar_plan(db, sale_id):
+        return jsonify(error="Venda parcelada exige tratamento administrativo próprio."), 409
     reason = (request.form.get("reason") or (request.get_json(silent=True) or {}).get("reason") or "").strip()
     # Compatibilidade com integrações antigas: a interface atual sempre envia
     # uma justificativa, mas registros legados recebem um motivo auditável.
@@ -2627,6 +2741,8 @@ def mercadopago_order_status(sale_id):
     sale = db.execute("SELECT * FROM sales WHERE id=? AND payment_method='Pix'", (sale_id,)).fetchone()
     if not sale:
         return jsonify(error="Cobrança não encontrada."), 404
+    if has_bar_plan(db, sale_id):
+        return jsonify(error='Consulte o pagamento pela parcela do Pix em 2x.'), 409
     if sale["payment_status"] == "pending" and sale["mercadopago_order_id"] and access_token:
         try:
             order = get_order(access_token, sale["mercadopago_order_id"])
@@ -2660,6 +2776,17 @@ def mercadopago_webhook():
         db = get_db()
         installment_order = dict(notification_data)
         installment_order['id'] = str(data_id or '')
+        bar_attempt = find_bar_attempt(db, installment_order)
+        if bar_attempt:
+            access_token, _ = mercadopago_config()
+            if not access_token:
+                return '', 503
+            order = get_order(access_token, str(data_id or bar_attempt['mercado_pago_order_id']))
+            confirmed = find_bar_attempt(db, order)
+            if not confirmed or confirmed['id'] != bar_attempt['id']:
+                raise ValueError('A consulta retornou outra tentativa Bar.')
+            reconcile_bar_order(db, order)
+            return '', 200
         attempt = find_installment_attempt(db, installment_order)
         if attempt:
             # Financial confirmation always uses the authenticated provider response.
