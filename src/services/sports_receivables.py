@@ -6,6 +6,11 @@ from src.services.sports_installment_client import today
 
 
 ELIGIBILITY = """s.payment_method='Pix'
+    AND s.payment_status NOT IN ('canceled','expired','failed','refunded')
+    AND EXISTS (SELECT 1 FROM sports_installments confirmed
+                WHERE confirmed.plan_id=p.id AND confirmed.status='paid')
+    AND NOT EXISTS (SELECT 1 FROM pix_checkout_closures closure
+                    WHERE closure.sale_id=s.id AND closure.status='completed')
     AND EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_id=s.id)
     AND NOT EXISTS (
         SELECT 1 FROM sale_items si JOIN products prod ON prod.id=si.product_id
