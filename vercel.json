@@ -20,10 +20,6 @@
     {
       "path": "/cron/process-notification-outbox",
       "schedule": "0 13 * * *"
-    },
-    {
-      "path": "/cron/expire-pix-checkouts",
-      "schedule": "* * * * *"
     }
   ]
 }
