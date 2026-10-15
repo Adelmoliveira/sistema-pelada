@@ -3006,7 +3006,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         positions = [page.index(f"<span>{label}</span>") for label in modules]
         self.assertEqual(positions, sorted(positions))
         for links in (
-            ["Caixa", "Conferir Pix", "Estoque", "Produtos", "Pedidos", "Venda rápida"],
+            ["Caixa", "Conferir Pix", "Produtos", "Pedidos", "Venda rápida"],
             ["Mensalidades", "Livro-caixa", "Lembretes"],
             ["Manutenção", "Materiais", "Relação de Carga"],
             ["Peladeiros", "Cadastro completo / PDF", "Usuários"],
@@ -3014,6 +3014,11 @@ class MercadoPagoFlowTest(unittest.TestCase):
             link_positions = [page.index(f">{label}</a>") for label in links]
             self.assertEqual(link_positions, sorted(link_positions))
         self.assertIn('data-bs-target="#sidebar-bar"', page)
+        self.assertIn('data-bs-target="#sidebar-stock"', page)
+        self.assertIn('id="sidebar-stock"', page)
+        self.assertIn('>Visão geral</a>', page)
+        self.assertIn('>Planejamento de Compras</a>', page)
+        self.assertNotIn('>Estoque → Planejamento de Compras</a>', page)
         self.assertIn(">Bar e vendas</a>", page)
         self.assertIn(">Compras e estoque</a>", page)
         self.assertIn(">Consolidado</a>", page)
