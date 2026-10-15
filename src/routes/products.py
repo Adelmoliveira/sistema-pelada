@@ -13,6 +13,7 @@ from src.services.cash_register import create_movement, get_session
 from src.services.stock_report_pdf import build_stock_report_pdf, stock_report_data, build_low_stock_pdf, low_stock_report_data
 from src.services.stock_alerts import notify_low_stock
 from src.services.material_photos import process_material_photo
+from src.services.purchase_forecast import purchase_forecast
 from src.utils import local_today
 from src.catalog import SPORTS_MATERIAL_CATEGORY
 
@@ -688,6 +689,81 @@ def stock():
                            history_total=history_total, history_page=history_page,
                            history_pages=history_pages, report_start=request.args.get("start", ""),
                            report_end=request.args.get("end", ""))
+
+
+@bp.get("/stock/purchase-planning")
+@roles_allowed("manager")
+def purchase_planning():
+    """Show a read-only forecast; manual adjustments remain browser-only."""
+    planned_month = (request.args.get("month") or local_today().strftime("%Y-%m")).strip()
+    try:
+        if not re.fullmatch(r"\d{4}-\d{2}", planned_month):
+            raise ValueError
+        date.fromisoformat(f"{planned_month}-01")
+        history_months = int(request.args.get("history", "3"))
+        safety_margin = int(request.args.get("margin", "10"))
+        if history_months not in (3, 6) or not 0 <= safety_margin <= 30:
+            raise ValueError
+    except (TypeError, ValueError):
+        abort(400, description="Filtros de planejamento inválidos.")
+
+    db = get_db()
+    forecast = purchase_forecast(
+        db,
+        planned_month=planned_month,
+        history_months=history_months,
+        safety_margin_percent=safety_margin,
+    )
+    costs = {
+        int(row["id"]): int(row["cost_cents"] or 0)
+        for row in db.execute(
+            "SELECT id,cost_cents FROM products WHERE category<>?",
+            (SPORTS_MATERIAL_CATEGORY,),
+        ).fetchall()
+    }
+    anomalous_products = set()
+    for anomaly in forecast["anomalies"]:
+        if anomaly.get("product_id") is not None:
+            anomalous_products.add(int(anomaly["product_id"]))
+        anomalous_products.update(int(value) for value in anomaly.get("product_ids", []))
+
+    products = []
+    for source in forecast["products"]:
+        product = dict(source)
+        cost_cents = costs.get(product["product_id"], 0)
+        product["cost_cents"] = cost_cents
+        product["estimated_cost_cents"] = (
+            product["suggested_purchase_units"] * cost_cents if cost_cents > 0 else None
+        )
+        product["has_anomaly"] = product["product_id"] in anomalous_products
+        products.append(product)
+
+    summary = {
+        "analyzed": len(products),
+        "with_suggestion": sum(product["suggested_purchase_quantity"] > 0 for product in products),
+        "cases": sum(
+            product["suggested_purchase_quantity"]
+            for product in products if product["purchase_unit"] == "cases"
+        ),
+        "loose_units": sum(
+            product["suggested_purchase_quantity"]
+            for product in products if product["purchase_unit"] == "units"
+        ),
+        "estimated_cost_cents": sum(product["estimated_cost_cents"] or 0 for product in products),
+        "missing_cost": any(
+            product["suggested_purchase_quantity"] > 0 and product["estimated_cost_cents"] is None
+            for product in products
+        ),
+    }
+    return render_template(
+        "purchase_planning.html",
+        forecast=forecast,
+        products=products,
+        summary=summary,
+        planned_month=planned_month,
+        history_months=history_months,
+        safety_margin=safety_margin,
+    )
 
 
 @bp.route("/stock/conference", methods=["GET", "POST"])

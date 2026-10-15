@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-3">
+  <div><h1 class="h3 mb-1">Planejamento de Compras</h1><p class="text-muted mb-0">Previsão do Bar baseada nas retiradas físicas dos meses completos anteriores.</p></div>
+  <a class="btn btn-outline-secondary" href="{{url_for('products.stock')}}">Voltar ao estoque</a>
+</div>
+
+<div class="card shadow-sm mb-4"><div class="card-body">
+  <form method="get" class="row g-3 align-items-end">
+    <div class="col-sm-4 col-lg-3"><label class="form-label" for="planned-month">Mês planejado</label><input class="form-control" id="planned-month" type="month" name="month" value="{{planned_month}}" required></div>
+    <div class="col-sm-4 col-lg-3"><label class="form-label" for="history-months">Histórico</label><select class="form-select" id="history-months" name="history"><option value="3" {{'selected' if history_months == 3}}>3 meses completos</option><option value="6" {{'selected' if history_months == 6}}>6 meses completos</option></select></div>
+    <div class="col-sm-4 col-lg-3"><label class="form-label" for="safety-margin">Margem de segurança</label><div class="input-group"><input class="form-control" id="safety-margin" type="number" name="margin" min="0" max="30" step="1" value="{{safety_margin}}" required><span class="input-group-text">%</span></div></div>
+    <div class="col-lg-3"><button class="btn btn-primary w-100" type="submit">Recalcular planejamento</button></div>
+  </form>
+</div></div>
+
+<div class="row g-3 mb-4">
+  <div class="col-6 col-xl"><div class="card h-100 shadow-sm"><div class="card-body"><div class="small text-muted">Produtos analisados</div><strong class="fs-4" id="summary-analyzed">{{summary.analyzed}}</strong></div></div></div>
+  <div class="col-6 col-xl"><div class="card h-100 shadow-sm"><div class="card-body"><div class="small text-muted">Com sugestão</div><strong class="fs-4" id="summary-suggested">{{summary.with_suggestion}}</strong></div></div></div>
+  <div class="col-6 col-xl"><div class="card h-100 shadow-sm"><div class="card-body"><div class="small text-muted">Total de caixas</div><strong class="fs-4" id="summary-cases">{{summary.cases}}</strong><div class="small text-muted">embalagens</div></div></div></div>
+  <div class="col-6 col-xl"><div class="card h-100 shadow-sm"><div class="card-body"><div class="small text-muted">Unidades avulsas</div><strong class="fs-4" id="summary-units">{{summary.loose_units}}</strong></div></div></div>
+  <div class="col-12 col-xl"><div class="card h-100 shadow-sm"><div class="card-body"><div class="small text-muted">Custo estimado</div><strong class="fs-4" id="summary-cost">{{summary.estimated_cost_cents|money}}</strong><div class="small text-warning" id="summary-cost-warning" {% if not summary.missing_cost %}hidden{% endif %}>Parcial: há produtos sem custo confiável.</div></div></div></div>
+</div>
+
+{% if forecast.anomalies %}<div class="alert alert-danger" role="alert"><strong>Atenção:</strong> {{forecast.anomalies|length}} inconsistência(s) histórica(s) foram excluídas do cálculo. As linhas identificáveis estão destacadas em vermelho.</div>{% endif %}
+{% if forecast.limitations %}<div class="alert alert-info" role="note">O sistema não possui histórico diário de estoque; períodos antigos de ruptura não podem ser detectados automaticamente.</div>{% endif %}
+
+<div class="card shadow-sm"><div class="card-header d-flex flex-wrap justify-content-between gap-2"><strong>Plano para {{planned_month|month_year}}</strong><span class="text-muted small">Ajustes não são gravados e serão perdidos ao sair ou recarregar a página.</span></div><div class="table-responsive">
+  <table class="table table-sm align-middle mb-0" id="purchase-plan-table">
+    <thead><tr><th>Produto</th><th>Consumo mensal</th><th>Média</th><th>Tendência</th><th>Estoque</th><th>Necessidade</th><th>Sugestão</th><th style="min-width:150px">Quantidade ajustada</th><th>Diferença</th><th>Custo estimado</th></tr></thead>
+    <tbody>
+    {% for product in products %}
+      <tr class="plan-row {{'table-danger' if product.has_anomaly else ('table-warning' if product.insufficient_history else ('table-light text-muted' if product.suggested_purchase_quantity == 0 else ''))}}" data-suggested="{{product.suggested_purchase_quantity}}" data-unit="{{product.purchase_unit}}" data-units-per-case="{{product.units_per_case}}" data-cost-cents="{{product.cost_cents}}">
+        <td><strong>{{product.name}}</strong><br><span class="small text-muted">{{product.category}}</span>{% if not product.active %}<br><span class="badge text-bg-secondary">Inativo</span>{% endif %}{% if product.insufficient_history %}<br><span class="badge text-bg-warning">Histórico insuficiente</span>{% endif %}{% if product.has_anomaly %}<br><span class="badge text-bg-danger">Anomalia histórica</span>{% endif %}</td>
+        <td>{% for month in product.monthly_consumption %}<span class="text-nowrap">{{month.month}}: <strong>{{month.quantity}}</strong></span>{{'<br>'|safe if not loop.last}}{% endfor %}</td>
+        <td>{{'%.2f'|format(product.average_monthly_consumption)}} un.</td>
+        <td>{% if product.trend_direction == 'up' %}<span class="text-danger">↑ Alta</span>{% elif product.trend_direction == 'down' %}<span class="text-success">↓ Queda</span>{% elif product.trend_direction == 'stable' %}<span class="text-muted">→ Estável</span>{% else %}<span class="text-muted">Indisponível</span>{% endif %}{% if product.trend_units_per_month is not none %}<br><small>{{'%+.2f'|format(product.trend_units_per_month)}} un./mês</small>{% endif %}</td>
+        <td>{{product.current_stock_units}} un.</td>
+        <td>{{product.net_required_units}} un.</td>
+        <td><strong>{{product.suggested_purchase_quantity}}</strong> {{'caixa(s)' if product.purchase_unit == 'cases' else 'unidade(s)'}}{% if product.purchase_unit == 'cases' %}<br><small class="text-muted">{{product.units_per_case}} un./caixa · {{product.suggested_purchase_units}} un.</small>{% endif %}</td>
+        <td><input class="form-control form-control-sm adjusted-quantity" type="number" min="0" step="1" value="{{product.suggested_purchase_quantity}}" aria-label="Quantidade ajustada de {{product.name}}"><div class="invalid-feedback">Informe um número inteiro igual ou maior que zero.</div><small class="text-muted">{{'caixa(s)' if product.purchase_unit == 'cases' else 'unidade(s)'}}</small></td>
+        <td class="adjustment-difference">Sem ajuste</td>
+        <td class="estimated-cost">{% if product.estimated_cost_cents is not none %}{{product.estimated_cost_cents|money}}{% else %}<span class="text-muted">Custo não informado</span>{% endif %}</td>
+      </tr>
+    {% else %}<tr><td colspan="10" class="text-center text-muted py-4">Nenhum produto do Bar cadastrado.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div></div>
+{% endblock %}
+
+{% block scripts %}<script>
+(function(){
+  const rows=[...document.querySelectorAll('.plan-row')],money=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'});
+  function refresh(){let suggested=0,cases=0,units=0,cost=0,missing=false;
+    rows.forEach(row=>{const input=row.querySelector('.adjusted-quantity'),raw=input.value.trim(),quantity=Number(raw),valid=raw!==''&&Number.isInteger(quantity)&&quantity>=0;
+      input.setCustomValidity(valid?'':'Informe um número inteiro igual ou maior que zero.');input.classList.toggle('is-invalid',!valid);if(!valid)return;
+      const original=Number(row.dataset.suggested),unit=row.dataset.unit,perCase=Number(row.dataset.unitsPerCase)||0,unitCost=Number(row.dataset.costCents)||0,difference=quantity-original;
+      row.querySelector('.adjustment-difference').textContent=difference===0?'Sem ajuste':`${difference>0?'+':''}${difference} ${unit==='cases'?'caixa(s)':'unidade(s)'}`;
+      if(quantity>0)suggested++;if(unit==='cases')cases+=quantity;else units+=quantity;
+      const purchasedUnits=unit==='cases'?quantity*perCase:quantity;if(unitCost>0){const rowCost=purchasedUnits*unitCost;cost+=rowCost;row.querySelector('.estimated-cost').textContent=money.format(rowCost/100)}else{if(quantity>0)missing=true;row.querySelector('.estimated-cost').innerHTML='<span class="text-muted">Custo não informado</span>'}
+    });
+    document.querySelector('#summary-suggested').textContent=suggested;document.querySelector('#summary-cases').textContent=cases;document.querySelector('#summary-units').textContent=units;document.querySelector('#summary-cost').textContent=money.format(cost/100);document.querySelector('#summary-cost-warning').hidden=!missing;
+  }
+  rows.forEach(row=>{const input=row.querySelector('.adjusted-quantity');input.addEventListener('input',refresh);input.addEventListener('blur',()=>{if(!input.checkValidity()){input.value=row.dataset.suggested;input.setCustomValidity('');input.classList.remove('is-invalid');refresh()}})});refresh();
+})();
+</script>{% endblock %}
