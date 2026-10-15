@@ -74,6 +74,10 @@ class PurchasePlanningPageTest(unittest.TestCase):
         page = response.get_data(as_text=True)
         self.assertIn("Planejamento de Compras", page)
         self.assertIn("/stock/purchase-planning", page)
+        self.assertIn('data-bs-target="#sidebar-stock"', page)
+        self.assertIn('aria-expanded="true" aria-controls="sidebar-stock"', page)
+        self.assertIn('class="collapse show" id="sidebar-stock"', page)
+        self.assertIn('class="active" href="/stock/purchase-planning"', page)
 
     def test_staff_and_client_cannot_access(self):
         for user_id in (self.staff, self.client_user):
