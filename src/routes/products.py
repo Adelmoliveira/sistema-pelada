@@ -6,6 +6,9 @@ import unicodedata
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, g, send_file, abort
 from werkzeug.utils import secure_filename
+from itsdangerous import URLSafeSerializer, BadSignature
+from src.services.stock_conferences import application, apply_conference, conference_transaction, locked_conference
+from src.services.stock_writes import correct_restock_stock, update_product_stock
 from src.db import get_db
 from src.routes.auth import roles_allowed
 from src.utils import cents
@@ -518,33 +521,25 @@ def edit_product(product_id):
             if stock_changed and not reason:
                 raise ValueError("Informe o motivo do ajuste de estoque.")
 
-            db.execute(
-                """UPDATE products SET name=?,category=?,package_type=?,units_per_case=?,
-                price_cents=?,cost_cents=?,min_stock=?,stock=?,supplier_email=?,photo_data=?,thumbnail_data=?,expiry_date=?,case_sale_enabled=? WHERE id=?""",
-                (
-                    request.form["name"].strip(),
-                    category,
-                    request.form.get("package_type", ""),
-                    units_per_case,
-                    cents(request.form["price"]),
-                    cents(request.form.get("cost", "0")),
-                    min_stock,
-                    new_stock,
-                    request.form.get("supplier_email", "").strip().lower(),
-                    photo_data,
-                    thumbnail_data,
-                    request.form.get("expiry_date", ""),
-                    case_enabled,
-                    product_id
-                )
-            )
-            if stock_changed:
-                db.execute("""INSERT INTO stock_adjustments
-                    (product_id,user_id,previous_stock,new_stock,difference,reason)
-                    VALUES(?,?,?,?,?,?)""", (product_id, g.user["id"], product["stock"], new_stock,
-                    new_stock - product["stock"], reason))
-            db.commit()
-            notify_low_stock(db, [product_id])
+            try:
+                expected_revision = int(request.form.get("stock_revision", ""))
+            except (TypeError, ValueError):
+                raise ValueError("Recarregue o formulário antes de editar o estoque.")
+            update_product_stock(db, product_id, expected_revision, {
+                "name": request.form["name"].strip(), "category": category,
+                "package_type": request.form.get("package_type", ""),
+                "units_per_case": units_per_case, "price_cents": cents(request.form["price"]),
+                "cost_cents": cents(request.form.get("cost", "0")), "min_stock": min_stock,
+                "stock": new_stock, "supplier_email": request.form.get("supplier_email", "").strip().lower(),
+                "photo_data": photo_data, "thumbnail_data": thumbnail_data,
+                "expiry_date": request.form.get("expiry_date", ""), "case_sale_enabled": case_enabled,
+            }, g.user["id"], reason)
+            try:
+                notify_low_stock(db, [product_id])
+            except Exception:
+                db.rollback()
+                current_app.logger.exception("Falha no alerta após editar produto %s", product_id)
+                flash("Produto atualizado, mas o alerta de estoque não pôde ser enviado.", "warning")
             flash("Produto atualizado.", "success")
             return redirect(url_for("products.sports_materials") if original_is_sports else url_for("products.products"))
         except ValueError as exc:
@@ -773,10 +768,19 @@ def stock_conference():
     db = get_db()
     month = (request.form.get("conference_month") if request.method == "POST" else request.args.get("month")) or local_today().strftime("%Y-%m")
     products = db.execute(
-        "SELECT id,name,category,stock FROM products WHERE active=1 ORDER BY category,name"
+        "SELECT id,name,category,stock,stock_revision FROM products WHERE active=1 AND category<>? ORDER BY category,name",
+        (SPORTS_MATERIAL_CATEGORY,)
     ).fetchall()
+    signer = URLSafeSerializer(current_app.secret_key, salt="stock-conference")
+    snapshot = [[p["id"], p["stock"], p["stock_revision"]] for p in products]
     if request.method == "POST":
         try:
+            try:
+                submitted = signer.loads(request.form.get("stock_snapshot", ""))
+            except BadSignature:
+                raise ValueError("Recarregue o formulário antes de registrar a conferência.")
+            if submitted != snapshot:
+                raise ValueError("O estoque ou os produtos mudaram desde a abertura do formulário. Recarregue e revise a contagem.")
             try:
                 date.fromisoformat(f"{month}-01")
             except (TypeError, ValueError):
@@ -795,7 +799,7 @@ def stock_conference():
                 reason = request.form.get(f"reason_{product['id']}", "").strip()
                 if difference and not reason:
                     raise ValueError(f"Informe o motivo da diferença de {product['name']}.")
-                counts.append((product["id"], expected, physical, difference, reason))
+                counts.append((product["id"], expected, physical, difference, reason, product["stock_revision"]))
             if not counts:
                 raise ValueError("Não há produtos ativos para conferir.")
             with db:
@@ -803,17 +807,17 @@ def stock_conference():
                     "INSERT INTO stock_conferences(conference_month,notes,performed_by) VALUES(?,?,?)",
                     (month, notes, g.user["id"]),
                 )
-                for product_id, expected, physical, difference, reason in counts:
+                for product_id, expected, physical, difference, reason, revision in counts:
                     db.execute(
-                        "INSERT INTO stock_conference_items(conference_id,product_id,expected_stock,physical_stock,difference,reason) VALUES(?,?,?,?,?,?)",
-                        (conference.lastrowid, product_id, expected, physical, difference, reason),
+                        "INSERT INTO stock_conference_items(conference_id,product_id,expected_stock,physical_stock,difference,reason,expected_revision) VALUES(?,?,?,?,?,?,?)",
+                        (conference.lastrowid, product_id, expected, physical, difference, reason, revision),
                     )
                 db.execute(
                     "INSERT INTO stock_conference_audit(conference_month,action,details,user_id) VALUES(?,?,?,?)",
                     (month, "REGISTRADA", f"Conferência #{conference.lastrowid} registrada.", g.user["id"]),
                 )
-            flash(f"Conferência de {month} registrada com sucesso.", "success")
-            return redirect(url_for("products.stock_conference", month=month))
+            flash("Conferência registrada. O estoque ainda não foi alterado.", "success")
+            return redirect(url_for("products.stock_conference", month=month, conference_id=conference.lastrowid))
         except ValueError as exc:
             flash(str(exc), "danger")
         except Exception as exc:
@@ -832,27 +836,32 @@ def stock_conference():
            FROM stock_conferences c LEFT JOIN users u ON u.id=c.performed_by
            ORDER BY c.conference_month DESC,c.id DESC"""
     ).fetchall()
+    conferences = [dict(row) for row in conferences]
+    for row in conferences:
+        applied = application(db, row["id"])
+        row.update(applied=bool(applied), applied_at=applied["created_at"] if applied else None,
+                   applied_by_name=applied["applied_by_name"] if applied else None)
     selected_id = request.args.get("conference_id", type=int)
     selected = None
     selected_items = []
     if selected_id:
         selected = db.execute(
-            """SELECT c.*,u.name performed_by_name,
-                      EXISTS(SELECT 1 FROM stock_conference_audit a
-                             WHERE a.conference_month=c.conference_month AND a.action='APLICADA') AS applied
+            """SELECT c.*,u.name performed_by_name
                FROM stock_conferences c LEFT JOIN users u ON u.id=c.performed_by WHERE c.id=?""",
             (selected_id,),
         ).fetchone()
         if selected:
+            selected = dict(selected)
+            selected["applied"] = bool(application(db, selected_id))
             selected_items = db.execute(
                 """SELECT i.*,p.name product_name,p.category FROM stock_conference_items i
-                   JOIN products p ON p.id=i.product_id WHERE i.conference_id=? ORDER BY p.category,p.name""",
+                   LEFT JOIN products p ON p.id=i.product_id WHERE i.conference_id=? ORDER BY p.category,p.name""",
                 (selected_id,),
             ).fetchall()
     return render_template(
         "stock_conference.html", products=products, conferences=conferences,
         selected=selected, selected_items=selected_items, selected_id=selected_id,
-        conference_month=month, is_manager=g.user["role"] == "manager",
+        stock_snapshot=signer.dumps(snapshot), conference_month=month, is_manager=g.user["role"] == "manager",
     )
 
 
@@ -860,12 +869,11 @@ def stock_conference():
 @roles_allowed("manager")
 def delete_stock_conference(conference_id):
     db = get_db()
-    conference = db.execute("SELECT * FROM stock_conferences WHERE id=?", (conference_id,)).fetchone()
-    if not conference:
-        flash("Conferência não encontrada.", "warning")
-        return redirect(url_for("products.stock_conference"))
     try:
-        with db:
+        with conference_transaction(db):
+            conference = locked_conference(db, conference_id)
+            if application(db, conference_id):
+                raise ValueError("Conferência aplicada não pode ser excluída. O cancelamento exige procedimento específico e auditável.")
             db.execute(
                 "INSERT INTO stock_conference_audit(conference_month,action,details,user_id) VALUES(?,?,?,?)",
                 (conference["conference_month"], "EXCLUIDA", f"Conferência #{conference_id} excluída.", g.user["id"]),
@@ -873,6 +881,8 @@ def delete_stock_conference(conference_id):
             db.execute("DELETE FROM stock_conference_items WHERE conference_id=?", (conference_id,))
             db.execute("DELETE FROM stock_conferences WHERE id=?", (conference_id,))
         flash("Conferência excluída. A ação foi registrada na auditoria.", "success")
+    except ValueError as exc:
+        flash(str(exc), "warning")
     except Exception as exc:
         db.rollback()
         current_app.logger.error("Erro ao excluir conferência %s: %s", conference_id, exc)
@@ -885,58 +895,22 @@ def delete_stock_conference(conference_id):
 def apply_stock_conference(conference_id):
     """Apply a confirmed physical count to product stock, exactly once."""
     db = get_db()
-    conference = db.execute("SELECT * FROM stock_conferences WHERE id=?", (conference_id,)).fetchone()
-    if not conference:
-        flash("Conferência não encontrada.", "warning")
-        return redirect(url_for("products.stock_conference"))
-    applied = db.execute(
-        "SELECT id FROM stock_conference_audit WHERE conference_month=? AND action='APLICADA' LIMIT 1",
-        (conference["conference_month"],),
-    ).fetchone()
-    if applied:
-        flash("Esta conferência já foi aplicada ao estoque.", "warning")
-        return redirect(url_for("products.stock_conference", conference_id=conference_id))
-    items = db.execute(
-        "SELECT * FROM stock_conference_items WHERE conference_id=? ORDER BY product_id",
-        (conference_id,),
-    ).fetchall()
-    changed_products = []
     try:
-        with db:
-            for item in items:
-                product = db.execute("SELECT id,name,stock FROM products WHERE id=?", (item["product_id"],)).fetchone()
-                if not product:
-                    continue
-                # Do not overwrite sales/restocks made after the count.
-                if int(product["stock"] or 0) != int(item["expected_stock"] or 0):
-                    raise ValueError(
-                        f"O estoque de {product['name']} mudou desde a conferência. Faça uma nova conferência."
-                    )
-                difference = int(item["physical_stock"]) - int(product["stock"] or 0)
-                if difference:
-                    db.execute("UPDATE products SET stock=? WHERE id=?", (item["physical_stock"], product["id"]))
-                    db.execute(
-                        """INSERT INTO stock_adjustments
-                        (product_id,user_id,previous_stock,new_stock,difference,reason)
-                        VALUES(?,?,?,?,?,?)""",
-                        (product["id"], g.user["id"], product["stock"], item["physical_stock"], difference,
-                         f"Conferência mensal {conference['conference_month']}: {item['reason'] or 'ajuste de contagem física'}"),
-                    )
-                    changed_products.append(product["id"])
-            db.execute(
-                "INSERT INTO stock_conference_audit(conference_month,action,details,user_id) VALUES(?,?,?,?)",
-                (conference["conference_month"], "APLICADA", f"Conferência #{conference_id} aplicada ao estoque.", g.user["id"]),
-            )
-        if changed_products:
-            notify_low_stock(db, changed_products)
-        flash("Conferência aplicada ao estoque com sucesso.", "success")
+        changed_products = apply_conference(db, conference_id, g.user["id"])
     except ValueError as exc:
-        db.rollback()
         flash(str(exc), "danger")
-    except Exception as exc:
-        db.rollback()
-        current_app.logger.error("Erro ao aplicar conferência %s: %s", conference_id, exc)
-        flash("Erro interno ao aplicar a conferência.", "danger")
+    except Exception:
+        current_app.logger.exception("Erro ao aplicar conferência %s", conference_id)
+        flash("Não foi possível aplicar a conferência. Recarregue os detalhes e verifique a situação antes de tentar novamente.", "danger")
+    else:
+        flash("Conferência aplicada ao estoque com sucesso.", "success")
+        if changed_products:
+            try:
+                notify_low_stock(db, changed_products)
+            except Exception:
+                db.rollback()
+                current_app.logger.exception("Falha no alerta após aplicar conferência %s", conference_id)
+                flash("O ajuste foi aplicado, mas o alerta de estoque não pôde ser enviado.", "warning")
     return redirect(url_for("products.stock_conference", conference_id=conference_id))
 
 
@@ -1480,36 +1454,7 @@ def correct_restock(restock_id):
                 raise ValueError("Quantidade e custo não podem ser negativos.")
             if len(reason) < 5:
                 raise ValueError("Informe um motivo com pelo menos 5 caracteres.")
-            new_stock = restock["current_stock"] + corrected_quantity - effective_quantity
-            if new_stock < 0:
-                raise ValueError("Não é possível reduzir essa quantidade porque parte do estoque já foi utilizada.")
-            latest_restock = db.execute(
-                "SELECT MAX(id) latest_id FROM restocks WHERE product_id=?",
-                (restock["product_id"],),
-            ).fetchone()["latest_id"]
-            with db:
-                db.execute(
-                    """INSERT INTO restock_corrections
-                    (restock_id,previous_quantity,corrected_quantity,previous_unit_cost_cents,
-                     corrected_unit_cost_cents,reason,created_by)
-                    VALUES(?,?,?,?,?,?,?)""",
-                    (restock_id, effective_quantity, corrected_quantity, effective_cost,
-                     corrected_cost, reason, g.user["id"]),
-                )
-                db.execute("UPDATE products SET stock=? WHERE id=?", (new_stock, restock["product_id"]))
-                if latest_restock == restock_id:
-                    db.execute(
-                        "UPDATE products SET cost_cents=? WHERE id=?",
-                        (corrected_cost, restock["product_id"]),
-                    )
-                db.execute(
-                    """INSERT INTO stock_adjustments
-                    (product_id,user_id,previous_stock,new_stock,difference,reason)
-                    VALUES(?,?,?,?,?,?)""",
-                    (restock["product_id"], g.user["id"], restock["current_stock"], new_stock,
-                     corrected_quantity - effective_quantity,
-                     f"Correção da reposição #{restock_id}: {reason}"),
-                )
+            correct_restock_stock(db, restock_id, corrected_quantity, corrected_cost, reason, g.user["id"])
             flash(f"Reposição #{restock_id} corrigida com histórico preservado.", "success")
             return redirect(url_for("products.stock"), code=303)
         except ValueError as exc:

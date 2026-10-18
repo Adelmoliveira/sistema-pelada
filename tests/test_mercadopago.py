@@ -2565,6 +2565,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
                 "cost": "7,00",
                 "min_stock": "2",
                 "stock": "8",
+                "stock_revision": "0",
                 "stock_reason": "",
                 "supplier_email": "",
                 "remove_photo": "1",
@@ -7048,6 +7049,11 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn("relatorio-estoque-", response.headers["Content-Disposition"])
         self.assertTrue(response.data.startswith(b"%PDF-"))
 
+    def conference_snapshot(self):
+        from html import unescape
+        page = self.client.get("/stock/conference").get_data(as_text=True)
+        return unescape(re.search(r'name="stock_snapshot" value="([^"]+)"', page).group(1))
+
     def test_monthly_stock_conference_requires_reason_and_preserves_expected_stock(self):
         with self.client.session_transaction() as session:
             session["user_id"] = self.user_id
@@ -7055,7 +7061,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         invalid = self.client.post(
             "/stock/conference",
             data={
-                "conference_month": "2026-08",
+                "conference_month": "2026-08", "stock_snapshot": self.conference_snapshot(),
                 f"physical_{self.product_id}": "3",
                 f"reason_{self.product_id}": "",
             },
@@ -7070,7 +7076,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         created = self.client.post(
             "/stock/conference",
             data={
-                "conference_month": "2026-08",
+                "conference_month": "2026-08", "stock_snapshot": self.conference_snapshot(),
                 "notes": "Fechamento do bar",
                 f"physical_{self.product_id}": "3",
                 f"reason_{self.product_id}": "Perda registrada",
@@ -7088,7 +7094,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
 
         duplicate = self.client.post(
             "/stock/conference",
-            data={"conference_month": "2026-08", f"physical_{self.product_id}": "5"},
+            data={"conference_month": "2026-08", "stock_snapshot": self.conference_snapshot(), f"physical_{self.product_id}": "5"},
             follow_redirects=True,
         )
         self.assertEqual(duplicate.status_code, 200)
@@ -7099,7 +7105,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
             session["user_id"] = self.user_id
         created = self.client.post(
             "/stock/conference",
-            data={"conference_month": "2026-09", f"physical_{self.product_id}": "5"},
+            data={"conference_month": "2026-09", "stock_snapshot": self.conference_snapshot(), f"physical_{self.product_id}": "5"},
         )
         self.assertEqual(created.status_code, 302)
         with app.app_context():
