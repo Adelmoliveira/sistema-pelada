@@ -45,7 +45,7 @@ Na primeira ativação há um bloqueio administrativo curto das seis tabelas-fon
 
 Na primeira invocação de cada novo mês, o consumidor enfileira uma invalidação por produto uma única vez, pois a janela histórica muda mesmo sem movimento de estoque. É a única varredura recorrente do catálogo; o forecast continua em lotes por produto. Sem invocação, não há atualização automática da janela.
 
-Recuperação pela rota `GET /cron/process-purchase-observation`, protegida exclusivamente pelo `Authorization: Bearer <CRON_SECRET>` existente, ou pelo CLI. Sem token válido retorna 401. Uma requisição processa um lote; `processed=0` indica fila vazia naquele snapshot. A rota continua disponível em homologação, pois não faz pagamentos nem notificações. Não se altera `vercel.json`: **nenhum agendamento é ativado por este PR**. Para observação contínua, um executor externo autorizado deverá invocar a rota regularmente, independentemente de navegador/instâncias Vercel. Até lá, o consumo é manual; a captura persiste o backlog. Não há polling no navegador nem tarefa em memória após a resposta.
+A integração operacional passou a usar `POST /cron/process-purchase-observation`, com segredo exclusivo `PURCHASE_MONITOR_SECRET` e executor cron-job.org. GET e o segredo geral não autorizam mais essa rota. Consulte [operação e PWA](compras-inteligentes-operacao-pwa.md) para configuração, limites, painel e nova migration de telemetria. O CLI da etapa 2 continua disponível para recuperação administrativa, mas suas execuções não entram no histórico HTTP do painel.
 
 ## Migration PostgreSQL e pré-requisitos
 

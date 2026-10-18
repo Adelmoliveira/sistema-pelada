@@ -1135,7 +1135,7 @@ def run_postgres_migrations(database_url, migrations_dir=None):
         conn.close()
     return applied
 
-def connect_db(app):
+def connect_db(app, *, connect_timeout=10):
     local_mode = app.config.get("APP_ENV") == "local"
     # The application config is the single source of truth after environment
     # isolation. Respect an explicit ``None`` instead of falling back to a
@@ -1160,7 +1160,7 @@ def connect_db(app):
     conn = psycopg2.connect(
         db_url,
         sslmode="require",
-        connect_timeout=10,
+        connect_timeout=connect_timeout,
         cursor_factory=psycopg2.extras.DictCursor
     )
     with conn.cursor() as cursor:
@@ -1490,6 +1490,8 @@ def init_sqlite(wrapper):
     conn.executescript(SCHEMA)
     from src.purchase_observation_schema import schema_sql
     conn.executescript(schema_sql())
+    from src.purchase_monitor_schema import schema_sql as monitor_schema_sql
+    conn.executescript(monitor_schema_sql())
     migrate_sale_delivery_operations(conn)
     for table, column, definition in (
         ("products", "stock_revision", "INTEGER NOT NULL DEFAULT 0"),

@@ -52,6 +52,7 @@ app.config.update(
     GMAIL_SMTP_USER=os.environ.get("GMAIL_SMTP_USER"),
     GMAIL_APP_PASSWORD=os.environ.get("GMAIL_APP_PASSWORD"),
     CRON_SECRET=os.environ.get("CRON_SECRET"),
+    PURCHASE_MONITOR_SECRET=os.environ.get("PURCHASE_MONITOR_SECRET"),
     PIX_ABANDONMENT_NOT_BEFORE=os.environ.get("PIX_ABANDONMENT_NOT_BEFORE"),
     VAPID_PUBLIC_KEY=os.environ.get("VAPID_PUBLIC_KEY"),
     VAPID_PRIVATE_KEY=os.environ.get("VAPID_PRIVATE_KEY"),
@@ -154,6 +155,8 @@ csrf.exempt(mercadopago_webhook)
 csrf.exempt(credit_purchase)
 csrf.exempt(push_subscribe)
 csrf.exempt(push_unsubscribe)
+from src.routes.finance import process_purchase_observation_cron
+csrf.exempt(process_purchase_observation_cron)
 
 # Register Template Filters
 app.template_filter("money")(money)
