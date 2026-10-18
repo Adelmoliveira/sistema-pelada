@@ -80,17 +80,143 @@ def _trend(values):
     return round(numeric, 4), direction
 
 
+def _selected_product_ids(product_ids):
+    if product_ids is None:
+        return None
+    try:
+        selected = tuple(product_ids)
+    except TypeError as exc:
+        raise ValueError("product_ids deve ser um iterável de inteiros positivos") from exc
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in selected):
+        raise ValueError("product_ids deve conter apenas inteiros positivos")
+    return tuple(sorted(set(selected)))
+
+
+def _load_forecast_data(db, start, end, selected):
+    if selected == ():
+        return [], [], []
+    product_filter = ""
+    if selected is not None:
+        product_filter = " AND id IN (" + ",".join("?" for _ in selected) + ")"
+    # Unfiltered calls retain the original queries and their database ordering.
+    products = db.execute(
+        f"""SELECT id,name,category,units_per_case,stock,active,created_at
+           FROM products WHERE category<>?{product_filter} ORDER BY name,id""",
+        (SPORTS_MATERIAL_CATEGORY,) + (selected or ()),
+    ).fetchall()
+    if selected is not None and not products:
+        return [], [], []
+    found = tuple(int(row["id"]) for row in products) if selected is not None else ()
+    history_filter = ""
+    if selected is not None:
+        history_filter = " AND si.product_id IN (" + ",".join("?" for _ in found) + ")"
+    deliveries = db.execute(
+        f"""SELECT sid.id delivery_id,si.product_id,sid.quantity,sid.delivered_at,
+                  COALESCE(r.quantity,0) restored_quantity
+           FROM sale_item_deliveries sid
+           JOIN sale_items si ON si.id=sid.sale_item_id
+           JOIN products p ON p.id=si.product_id
+           LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+           WHERE sid.delivered_at>=? AND sid.delivered_at<? AND p.category<>?{history_filter}
+           ORDER BY sid.delivered_at,sid.id""",
+        (start, end, SPORTS_MATERIAL_CATEGORY) + found,
+    ).fetchall()
+    legacy_rows = db.execute(
+        f"""SELECT s.id sale_id,s.delivered_at,s.payment_status,
+                  CASE WHEN sc.id IS NULL THEN 0 ELSE 1 END canceled,
+                  si.id sale_item_id,si.product_id,si.quantity
+           FROM sales s
+           JOIN sale_items si ON si.sale_id=s.id
+           JOIN products p ON p.id=si.product_id
+           LEFT JOIN sale_cancellations sc ON sc.sale_id=s.id
+           WHERE s.delivered_at>=? AND s.delivered_at<? AND p.category<>?{history_filter}
+             AND NOT EXISTS (
+                 SELECT 1 FROM sale_items all_items
+                 JOIN sale_item_deliveries sid ON sid.sale_item_id=all_items.id
+                 WHERE all_items.sale_id=s.id
+             )
+           ORDER BY s.delivered_at,s.id,si.id""",
+        (start, end, SPORTS_MATERIAL_CATEGORY) + found,
+    ).fetchall()
+    return products, deliveries, legacy_rows
+
+
+def _forecast_product(product, monthly, history_months, margin, start):
+    """Apply the existing forecasting rules to one product's monthly series."""
+    product_id = int(product["id"])
+    months = list(monthly)
+    values = [monthly[month] for month in months]
+    total = sum(values)
+    average = Decimal(total) / Decimal(history_months)
+    safety_stock = average * margin / Decimal(100)
+    gross_requirement = _ceil(average + safety_stock)
+    stock = max(0, int(product["stock"] or 0))
+    net_required = max(0, gross_requirement - stock)
+    units_per_case = max(0, int(product["units_per_case"] or 0))
+    active = bool(product["active"])
+    suggested_quantity = _ceil(Decimal(net_required) / Decimal(units_per_case)) if units_per_case and net_required else net_required
+    suggested_units = suggested_quantity * units_per_case if units_per_case else suggested_quantity
+    if not active:
+        suggested_quantity = 0
+        suggested_units = 0
+
+    created_at = _as_utc(product["created_at"]) if product["created_at"] else None
+    history_started_at = _as_utc(start)
+    partial_history = bool(created_at and created_at > history_started_at)
+    insufficient = total == 0 or partial_history
+    limitations = []
+    if total == 0:
+        limitations.append("no_consumption_history")
+    if partial_history:
+        limitations.append("partial_history")
+    if not active:
+        limitations.append("inactive_product")
+    slope, direction = _trend(values) if not insufficient else (None, "insufficient_data")
+    return {
+        "product_id": product_id,
+        "name": product["name"],
+        "category": product["category"],
+        "active": active,
+        "monthly_consumption": [{"month": month, "quantity": monthly[month]} for month in months],
+        "average_monthly_consumption": round(float(average), 4),
+        "trend_units_per_month": slope,
+        "trend_direction": direction,
+        "forecast_units": round(float(average), 4),
+        "safety_margin_percent": float(margin),
+        "safety_stock_units": round(float(safety_stock), 4),
+        "gross_requirement_units": gross_requirement,
+        "current_stock_units": stock,
+        "net_required_units": net_required,
+        "units_per_case": units_per_case,
+        "suggested_purchase_quantity": suggested_quantity,
+        "purchase_unit": "cases" if units_per_case else "units",
+        "suggested_purchase_units": suggested_units,
+        "insufficient_history": insufficient,
+        "limitations": limitations,
+    }
+
+
 def purchase_forecast(
     db,
     planned_month=None,
     history_months=3,
     safety_margin_percent=DEFAULT_SAFETY_MARGIN_PERCENT,
+    *,
+    product_ids=None,
 ):
     """Build a read-only bar purchase forecast from physical withdrawals.
 
     ``history_months`` accepts only 3 or 6 complete months. Restorations are
     attributed to the original withdrawal month and clamped at zero if corrupt
     data restores more than was delivered.
+
+    ``product_ids=None`` keeps the complete report used by the existing page.
+    An iterable of positive integer IDs scopes catalog and history queries;
+    duplicates are ignored, unknown IDs and sports products are omitted, and
+    an empty iterable returns an empty report without querying the database.
+    Results retain database ordering. Legacy anomalies contain only affected
+    selected products, but the detailed-delivery exclusion remains sale-wide.
+    IDs are bound parameters and must fit the database's statement limit.
     """
     if history_months not in VALID_HISTORY_WINDOWS:
         raise ValueError("history_months deve ser 3 ou 6")
@@ -106,26 +232,13 @@ def purchase_forecast(
     months = [_shift_month(history_start, index).strftime("%Y-%m") for index in range(history_months)]
     start, end = _utc_boundary(history_start), _utc_boundary(planned)
 
-    products = db.execute(
-        """SELECT id,name,category,units_per_case,stock,active,created_at
-           FROM products WHERE category<>? ORDER BY name,id""",
-        (SPORTS_MATERIAL_CATEGORY,),
-    ).fetchall()
-    product_ids = {int(row["id"]) for row in products}
-    consumption = {product_id: {month: 0 for month in months} for product_id in product_ids}
+    products, deliveries, legacy_rows = _load_forecast_data(
+        db, start, end, _selected_product_ids(product_ids)
+    )
+    available_ids = {int(row["id"]) for row in products}
+    consumption = {product_id: {month: 0 for month in months} for product_id in available_ids}
     anomalies = []
 
-    deliveries = db.execute(
-        """SELECT sid.id delivery_id,si.product_id,sid.quantity,sid.delivered_at,
-                  COALESCE(r.quantity,0) restored_quantity
-           FROM sale_item_deliveries sid
-           JOIN sale_items si ON si.id=sid.sale_item_id
-           JOIN products p ON p.id=si.product_id
-           LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
-           WHERE sid.delivered_at>=? AND sid.delivered_at<? AND p.category<>?
-           ORDER BY sid.delivered_at,sid.id""",
-        (start, end, SPORTS_MATERIAL_CATEGORY),
-    ).fetchall()
     for row in deliveries:
         delivered = int(row["quantity"] or 0)
         restored = int(row["restored_quantity"] or 0)
@@ -141,23 +254,6 @@ def purchase_forecast(
         if product_id in consumption and key in consumption[product_id]:
             consumption[product_id][key] += effective
 
-    legacy_rows = db.execute(
-        """SELECT s.id sale_id,s.delivered_at,s.payment_status,
-                  CASE WHEN sc.id IS NULL THEN 0 ELSE 1 END canceled,
-                  si.id sale_item_id,si.product_id,si.quantity
-           FROM sales s
-           JOIN sale_items si ON si.sale_id=s.id
-           JOIN products p ON p.id=si.product_id
-           LEFT JOIN sale_cancellations sc ON sc.sale_id=s.id
-           WHERE s.delivered_at>=? AND s.delivered_at<? AND p.category<>?
-             AND NOT EXISTS (
-                 SELECT 1 FROM sale_items all_items
-                 JOIN sale_item_deliveries sid ON sid.sale_item_id=all_items.id
-                 WHERE all_items.sale_id=s.id
-             )
-           ORDER BY s.delivered_at,s.id,si.id""",
-        (start, end, SPORTS_MATERIAL_CATEGORY),
-    ).fetchall()
     legacy_anomalies = {}
     for row in legacy_rows:
         sale_id = int(row["sale_id"])
@@ -181,59 +277,10 @@ def purchase_forecast(
             consumption[product_id][key] += int(row["quantity"])
     anomalies.extend(legacy_anomalies.values())
 
-    results = []
-    for product in products:
-        product_id = int(product["id"])
-        monthly = consumption[product_id]
-        values = [monthly[month] for month in months]
-        total = sum(values)
-        average = Decimal(total) / Decimal(history_months)
-        safety_stock = average * margin / Decimal(100)
-        gross_requirement = _ceil(average + safety_stock)
-        stock = max(0, int(product["stock"] or 0))
-        net_required = max(0, gross_requirement - stock)
-        units_per_case = max(0, int(product["units_per_case"] or 0))
-        active = bool(product["active"])
-        suggested_quantity = _ceil(Decimal(net_required) / Decimal(units_per_case)) if units_per_case and net_required else net_required
-        suggested_units = suggested_quantity * units_per_case if units_per_case else suggested_quantity
-        if not active:
-            suggested_quantity = 0
-            suggested_units = 0
-
-        created_at = _as_utc(product["created_at"]) if product["created_at"] else None
-        history_started_at = _as_utc(start)
-        partial_history = bool(created_at and created_at > history_started_at)
-        insufficient = total == 0 or partial_history
-        limitations = []
-        if total == 0:
-            limitations.append("no_consumption_history")
-        if partial_history:
-            limitations.append("partial_history")
-        if not active:
-            limitations.append("inactive_product")
-        slope, direction = _trend(values) if not insufficient else (None, "insufficient_data")
-        results.append({
-            "product_id": product_id,
-            "name": product["name"],
-            "category": product["category"],
-            "active": active,
-            "monthly_consumption": [{"month": month, "quantity": monthly[month]} for month in months],
-            "average_monthly_consumption": round(float(average), 4),
-            "trend_units_per_month": slope,
-            "trend_direction": direction,
-            "forecast_units": round(float(average), 4),
-            "safety_margin_percent": float(margin),
-            "safety_stock_units": round(float(safety_stock), 4),
-            "gross_requirement_units": gross_requirement,
-            "current_stock_units": stock,
-            "net_required_units": net_required,
-            "units_per_case": units_per_case,
-            "suggested_purchase_quantity": suggested_quantity,
-            "purchase_unit": "cases" if units_per_case else "units",
-            "suggested_purchase_units": suggested_units,
-            "insufficient_history": insufficient,
-            "limitations": limitations,
-        })
+    results = [
+        _forecast_product(product, consumption[int(product["id"])], history_months, margin, start)
+        for product in products
+    ]
 
     return {
         "planned_month": planned.strftime("%Y-%m"),
