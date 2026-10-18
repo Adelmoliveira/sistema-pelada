@@ -1,5 +1,7 @@
 # Compras Inteligentes e PWA — operação
 
+A etapa opcional de push exclusivo para gestores está documentada em [Push inteligente](compras-inteligentes-push-gestores.md). Ela nasce desabilitada e mantém os controles e a fila separados da observação. As instruções abaixo descrevem a etapa de observação sem alertas habilitados.
+
 ## Diagnóstico e integração
 
 A etapa 2 já captura invalidações na transação das movimentações e calcula somente produtos afetados. `enabled=0` é a desativação deliberada da captura, não um erro. O cálculo permanece mês atual de São Paulo, três meses completos e margem de 10%, com as regras existentes de consumo, reservas, caixas, esportivos, inativos e dados legados. A tela Planejamento de Compras mantém filtros e cálculo próprios; o novo link abre `/stock/purchase-monitoring`, exclusivo do gerente.

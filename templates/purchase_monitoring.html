@@ -1,10 +1,11 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between gap-2 mb-3"><h1 class="h3">Compras Inteligentes — Monitoramento</h1><a class="btn btn-outline-secondary" href="{{url_for('products.purchase_planning')}}">Planejamento de Compras</a></div>
-<p class="alert alert-info">Modo observação: não envia notificações. Política fixa: mês atual, 3 meses completos de histórico e margem de 10%. O planejamento mantém seus filtros próprios.</p>
+<p class="alert alert-info">Monitoramento e alertas possuem controles separados. Política fixa: mês atual, 3 meses completos de histórico e margem de 10%. O planejamento mantém seus filtros próprios.</p>
 {% if not monitor %}
 <div class="alert alert-danger">Monitoramento indisponível. Verifique a conexão, as permissões e a migration de monitoramento. As operações de estoque permanecem independentes.</div>
 {% else %}
+{% include 'purchase_alert_panel.html' %}
 <div class="card mb-3"><div class="card-body">
 <p><strong>Estado: {{monitor.state}}</strong></p>
 <p>Última execução solicitada: {{monitor.last.started_at if monitor.last else 'Ainda não executado'}}<br>Conclusão: {{monitor.last.finished_at if monitor.last and monitor.last.finished_at else '—'}}<br>Eventos pendentes: <strong>{{monitor.pending}}</strong> · Produtos monitorados: <strong>{{monitor.monitored}}</strong></p>
@@ -17,7 +18,7 @@
 {% endif %}
 </div></div>
 <h2 class="h5">Episódios de necessidade</h2>
-<p>Necessidades observadas, não pedidos de compra. Episódios iniciais são silenciosos; todos permanecem sem notificações. Produtos excluídos conservam seu histórico.</p>
+<p>Necessidades observadas, não pedidos de compra. Episódios iniciais e necessidades preexistentes permanecem silenciosos. Produtos excluídos conservam seu histórico.</p>
 <div class="table-responsive"><table class="table table-striped"><thead><tr><th>Produto</th><th>Episódio</th><th>Origem</th><th>Necessidade / sugestão (un.)</th><th>Abertura / atualização</th><th>Estado</th></tr></thead><tbody>
 {% for e in monitor.episodes %}<tr><td>{{e.name or ('Produto #' ~ e.product_id)}}</td><td>{{e.episode_number}}</td><td>{{'Baseline silencioso' if e.origin == 'baseline' else 'Transição observada'}}</td><td>{{e.needed_units}} / {{e.suggested_units}}</td><td>{{e.opened_at}}<br>{{e.updated_at}}</td><td>{{'Encerrado: ' ~ e.closed_at if e.closed_at else 'Aberto'}}</td></tr>{% else %}<tr><td colspan="6">Nenhum episódio registrado.</td></tr>{% endfor %}
 </tbody></table></div>

@@ -118,36 +118,55 @@
     return bytes.length === expected.length && bytes.every((value, index) => value === expected[index]);
   };
 
-  const registerSubscription = subscription => fetch("/notifications/push/subscribe", {
+  const managerPush = document.body.dataset.pushRole === "manager";
+  let managerPushEpoch=0;
+  if (managerPush) document.addEventListener('submit',event=>{
+    if (event.target.getAttribute && event.target.getAttribute('action') === '/logout') managerPushEpoch++;
+  },true);
+  const pushRoot = managerPush ? "/notifications/manager-push" : "/notifications/push";
+  const pushHeaders = () => ({"Content-Type":"application/json", "X-CSRFToken":document.querySelector('meta[name="csrf-token"]')?.content || ""});
+  const registerSubscription = subscription => fetch(pushRoot + "/subscribe", {
     method: "POST",
     credentials: "same-origin",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(subscription)
+    headers: pushHeaders(),
+    body: JSON.stringify(managerPush ? {...subscription.toJSON(),consent:true} : subscription)
   });
 
   window.enablePushNotifications = async () => {
     if (!registrationPromise || !("PushManager" in window) || !("Notification" in window)) throw new Error("Este dispositivo não oferece notificações push.");
+    const expectedEpoch=managerPushEpoch;
+    const ensureCurrent=()=>{if(managerPush && expectedEpoch!==managerPushEpoch)throw new Error('Consentimento cancelado pelo logout.');};
     const registration = await registrationPromise;
-    const keyResponse = await fetch("/notifications/push/public-key");
+    ensureCurrent();
+    const keyResponse = managerPush
+      ? await fetch(pushRoot + "/prepare",{method:"POST",headers:pushHeaders(),body:"{}"})
+      : await fetch(pushRoot + "/public-key");
+    ensureCurrent();
+    if (!keyResponse.ok || keyResponse.redirected) throw new Error("Não foi possível preparar o consentimento. Recarregue a página e tente novamente.");
     const keyData = await keyResponse.json();
+    ensureCurrent();
     if (!keyData.publicKey) throw new Error("Notificações ainda não configuradas no servidor.");
     const permission = await Notification.requestPermission();
+    ensureCurrent();
     if (permission !== "granted") throw new Error("Permissão de notificação não concedida.");
     const applicationServerKey = publicKeyBytes(keyData.publicKey);
     let subscription = await registration.pushManager.getSubscription();
+    ensureCurrent();
     if (subscription && !sameKey(subscription, applicationServerKey)) {
       await subscription.unsubscribe();
       subscription = null;
     }
     subscription = subscription || await registration.pushManager.subscribe({userVisibleOnly: true, applicationServerKey});
+    ensureCurrent();
     const response = await registerSubscription(subscription);
-    if (!response.ok) throw new Error("Não foi possível registrar este dispositivo.");
+    ensureCurrent();
+    if (!response.ok || response.redirected) throw new Error("Não foi possível registrar este dispositivo.");
     return true;
   };
 
   // Recupera assinaturas perdidas após migração/recriação do banco.
   // Também renova automaticamente quando a chave VAPID foi alterada.
-  if (registrationPromise && "Notification" in window && Notification.permission === "granted") {
+  if (!managerPush && document.body.dataset.pushRole === "client" && registrationPromise && "Notification" in window && Notification.permission === "granted") {
     window.enablePushNotifications().catch(error => console.warn("Não foi possível sincronizar o push:", error));
   }
 
@@ -155,12 +174,29 @@
     if (!registrationPromise || !("PushManager" in window)) throw new Error("Este dispositivo não oferece notificações push.");
     const registration = await registrationPromise;
     const subscription = await registration.pushManager.getSubscription();
-    if (!subscription) return true;
-    const response = await fetch("/notifications/push/unsubscribe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({endpoint: subscription.endpoint})});
-    if (!response.ok) throw new Error("Não foi possível desativar as notificações.");
-    await subscription.unsubscribe();
+    if (!subscription && !managerPush) return true;
+    const response = await fetch(pushRoot + "/unsubscribe", {method: "POST", headers: pushHeaders(), body: JSON.stringify({endpoint: subscription?.endpoint})});
+    if (!response.ok || response.redirected) throw new Error("Não foi possível desativar as notificações.");
+    if (subscription) await subscription.unsubscribe();
     return true;
   };
+
+  if (managerPush) {
+    const status=document.getElementById('manager-push-status');
+    const enable=document.getElementById('manager-enable-push');
+    const disable=document.getElementById('manager-disable-push');
+    const bind=(button,action,message)=>button && button.addEventListener('click',async()=>{
+      button.disabled=true;
+      try { await action(); status.textContent=message; }
+      catch(error){status.textContent=error.message;}
+      finally{button.disabled=false;}
+    });
+    bind(enable,window.enablePushNotifications,'Consentimento registrado neste dispositivo.');
+    bind(disable,window.disablePushNotifications,'Push gerencial revogado neste dispositivo.');
+    if ("Notification" in window && Notification.permission === "denied") {
+      fetch(pushRoot+'/unsubscribe',{method:'POST',headers:pushHeaders(),body:'{}'}).catch(()=>{});
+    }
+  }
 
   const onboarding = document.querySelector("#push-onboarding");
   if (onboarding) {

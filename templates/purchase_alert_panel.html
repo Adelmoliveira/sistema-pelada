@@ -1,0 +1,17 @@
+{% if alerts %}
+<section class="card mb-3"><div class="card-body">
+<h2 class="h5">Alertas inteligentes exclusivos para gestores</h2>
+<p><strong>{{'Habilitados' if alerts.control.enabled else 'Desativados'}}</strong> · Gestores ativos com push cadastrado: {{alerts.managers}}<br>Envios pendentes: {{alerts.counts.get('pending',0)}} · Em processamento: {{alerts.counts.get('processing',0)}} · Aceitos pelo serviço: {{alerts.counts.get('accepted',0)}} · Falhas: {{alerts.counts.get('failed',0)}}</p>
+{% if alerts.initializing %}<p class="text-warning">Baseline silencioso em preparação: {{alerts.initializing}} produto(s) aguardando reconciliação.</p>{% endif %}
+{% if not alerts.vapid_ready %}<p class="text-danger">VAPID não configurado. Envios ficam pendentes.</p>{% endif %}
+<p class="small text-muted">Consentimento é individual por dispositivo. Aceitação pelo serviço não comprova exibição ou leitura. Necessidades existentes na ativação são silenciosas, inclusive agravamentos. Novos agravamentos exigem aumento de pelo menos 25% e uma embalagem completa sobre o maior patamar alertado.</p>
+<p class="small">Última execução: {{alerts.control.last_run_at or 'Ainda não executado'}}{% if alerts.control.last_error %}<br><span class="text-danger">Falha no processamento de alertas: {{alerts.control.last_error}}</span>{% endif %}</p>
+<form method="post"><input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+{% if alerts.control.enabled %}<button class="btn btn-outline-danger" name="action" value="disable_alerts">Desabilitar alertas inteligentes</button>
+{% else %}<label class="form-check mb-2"><input type="checkbox" class="form-check-input" name="confirm_alerts" value="yes" required> Confirmo a habilitação com baseline silencioso, somente para gestores com consentimento.</label><button class="btn btn-outline-primary" name="action" value="enable_alerts" {{'disabled' if not monitor.control.enabled}}>Habilitar alertas inteligentes</button>{% endif %}
+</form>
+<hr><button type="button" class="btn btn-outline-primary" id="manager-enable-push">Autorizar push neste dispositivo</button> <button type="button" class="btn btn-outline-secondary" id="manager-disable-push">Revogar push neste dispositivo</button><p id="manager-push-status" role="status"></p>
+<details><summary>Histórico de alertas e tentativas</summary><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Data</th><th>Alerta</th><th>Produto</th><th>Dispositivos / aceitos / falhas</th></tr></thead><tbody>{% for a in alerts.history %}<tr><td>{{a.created_at}}</td><td>{{'Nova necessidade' if a.kind=='opened' else 'Agravamento'}}</td><td>{{a.product_name or ('#' ~ a.product_id)}}</td><td>{{a.devices}} / {{a.accepted or 0}} / {{a.failed or 0}}</td></tr>{% else %}<tr><td colspan="4">Nenhum alerta registrado.</td></tr>{% endfor %}</tbody></table></div>
+<ul>{% for a in alerts.attempts %}<li>{{a.started_at}}: {{a.outcome}}{% if a.http_status %} (HTTP {{a.http_status}}){% endif %}{% if a.error_code %} — {{a.error_code}}{% endif %}</li>{% endfor %}</ul></details>
+</div></section>
+{% endif %}

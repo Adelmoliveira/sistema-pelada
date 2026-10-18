@@ -180,7 +180,7 @@ class MonitorPageTest(unittest.TestCase):
         self.assertIn('Eventos pendentes:',page)
         self.assertIn('Água Planejada',page)
         self.assertIn('Baseline silencioso',page)
-        self.assertIn('sem notificações',page)
+        self.assertIn('Desativados',page)
         self.assertEqual(self.client.post('/stock/purchase-monitoring',data={'action':'deactivate'}).status_code,302)
 
     def test_staff_client_and_csrf(self):

@@ -6,7 +6,7 @@ function worker(network = async () => new Response('network')) {
   const handlers = {}, stores = new Map(), deleted = [];
   let writes = 0, waiting = 0;
   const caches = {
-    async keys() { return ['unrelated-cache','peladeiros-gpcta-v6','peladeiros-gpcta-v7']; },
+    async keys() { return ['unrelated-cache','peladeiros-gpcta-v6','peladeiros-gpcta-v8']; },
     async delete(key) { deleted.push(key); },
     async open() { return {
       async addAll(urls) { for (const url of urls) stores.set(url, new Response('shell')); },
@@ -119,4 +119,69 @@ test('XHR operations block updates and release after success or synchronous fail
   xhr.finish(); assert.equal(app.button.disabled,false);
   const failed=new app.window.XMLHttpRequest(); failed.fail=true;
   assert.throws(()=>failed.send()); assert.equal(app.button.disabled,false);
+});
+
+// Minimal transactional IndexedDB fake: tests execute the real worker helpers.
+function fakeIndexedDB() {
+  const seen=new Map();
+  const database={close(){}, createObjectStore(){}, transaction(){
+    const tx={objectStore(){return {
+      add(value){ const request={}; queueMicrotask(()=>{
+        if(seen.has(value.id)) { request.error={name:'ConstraintError'}; request.onerror({preventDefault(){},stopPropagation(){}}); }
+        else seen.set(value.id,value);
+        if(tx.oncomplete)tx.oncomplete();
+      }); return request; },
+      delete(id){seen.delete(id);queueMicrotask(()=>tx.oncomplete && tx.oncomplete());}
+    };}};return tx;
+  }};
+  return {open(){const request={result:database};queueMicrotask(()=>request.onsuccess());return request;}};
+}
+test('persistent intelligent push identity claims once and can retry failed presentation',async()=>{
+  const context={self:{addEventListener(){}},indexedDB:fakeIndexedDB()};
+  vm.createContext(context);vm.runInContext(fs.readFileSync('static/service-worker.js','utf8'),context);
+  assert.equal(await context.claimPurchaseAlert('123'),true);
+  assert.equal(await context.claimPurchaseAlert('123'),false);
+  await context.forgetPurchaseAlert('123');
+  assert.equal(await context.claimPurchaseAlert('123'),true);
+});
+function pushUI(role, permission='granted') {
+  const calls=[],documentEvents={};
+  const subscription={toJSON:()=>({endpoint:'https://fcm.googleapis.com/test',keys:{p256dh:'public',auth:'key'}})};
+  const context={registrationPromise:Promise.resolve({pushManager:{getSubscription:async()=>subscription}}),
+    document:{body:{dataset:{pushRole:role}},addEventListener(name,fn){documentEvents[name]=fn;},querySelector:()=>({content:'csrf-test'}),getElementById:()=>null},
+    window:{PushManager:{}},Notification:{permission,requestPermission:async()=>'granted'},
+    fetch:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>({publicKey:'AA'})};},
+    atob:s=>Buffer.from(s,'base64').toString('binary'),Uint8Array,console};
+  context.window.Notification=context.Notification;
+  const source=fs.readFileSync('static/pwa.js','utf8');
+  vm.runInNewContext(source.slice(source.indexOf('  const publicKeyBytes'),source.indexOf('  const onboarding')),context);
+  return {context,calls,documentEvents};
+}
+test('manager permission alone never silently grants consent; explicit enrollment includes CSRF',async()=>{
+  const app=pushUI('manager');await new Promise(resolve=>setImmediate(resolve));assert.equal(app.calls.length,0);
+  await app.context.window.enablePushNotifications();
+  const request=app.calls.find(call=>call.url.endsWith('/subscribe'));
+  assert.equal(request.url,'/notifications/manager-push/subscribe');
+  assert.equal(request.options.headers['X-CSRFToken'],'csrf-test');
+  assert.equal(JSON.parse(request.options.body).consent,true);
+});
+test('client subscription renewal stays on legacy endpoints',async()=>{
+  const app=pushUI('client');await new Promise(resolve=>setImmediate(resolve));
+  assert.ok(app.calls.some(call=>call.url==='/notifications/push/subscribe'));
+  assert.ok(app.calls.every(call=>!call.url.includes('manager-push')));
+});
+test('revoked browser permission revokes manager association without polling',async()=>{
+  const app=pushUI('manager','denied');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(app.calls.length,1);assert.equal(app.calls[0].url,'/notifications/manager-push/unsubscribe');
+  assert.equal(app.calls[0].options.headers['X-CSRFToken'],'csrf-test');
+});
+
+test('logout cancels a manager consent flow already awaiting preparation',async()=>{
+  const app=pushUI('manager');let release;
+  app.context.fetch=()=>new Promise(resolve=>{release=resolve;});
+  const flow=app.context.window.enablePushNotifications();
+  await new Promise(resolve=>setImmediate(resolve));
+  app.documentEvents.submit({target:{getAttribute:()=>'/logout'}});
+  release({ok:true,json:async()=>({publicKey:'AA'})});
+  await assert.rejects(flow,/logout/);
 });

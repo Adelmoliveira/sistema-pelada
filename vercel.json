@@ -21,5 +21,10 @@
       "path": "/cron/process-notification-outbox",
       "schedule": "0 13 * * *"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "feat/push-compras-inteligentes-gestores": false
+    }
+  }
 }
