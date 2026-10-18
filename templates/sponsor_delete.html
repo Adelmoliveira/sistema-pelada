@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1 class="h3">Excluir patrocinador</h1>
+<p>Excluir <strong>{{sponsor.name}}</strong> e sua logomarca? Esta ação é permanente.</p>
+{% if sponsor.primary_slot %}<p class="alert alert-warning">A posição principal {{sponsor.primary_slot}} ficará vazia. Nenhum outro patrocinador será movido automaticamente.</p>{% endif %}
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+  <input type="hidden" name="revision" value="{{revision}}">
+  <button class="btn btn-danger" name="confirm_delete" value="1">Confirmar exclusão</button>
+  <a class="btn btn-outline-secondary" href="{{url_for('sponsors.manage')}}">Cancelar</a>
+</form>
+{% endblock %}

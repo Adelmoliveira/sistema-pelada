@@ -20,9 +20,16 @@ CREATE TABLE IF NOT EXISTS sponsors (
        (logo_data IS NOT NULL AND logo_version IS NOT NULL AND length(logo_data)<=131072))
 );
 CREATE INDEX IF NOT EXISTS sponsors_display ON sponsors(active,primary_slot,sort_order,id);
-INSERT INTO sponsors(name,primary_slot) VALUES('VINAC',1) ON CONFLICT(primary_slot) DO NOTHING;
-INSERT INTO sponsors(name,primary_slot) VALUES('Prudention',2) ON CONFLICT(primary_slot) DO NOTHING;
 """
+    # PostgreSQL migrations run once through their ledger. SQLite bootstrap can
+    # run again: never restore a principal deliberately deleted by a manager.
+    if postgres:
+        sql += "INSERT INTO sponsors(name,primary_slot) VALUES('VINAC',1) ON CONFLICT(primary_slot) DO NOTHING;\n"
+        sql += "INSERT INTO sponsors(name,primary_slot) VALUES('Prudention',2) ON CONFLICT(primary_slot) DO NOTHING;\n"
+    else:
+        guard = ' WHERE EXISTS(SELECT 1 FROM sponsor_catalog WHERE id=1 AND revision=1)'
+        sql += f"INSERT INTO sponsors(name,primary_slot) SELECT 'VINAC',1{guard} ON CONFLICT(primary_slot) DO NOTHING;\n"
+        sql += f"INSERT INTO sponsors(name,primary_slot) SELECT 'Prudention',2{guard} ON CONFLICT(primary_slot) DO NOTHING;\n"
     if postgres:
         sql += 'ALTER TABLE sponsor_catalog ENABLE ROW LEVEL SECURITY;\nALTER TABLE sponsors ENABLE ROW LEVEL SECURITY;\n'
     return sql

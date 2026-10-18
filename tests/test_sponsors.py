@@ -77,6 +77,7 @@ class SponsorPagesTest(unittest.TestCase):
         pages.app.config['WTF_CSRF_ENABLED'] = True
         self.assertEqual(self.save().status_code, 303)
         self.assertEqual(self.client.post('/admin/sponsors/order', json={'revision': 1, 'ids': []}).status_code, 303)
+        self.assertEqual(self.client.post('/admin/sponsors/preview', data={}).status_code, 303)
         self.assertEqual(self.revision(), 1)
 
     def test_empty_catalog_and_idempotent_schema(self):
@@ -108,6 +109,10 @@ class SponsorPagesTest(unittest.TestCase):
         self.assertNotIn('>Empresa de teste<', footer)
         self.assertIn('noopener noreferrer sponsored', footer)
         self.assertLess(footer.index('GPCTA'), footer.index('<img'))
+        self.assertLess(footer.index('<img'), footer.index('Copyright © 2026'))
+        self.assertEqual(html.count('Copyright © 2026 | Grupo de Peladas do CTA - GPCTA'), 1)
+        self.assertNotIn('© 2026 GPCTA', html)
+        self.assertIn('APOIADORES GPCTA', footer)
 
     def test_deactivate_remove_and_old_version(self):
         self.login(self.manager)
@@ -227,6 +232,150 @@ class SponsorPagesTest(unittest.TestCase):
             with db: db.execute("INSERT INTO sponsors(name,primary_slot) VALUES('Duplicado',1)")
         db.close()
 
+    def test_delete_requires_manager_confirmation_and_revision(self):
+        self.login(self.manager); self.add_logo()
+        row = self.latest()
+        path = '/admin/sponsors/{}/delete'.format(row['id'])
+        for user in (self.staff, self.client_user):
+            self.login(user)
+            self.assertEqual(self.client.post(path, data={'revision': self.revision(), 'confirm_delete': '1'}, headers={'Accept': 'application/json'}).status_code, 403)
+        self.login(self.manager)
+        self.assertIn('Confirmar exclusão', self.client.get(path).get_data(as_text=True))
+        revision = self.revision()
+        self.assertEqual(self.client.post(path, data={'revision': revision}).status_code, 400)
+        self.assertEqual(self.client.post(path, data={'revision': revision-1, 'confirm_delete': '1'}).status_code, 409)
+        self.assertEqual(self.client.post(path, data={'revision': revision, 'confirm_delete': '1'}).status_code, 302)
+        db = self.db()
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM sponsors WHERE id=?', (row['id'],)).fetchone()[0], 0)
+        db.close()
+        self.assertEqual(self.client.get('/sponsors/{}/logo/{}'.format(row['id'], row['logo_version'])).status_code, 404)
+        self.client.post('/logout')
+        self.assertNotIn('class="sponsor-logos"', self.client.get('/login').get_data(as_text=True))
+
+    def test_primary_deletion_releases_only_its_slot_and_delete_csrf(self):
+        self.login(self.manager)
+        self.add_logo(sponsor_id=1, name='VINAC')
+        self.save(name='Comum')
+        path = '/admin/sponsors/1/delete'
+        confirmation = self.client.get(path).get_data(as_text=True)
+        self.assertIn('VINAC', confirmation)
+        self.assertIn('posição principal 1', confirmation)
+        self.assertEqual(self.client.post(path, data={'revision': self.revision(), 'confirm_delete': '1'}).status_code, 302)
+        db = self.db()
+        self.assertEqual([tuple(row) for row in db.execute('SELECT name,primary_slot,sort_order FROM sponsors ORDER BY id').fetchall()], [('Prudention', 2, 0), ('Comum', None, 0)])
+        db.close()
+        # Repeated local bootstrap must not resurrect a deleted principal.
+        from src.db import initialize_sqlite_database
+        initialize_sqlite_database(pages.app.config['DATABASE'])
+        db = self.db(); self.assertEqual(db.execute('SELECT COUNT(*) FROM sponsors WHERE primary_slot=1').fetchone()[0], 0); db.close()
+        self.assertIn('Posição principal 1 disponível', self.client.get('/admin/sponsors').get_data(as_text=True))
+        self.save(); row = self.latest()
+        pages.app.config['WTF_CSRF_ENABLED'] = True
+        self.assertEqual(self.client.post('/admin/sponsors/{}/delete'.format(row['id']), data={'revision': self.revision(), 'confirm_delete': '1'}).status_code, 303)
+
+    def test_edit_preserves_identity_position_and_replaces_or_removes_image(self):
+        self.login(self.manager); self.add_logo(sponsor_id=2, name='Prudention')
+        db = self.db(); original = dict(db.execute('SELECT * FROM sponsors WHERE id=2').fetchone()); db.close()
+        self.save(sponsor_id=2, name='Nome atualizado', link_url='https://example.com/apoio', active='0')
+        db = self.db(); edited = dict(db.execute('SELECT * FROM sponsors WHERE id=2').fetchone()); db.close()
+        self.assertEqual((edited['id'], edited['primary_slot'], edited['logo_version']), (2, 2, original['logo_version']))
+        self.assertEqual((edited['name'], edited['link_url'], edited['active']), ('Nome atualizado', 'https://example.com/apoio', 0))
+        self.save(sponsor_id=2, name='Nome atualizado', logo=(BytesIO(bordered_png()), 'new.png'))
+        db = self.db(); changed = dict(db.execute('SELECT * FROM sponsors WHERE id=2').fetchone()); db.close()
+        self.assertNotEqual(changed['logo_version'], original['logo_version'])
+        self.assertEqual((changed['id'], changed['primary_slot'], changed['active']), (2, 2, 1))
+        self.save(sponsor_id=2, name='Nome atualizado', remove_logo='1')
+        db = self.db(); removed = dict(db.execute('SELECT * FROM sponsors WHERE id=2').fetchone()); db.close()
+        self.assertIsNone(removed['logo_data']); self.assertIsNone(removed['logo_version'])
+        self.assertEqual(removed['primary_slot'], 2)
+
+    def test_actions_have_icons_and_all_roles_cannot_delete_principals(self):
+        self.login(self.manager)
+        html = self.client.get('/admin/sponsors').get_data(as_text=True)
+        for name in ('VINAC', 'Prudention'):
+            self.assertIn('aria-label="Editar '+name+'"', html)
+            self.assertIn('aria-label="Excluir '+name+'"', html)
+        self.assertIn('<svg', html)
+        for role in ('staff', 'client', 'football_manager', 'infra', 'maintenance', 'display'):
+            db = self.db()
+            with db: db.execute('UPDATE users SET role=? WHERE id=?', (role, self.staff))
+            db.close(); self.login(self.staff)
+            self.assertEqual(self.client.post('/admin/sponsors/2/delete', data={'confirm_delete': '1', 'revision': 1}, headers={'Accept': 'application/json'}).status_code, 403)
+        self.assertEqual(self.revision(), 1)
+
+    def test_delete_both_principals_keeps_common_order_and_does_not_promote(self):
+        self.login(self.manager)
+        self.save(name='A'); self.save(name='B')
+        for sponsor_id in (1, 2):
+            self.assertEqual(self.client.post('/admin/sponsors/{}/delete'.format(sponsor_id), data={'revision': self.revision(), 'confirm_delete': '1'}).status_code, 302)
+        db = self.db()
+        self.assertEqual([tuple(row) for row in db.execute('SELECT name,primary_slot,sort_order FROM sponsors ORDER BY sort_order,id').fetchall()], [('A', None, 0), ('B', None, 1)])
+        db.close()
+
+    def test_delete_then_create_appends_after_remaining_sponsors(self):
+        self.login(self.manager)
+        for name in ('A', 'B', 'C'): self.save(name=name)
+        db = self.db(); second = db.execute("SELECT id FROM sponsors WHERE name='B'").fetchone()[0]; db.close()
+        self.client.post('/admin/sponsors/{}/delete'.format(second), data={'revision': self.revision(), 'confirm_delete': '1'})
+        self.save(name='D')
+        db = self.db()
+        self.assertEqual([row[0] for row in db.execute('SELECT name FROM sponsors WHERE primary_slot IS NULL ORDER BY sort_order,id').fetchall()], ['A', 'C', 'D'])
+        db.close()
+
+    def test_private_preview_inactive_and_preview_does_not_persist(self):
+        self.login(self.manager); self.add_logo(active='0'); row = self.latest()
+        revision = self.revision()
+        preview_path = '/admin/sponsors/{}/logo'.format(row['id'])
+        self.assertIn('no-store', self.client.get(preview_path).headers['Cache-Control'])
+        response = self.client.post('/admin/sponsors/preview', data={'sponsor_id': row['id']})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, 'image/webp')
+        self.assertIn('no-store', response.headers['Cache-Control'])
+        self.assertEqual(self.revision(), revision)
+        self.login(self.staff)
+        self.assertEqual(self.client.get(preview_path, headers={'Accept': 'application/json'}).status_code, 403)
+        self.assertEqual(self.client.post('/admin/sponsors/preview', headers={'Accept': 'application/json'}).status_code, 403)
+
+    def test_background_removal_requires_explicit_confirmation(self):
+        self.login(self.manager)
+        self.save(logo=(BytesIO(bordered_png()), 'logo.png'), remove_background='1')
+        self.assertEqual(self.revision(), 1)
+        response = self.client.post('/admin/sponsors/preview', data={'logo': (BytesIO(bordered_png()), 'logo.png'), 'remove_background': '1', 'confirm_background': '1'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.revision(), 1)
+        self.save(logo=(BytesIO(bordered_png()), 'logo.png'), remove_background='1', confirm_background='1')
+        self.assertEqual(self.revision(), 2)
+        with Image.open(BytesIO(self.latest()['logo_data'])) as image:
+            self.assertEqual(image.size, (51, 51))
+
+    def test_existing_logo_background_can_be_previewed_without_mutating(self):
+        self.login(self.manager)
+        self.save(logo=(BytesIO(bordered_png()), 'logo.png'))
+        original = self.latest()
+        response = self.client.post('/admin/sponsors/preview', data={'sponsor_id': original['id'], 'remove_background': '1', 'confirm_background': '1'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.latest()['logo_version'], original['logo_version'])
+        self.assertEqual(self.revision(), 2)
+        self.save(sponsor_id=original['id'], remove_background='1', confirm_background='1')
+        self.assertEqual(self.latest()['id'], original['id'])
+        self.assertNotEqual(self.latest()['logo_version'], original['logo_version'])
+        with Image.open(BytesIO(self.latest()['logo_data'])) as image:
+            self.assertLess(max(image.size), 80)
+
+    def test_shared_copyright_and_title_on_login_and_other_pages(self):
+        self.login(self.manager); self.add_logo()
+        for path in ('/login', '/admin/sponsors'):
+            if path == '/login': self.client.post('/logout')
+            else: self.login(self.manager)
+            html = self.client.get(path).get_data(as_text=True)
+            self.assertEqual(html.count('Copyright © 2026 | Grupo de Peladas do CTA - GPCTA'), 1)
+            self.assertEqual(html.count('APOIADORES GPCTA'), 1)
+            self.assertLess(html.index('APOIADORES GPCTA'), html.index('Copyright © 2026'))
+        css = Path('static/sponsors.css').read_text()
+        self.assertIn('height: 52px', css); self.assertIn('height: 36px', css)
+        self.assertIn('100dvh', css); self.assertIn('safe-area-inset-bottom', css)
+        self.assertNotIn('overflow-y', css)
+
 
 class SponsorAssetsTest(unittest.TestCase):
     def test_image_optimized_and_transparency_preserved(self):
@@ -262,6 +411,28 @@ class SponsorAssetsTest(unittest.TestCase):
         for raw, filename, mime in [(animated.getvalue(), 'logo.webp', 'image/webp'), (png()[:45], 'logo.png', 'image/png')]:
             with self.assertRaises(ValueError):
                 process_logo(FileStorage(stream=BytesIO(raw), filename=filename, content_type=mime))
+
+    def test_uniform_background_removal_is_connected_and_conservative(self):
+        from src.services.sponsors import remove_uniform_background
+        with Image.open(BytesIO(bordered_png())) as image:
+            result = remove_uniform_background(image.convert('RGBA'))
+        self.assertEqual(result.getpixel((0, 0))[3], 0)
+        # Enclosed white brand detail must not be mistaken for exterior background.
+        self.assertEqual(result.getpixel((40, 40)), (255, 255, 255, 255))
+        self.assertEqual(result.getpixel((20, 20)), (0, 60, 120, 255))
+        gradient = Image.new('RGBA', (80, 80), 'white')
+        gradient.putpixel((0, 0), (0, 0, 0, 255))
+        with self.assertRaises(ValueError): remove_uniform_background(gradient)
+        with self.assertRaises(ValueError): remove_uniform_background(Image.new('RGBA', (80, 80), 'white'))
+
+
+def bordered_png():
+    from PIL import ImageDraw
+    image = Image.new('RGB', (80, 80), 'white')
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((15, 15, 65, 65), fill=(0, 60, 120))
+    draw.rectangle((30, 30, 50, 50), fill='white')
+    stream = BytesIO(); image.save(stream, format='PNG'); return stream.getvalue()
 
 
 @unittest.skipUnless(os.environ.get('GPCTA_TEST_POSTGRES_SOCKET'), 'disposable PostgreSQL required')
@@ -338,6 +509,20 @@ class SponsorPostgresTest(unittest.TestCase):
         db.close()
         db = self.connect()
         self.assertEqual([row[0] for row in db.execute('SELECT id FROM sponsors WHERE primary_slot IS NULL ORDER BY sort_order').fetchall()], [second, first])
+        raw, version = process_logo(FileStorage(stream=BytesIO(png()), filename='logo.png', content_type='image/png'))
+        with db: db.execute('UPDATE sponsors SET logo_data=?,logo_version=? WHERE id=?', (raw, version, first))
+        from src.routes.sponsors import delete
+        with pages.app.test_request_context('/admin/sponsors/{}/delete'.format(first), method='POST', data={'revision': 3, 'confirm_delete': '1'}), patch('src.routes.sponsors.get_db', return_value=db):
+            g.user = {'id': 1, 'role': 'manager'}
+            self.assertEqual(delete(first).status_code, 302)
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM sponsors WHERE id=?', (first,)).fetchone()[0], 0)
+        with pages.app.test_request_context('/admin/sponsors/1/delete', method='POST', data={'revision': 4, 'confirm_delete': '1'}), patch('src.routes.sponsors.get_db', return_value=db):
+            g.user = {'id': 1, 'role': 'manager'}
+            self.assertEqual(delete(1).status_code, 302)
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM sponsors WHERE primary_slot=1').fetchone()[0], 0)
+        self.assertEqual(db.execute('SELECT primary_slot FROM sponsors WHERE id=2').fetchone()[0], 2)
+        with db: db.execute("INSERT INTO sponsors(name,primary_slot) VALUES('Nova referência de teste',1)")
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM sponsors WHERE primary_slot=1').fetchone()[0], 1)
         db.close()
 
     def test_unique_primary_slot_and_rollback(self):

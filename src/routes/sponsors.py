@@ -1,4 +1,7 @@
 from datetime import datetime, timezone
+from io import BytesIO
+
+from werkzeug.datastructures import FileStorage
 
 from flask import Blueprint, Response, abort, current_app, flash, g, has_request_context, jsonify, redirect, render_template, request, url_for
 
@@ -28,6 +31,25 @@ def claim_revision(db, value):
         abort(409, 'O cadastro mudou. Recarregue a página antes de salvar.')
 
 
+def prepared_image(db, *, required=False):
+    remove_background = request.form.get('remove_background') == '1'
+    if remove_background and request.form.get('confirm_background') != '1':
+        raise ValueError('Confirme a remoção do fundo após revisar a pré-visualização.')
+    upload = request.files.get('logo')
+    if not upload or not upload.filename:
+        if not (required or remove_background):
+            return None
+        try:
+            sponsor_id = int(request.form.get('sponsor_id', ''))
+        except ValueError:
+            raise ValueError('Escolha uma logomarca para pré-visualizar.') from None
+        row = db.execute('SELECT logo_data FROM sponsors WHERE id=?', (sponsor_id,)).fetchone()
+        if row is None or row['logo_data'] is None:
+            raise ValueError('Nenhuma logomarca cadastrada. Envie uma imagem.')
+        upload = FileStorage(stream=BytesIO(bytes(row['logo_data'])), filename='logo.webp', content_type='image/webp')
+    return process_logo(upload, remove_background=remove_background)
+
+
 @bp.route('/admin/sponsors', methods=['GET', 'POST'])
 @roles_allowed('manager')
 def manage():
@@ -40,8 +62,7 @@ def manage():
             if not 1 <= len(name) <= 100:
                 raise ValueError('Informe um nome de até 100 caracteres para identificação e texto alternativo.')
             link = validate_link(request.form.get('link_url'))
-            upload = request.files.get('logo')
-            image = process_logo(upload) if upload and upload.filename else None
+            image = prepared_image(db)
             remove = request.form.get('remove_logo') == '1'
             if image and remove:
                 raise ValueError('Escolha enviar ou remover a logomarca.')
@@ -60,11 +81,11 @@ def manage():
                     db.execute('''UPDATE sponsors SET name=?,link_url=?,active=?,updated_at=?,updated_by=?
                         WHERE id=?''', (name, link, active, datetime.now(timezone.utc).isoformat(), g.user['id'], sponsor_id))
                 else:
-                    count = db.execute('SELECT COUNT(*) AS total FROM sponsors WHERE primary_slot IS NULL').fetchone()['total']
-                    if count >= 100:
+                    positions = db.execute('SELECT COUNT(*) AS total,COALESCE(MAX(sort_order),-1)+1 AS next_order FROM sponsors WHERE primary_slot IS NULL').fetchone()
+                    if positions['total'] >= 100:
                         raise ValueError('Limite de 100 patrocinadores comuns atingido.')
                     sponsor_id = db.execute('''INSERT INTO sponsors(name,link_url,active,sort_order,updated_by)
-                        VALUES(?,?,?,?,?)''', (name, link, active, count, g.user['id'])).lastrowid
+                        VALUES(?,?,?,?,?)''', (name, link, active, positions['next_order'], g.user['id'])).lastrowid
                 if image or remove:
                     db.execute('UPDATE sponsors SET logo_data=?,logo_version=? WHERE id=?',
                                (*image, sponsor_id) if image else (None, None, sponsor_id))
@@ -80,6 +101,59 @@ def manage():
     revision = db.execute('SELECT revision FROM sponsor_catalog WHERE id=1').fetchone()['revision']
     response = current_app.make_response(render_template('sponsors.html', sponsors=rows, revision=revision))
     response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@bp.route('/admin/sponsors/<int:sponsor_id>/delete', methods=['GET', 'POST'])
+@roles_allowed('manager')
+def delete(sponsor_id):
+    db = get_db()
+    # Name and revision must come from one snapshot: a concurrent rename must
+    # invalidate the confirmation instead of deleting an unseen new identity.
+    row = db.execute('''SELECT s.id,s.name,s.primary_slot,c.revision FROM sponsors s
+        CROSS JOIN sponsor_catalog c WHERE s.id=? AND c.id=1''', (sponsor_id,)).fetchone()
+    if row is None:
+        abort(404)
+    if request.method == 'POST':
+        if request.form.get('confirm_delete') != '1':
+            abort(400, 'Confirme a exclusão.')
+        with db:
+            claim_revision(db, request.form.get('revision'))
+            result = db.execute('DELETE FROM sponsors WHERE id=?', (sponsor_id,))
+            if result.rowcount != 1:
+                abort(409)
+        invalidate_cache()
+        flash('Patrocinador e logomarca excluídos.', 'success')
+        return redirect(url_for('sponsors.manage'))
+    response = current_app.make_response(render_template('sponsor_delete.html', sponsor=row, revision=row['revision']))
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@bp.get('/admin/sponsors/<int:sponsor_id>/logo')
+@roles_allowed('manager')
+def admin_logo(sponsor_id):
+    row = get_db().execute('SELECT logo_data FROM sponsors WHERE id=?', (sponsor_id,)).fetchone()
+    if row is None or row['logo_data'] is None:
+        abort(404)
+    response = Response(bytes(row['logo_data']), mimetype='image/webp')
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
+@bp.post('/admin/sponsors/preview')
+@roles_allowed('manager')
+def preview():
+    if request.content_length and request.content_length > 3 * 1024 * 1024:
+        abort(413)
+    try:
+        image, _version = prepared_image(get_db(), required=True)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 422
+    response = Response(image, mimetype='image/webp')
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
 
 

@@ -1,14 +1,15 @@
 <footer class="gpcta-footer">
-  <small>© {{copyright_year}} GPCTA</small>
   {% if footer_sponsors %}
-  <div class="sponsor-logos" aria-label="Patrocinadores">
+  <section class="sponsor-logos" aria-label="Apoiadores GPCTA">
+    <h2 class="sponsor-title">APOIADORES GPCTA</h2>
     {% set principals = footer_sponsors|selectattr('primary_slot')|list %}
-    <div class="sponsor-principals">
+    {% if principals %}<div class="sponsor-principals">
       {% for slot in [1,2] %}<div class="sponsor-primary-slot" data-sponsor-slot="{{slot}}">
       {% for sponsor in principals if sponsor.primary_slot == slot %}{% include 'sponsor_logo.html' %}{% endfor %}
       </div>{% endfor %}
-    </div>
+    </div>{% endif %}
     <div class="sponsor-common">{% for sponsor in footer_sponsors if not sponsor.primary_slot %}{% include 'sponsor_logo.html' %}{% endfor %}</div>
-  </div>
+  </section>
   {% endif %}
+  <small class="login-copyright">Copyright © 2026 | Grupo de Peladas do CTA - GPCTA</small>
 </footer>
