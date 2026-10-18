@@ -48,10 +48,9 @@ CREATE TABLE IF NOT EXISTS purchase_alert_attempts (
  UNIQUE(delivery_id,attempt_number)
 );
 
-CREATE OR REPLACE FUNCTION purchase_manager_push_revoke() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION purchase_manager_push_revoke() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
- UPDATE manager_push_subscriptions SET active=0,revoked_at=CURRENT_TIMESTAMP::text,updated_at=CURRENT_TIMESTAMP::text
- WHERE user_id=NEW.id AND active=1;
+ EXECUTE format('UPDATE %I.manager_push_subscriptions SET active=0,revoked_at=CURRENT_TIMESTAMP::text,updated_at=CURRENT_TIMESTAMP::text WHERE user_id=$1 AND active=1', TG_TABLE_SCHEMA) USING NEW.id;
  RETURN NEW;
 END;
 $$;

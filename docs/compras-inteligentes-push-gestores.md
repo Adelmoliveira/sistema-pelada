@@ -73,7 +73,7 @@ O worker guarda apenas IDs opacos e horários em IndexedDB, com limpeza de entra
 
 Arquivo: `supabase/migrations/20261018040000_purchase_intelligent_alerts.sql`.
 
-Aplicar somente depois das migrations anteriores reconciliadas, incluindo observação e monitoramento. Cria as sete tabelas, índices, função/trigger de revogação e um índice parcial por produto na fila existente. **Não executa atualização de estoque, vendas, compras, episódios ou flags preexistentes.** RLS é habilitada nas tabelas novas, sem políticas públicas. A função de trigger usa os privilégios do invocador, sem SECURITY DEFINER.
+Aplicar somente depois das migrations anteriores reconciliadas, incluindo observação e monitoramento. Cria as sete tabelas, índices, função/trigger de revogação e um índice parcial por produto na fila existente. **Não executa atualização de estoque, vendas, compras, episódios ou flags preexistentes.** RLS é habilitada nas tabelas novas, sem políticas públicas. A função de trigger usa os privilégios do invocador, sem SECURITY DEFINER. Seu `search_path` é fixado em `pg_catalog`; a tabela de subscriptions é qualificada pelo `TG_TABLE_SCHEMA` com identificador escapado. Uma tabela temporária homônima não pode desviar a revogação. A alteração do usuário e a revogação pertencem à mesma transação e são revertidas juntas.
 
 O papel runtime precisa de SELECT/INSERT/UPDATE nas novas tabelas, USAGE nas sequences correspondentes e condição válida de proprietário/BYPASSRLS, conforme o padrão atual. O trigger também exige UPDATE em `manager_push_subscriptions` quando o runtime alterar autorização de usuários. Não conceder acesso a `anon`/`authenticated` nem desabilitar RLS. VAPID existente e `PURCHASE_MONITOR_SECRET` são reutilizados; nenhuma credencial administrativa é usada como segredo do agendamento.
 
@@ -122,3 +122,26 @@ A preparação PostgreSQL adicional foi inteiramente descartável: banco novo po
 Não houve envio real a provedor push, migration em banco real, alteração de variáveis remotas, jobs, PR, merge ou deploy. Permanecem necessários: validar permissões runtime em homologação, aceitar o PWA v8 nos dispositivos de teste e conferir o envio real com gestores consentidos antes de autorizar produção. A falha preexistente da suíte geral deve ser tratada separadamente.
 
 Documentação alterada: `docs/compras-inteligentes-push-gestores.md` e `docs/compras-inteligentes-operacao-pwa.md`. Ao todo são 20 arquivos desta entrega; `vercel.json`, workflows, jobs externos e serviços de vendas/estoque não foram alterados.
+
+
+## Revisão final para publicação da PR
+
+A revisão adicional confirma que o executor `run_postgres_migrations` aplica o arquivo e o registro em `schema_migrations` na mesma transação, sob o advisory lock de schema existente. O arquivo não deve receber `COMMIT` interno. No SQL Editor, uma futura aplicação manual exige uma transação explícita e o mesmo protocolo de histórico/lock; não executar o arquivo isolado em autocommit. Os limites de lock/instrução são locais à transação. O índice parcial na fila existente é a única indexação em tabela operacional; não altera seus registros, mas pode bloquear inserções durante sua criação. Timeout deve abortar toda a aplicação, incluindo o registro no histórico.
+
+As sete tabelas novas têm RLS habilitada, sem políticas públicas e sem `FORCE ROW LEVEL SECURITY`. As unicidades de episódio/tipo/nível, destinatário/versão e número de tentativa sustentam a idempotência junto às transações e leases; não garantem entrega externa exatamente uma vez. A restrição antiga `notifiable=0` permanece intacta e não é consultada para tornar um alerta elegível.
+
+A consulta somente de leitura à configuração Vercel confirmou a presença de `DATABASE_URL` sensível para produção e preview; seu conteúdo não é recuperável por essa interface. O código conecta com essa variável e não executa `SET ROLE`. Logo, os privilégios do papel `postgres` informados pelo operador **não comprovam a identidade efetiva do runtime**. Antes da implantação, executar pela conexão realmente usada pela aplicação (não apenas pelo SQL Editor administrativo):
+
+```sql
+BEGIN READ ONLY;
+SELECT current_user, session_user, rolbypassrls
+FROM pg_roles WHERE rolname = current_user;
+ROLLBACK;
+```
+
+Se o runtime for `postgres` e a migration for criada por esse mesmo papel, ele será proprietário das novas tabelas/sequences. Se for outro papel, validar USAGE no schema e sequences, SELECT/INSERT/UPDATE nas novas tabelas e proprietário/BYPASSRLS (ou uma política privada expressamente revisada). Validar também SELECT/UPDATE em `users`, DELETE em `push_subscriptions` e os privilégios já usados na observação. Não conceder BYPASSRLS nem acesso público automaticamente como solução. Como as novas tabelas ainda não existem em produção, seus privilégios efetivos só poderão ser verificados após a aplicação autorizada, antes do deploy. Essa checagem continua pendente; nenhum banco real foi acessado nesta revisão.
+
+A integração Git da Vercel está com criação automática de deployments habilitada. Publicar esta branch/PR requer impedir previamente o preview automático para cumprir a instrução de não realizar deploy. Não foram alterados jobs, configurações remotas ou credenciais.
+
+
+Revalidação desta revisão: **81 testes de alertas/monitoramento aprovados** (SQLite e PostgreSQL descartável), **17 testes JavaScript/PWA aprovados**, sintaxe Python/JavaScript e `git diff --check` sem erros. A suíte completa executou **679 testes: 678 aprovados, 1 erro, nenhum ignorado**, mantendo apenas o erro esportivo preexistente descrito acima. Os dois testes novos verificam schema correto diante de tabela temporária homônima e rollback transacional da revogação. Nenhum push real foi enviado.

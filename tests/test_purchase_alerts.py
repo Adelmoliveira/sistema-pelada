@@ -338,6 +338,31 @@ class PostgresAlertTest(AlertContract,unittest.TestCase):
         fixtures.PostgresObservationTest.setUp(self); self.setup_alerts()
 
 
+    def test_revocation_uses_users_schema_even_with_shadow_table(self):
+        self.register()
+        db=self.connect()
+        try:
+            # A caller-controlled temporary relation must never receive revocation.
+            db.execute('CREATE TEMP TABLE manager_push_subscriptions (id BIGSERIAL PRIMARY KEY, user_id INTEGER, active INTEGER, revoked_at TEXT, updated_at TEXT)')
+            db.execute('INSERT INTO pg_temp.manager_push_subscriptions(user_id,active) VALUES(1,1)')
+            db.execute("UPDATE users SET role='staff' WHERE id=1")
+            self.assertEqual(db.execute('SELECT active FROM pg_temp.manager_push_subscriptions').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT active FROM '+self.schema+'.manager_push_subscriptions').fetchone()[0],0)
+            db.commit()
+        finally: db.close()
+
+    def test_revocation_rolls_back_with_user_update(self):
+        self.register()
+        db=self.connect()
+        try:
+            db.execute('UPDATE users SET active=0 WHERE id=1')
+            self.assertEqual(db.execute('SELECT active FROM manager_push_subscriptions').fetchone()[0],0)
+            db.rollback()
+        finally: db.close()
+        self.assertEqual(self.query('SELECT active FROM manager_push_subscriptions')[0]['active'],1)
+        self.assertEqual(self.query('SELECT active FROM users WHERE id=1')[0]['active'],1)
+
+
 class ManagerPushRoutesTest(unittest.TestCase):
     setUp=pages.PurchasePlanningPageTest.setUp
     def login(self,user_id):
