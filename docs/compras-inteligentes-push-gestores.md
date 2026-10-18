@@ -145,3 +145,22 @@ A integração Git da Vercel está com criação automática de deployments habi
 
 
 Revalidação desta revisão: **81 testes de alertas/monitoramento aprovados** (SQLite e PostgreSQL descartável), **17 testes JavaScript/PWA aprovados**, sintaxe Python/JavaScript e `git diff --check` sem erros. A suíte completa executou **679 testes: 678 aprovados, 1 erro, nenhum ignorado**, mantendo apenas o erro esportivo preexistente descrito acima. Os dois testes novos verificam schema correto diante de tabela temporária homônima e rollback transacional da revogação. Nenhum push real foi enviado.
+
+
+## Publicação da branch sem Preview automático
+
+Antes do push de publicação, foi acrescentada ao `vercel.json` somente a seguinte regra:
+
+```json
+"git": {
+  "deploymentEnabled": {
+    "feat/push-compras-inteligentes-gestores": false
+  }
+}
+```
+
+Conforme a documentação oficial <https://vercel.com/docs/project-configuration/git-configuration>, branches não listadas continuam habilitadas. A regra impede o deployment automático desta branch por push/PR; não impede um deployment manual expressamente solicitado. Não usar `git.deploymentEnabled=false` global, nem curingas que atinjam outras branches.
+
+Os metadados consultados confirmaram que `sistema-pelada` e `gpcta-homologacao` usam a raiz do repositório e não configuram um arquivo alternativo. A branch de produção é `master` no primeiro e `desenvolvimento` no segundo; ambas permanecem fora da regra. Nenhuma configuração remota, variável, build, rota ou cron foi alterado. A regra é versionada em commit adicional a `7a87b13` e deve estar no HEAD antes do primeiro push.
+
+Procedimento: validar JSON e diferença restrita; conferir a regra no commit; publicar a branch; abrir PR contra master; consultar os deployments dos dois projetos para o novo SHA. Se a regra for removida posteriormente, um novo push poderá criar Preview. Um futuro merge na master continuará sujeito ao deploy automático já configurado: este procedimento não autoriza merge nem deploy.
