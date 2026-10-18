@@ -4217,7 +4217,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('rel="manifest" href="/static/manifest.webmanifest"', login)
         self.assertIn('rel="apple-touch-icon"', login)
         self.assertIn('id="pwa-install"', login)
-        self.assertIn('src="/static/pwa.js?v=7"', login)
+        self.assertIn('src="/static/pwa.js?v=8"', login)
         self.assertIn('id="pwa-update"', login)
         self.assertIn('src="/static/pwa-update.js"', login)
 

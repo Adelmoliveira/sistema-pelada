@@ -1521,29 +1521,44 @@ def purchase_monitoring():
     from src.db import connect_db
     from src.services.purchase_monitor import monitor_status, run_monitor, deactivate_observation
     from src.services.purchase_observation import activate_observation
+    from src.services.purchase_alerts import set_enabled, process_alerts, status as alert_status
+    import time
+    deadline=time.monotonic()+24
     db = None
     try:
         db = connect_db(current_app, connect_timeout=5)
         db.commit()
         if request.method == 'POST':
             action = request.form.get('action')
-            if action == 'activate' and request.form.get('confirm') == 'yes':
+            if action in ('enable_alerts','disable_alerts'):
+                if action == 'enable_alerts' and request.form.get('confirm_alerts') != 'yes':
+                    abort(400)
+                result=set_enabled(db,action == 'enable_alerts',g.user['id'])
+            elif action == 'activate' and request.form.get('confirm') == 'yes':
                 result = activate_observation(db)
             elif action == 'deactivate':
-                result = deactivate_observation(db)
+                result = set_enabled(db,False,g.user['id'])
+                if not result.get('busy'):
+                    result = deactivate_observation(db)
             elif action == 'process':
                 result = run_monitor(db, source='manual', requested_by=g.user['id'])
+                result['alerts']=process_alerts(db,deadline=deadline)
             else:
                 abort(400)
             if result.get('failed') or result.get('busy') or result.get('telemetry_pending'):
                 flash('Processamento não concluído. Consulte o estado e tente novamente.', 'warning')
             else:
-                flash('Solicitação concluída. O baseline e os eventos são processados em lotes, sem notificações.', 'success')
+                flash('Solicitação concluída. O baseline permanece silencioso; consulte também o estado dos alertas.', 'success')
             return redirect(url_for('products.purchase_monitoring'))
+        from flask import session
+        import secrets
+        session.setdefault('manager_push_binding',secrets.token_hex(32))
         before = request.args.get('before', type=int)
-        return render_template('purchase_monitoring.html', monitor=monitor_status(db, before))
+        return render_template('purchase_monitoring.html', monitor=monitor_status(db, before), alerts=alert_status(db))
     except Exception as exc:
         from werkzeug.exceptions import HTTPException
+        if isinstance(exc, PermissionError):
+            abort(403)
         if isinstance(exc, HTTPException):
             raise
         current_app.logger.warning('Monitoramento de compras indisponível: %s', type(exc).__name__)

@@ -1007,11 +1007,15 @@ def process_purchase_observation_cron():
         return jsonify(error="Não autorizado."), 401
     from src.services.purchase_monitor import run_monitor
     from src.db import connect_db
+    import time
+    from src.services.purchase_alerts import process_alerts
+    deadline = time.monotonic()+24
     db = None
     try:
         db = connect_db(current_app, connect_timeout=5)
         db.commit()
         result = run_monitor(db, source="periodic")
+        result["alerts"] = process_alerts(db,deadline=deadline)
         return jsonify(result), 503 if result.get("failed") else 200
     except Exception:
         current_app.logger.warning("Monitoramento de compras indisponível")

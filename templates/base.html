@@ -2,6 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="{{csrf_token()}}">
   <meta name="theme-color" content="#07558c">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -15,7 +16,7 @@
   <link rel="stylesheet" href="{{url_for('static',filename='style.css')}}">
   <script src="{{url_for('static',filename='pwa-update.js')}}"></script>
 </head>
-<body>
+<body data-push-role="{{current_user.role if current_user else ''}}">
 {% if is_homologation %}<div class="alert alert-warning rounded-0 text-center fw-bold py-2 mb-0" role="status">🧪 AMBIENTE DE HOMOLOGAÇÃO</div>{% endif %}
 {% if current_user and not (guest_mode|default(false)) %}
 {% set endpoint=request.endpoint or '' %}
@@ -133,7 +134,7 @@
   <button class="pwa-install-close" id="pwa-install-close" type="button" aria-label="Agora não">×</button>
 </aside>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="{{url_for('static',filename='pwa.js')}}?v=7" defer></script>
+<script src="{{url_for('static',filename='pwa.js')}}?v=8" defer></script>
 <script src="{{url_for('static',filename='football-goals.js')}}" defer></script>
 {% if current_user and current_user.role == 'client' %}<script src="{{url_for('static',filename='credit-pending.js')}}" defer></script>{% endif %}
 {% if current_user and not (guest_mode|default(false)) %}<script>

@@ -183,6 +183,7 @@ def login():
             return _client_password_setup(player, user)
         passwordless_user = user and user["role"] in ("maintenance", "display") and not user["password_required"]
         if user and (passwordless_user or check_password_hash(user["password_hash"], request.form.get("password", ""))):
+            _revoke_manager_session()
             session.clear()
             session["user_id"] = user["id"]
             session.permanent = user["role"] == "client" and request.form.get("remember_device") == "1"
@@ -309,6 +310,7 @@ def client_password_setup():
                     user_id = cursor.lastrowid
                 db.commit()
                 remember_device = bool(session.get("pending_client_remember_device"))
+                _revoke_manager_session()
                 session.clear()
                 session["user_id"] = user_id
                 session.permanent = remember_device
@@ -323,8 +325,12 @@ def client_password_setup():
 
 @bp.post("/logout")
 def logout():
+    _revoke_manager_session()
     session.clear()
-    return redirect(url_for("auth.login"), code=303)
+    from src.services.manager_push import DEVICE_COOKIE
+    response=redirect(url_for("auth.login"), code=303)
+    response.delete_cookie(DEVICE_COOKIE,httponly=True,samesite="Lax")
+    return response
 
 
 @bp.get("/notifications/push/public-key")
@@ -356,6 +362,9 @@ def push_subscribe():
     if not endpoint or not p256dh or not auth_key or not g.user["player_id"]:
         return jsonify(error="Assinatura inválida."), 400
     db = get_db()
+    from src.services.manager_push import endpoint_lock, revoke
+    endpoint_lock(db)
+    revoke(db, endpoint=endpoint)
     db.execute("""INSERT INTO push_subscriptions(player_id,endpoint,p256dh,auth) VALUES(?,?,?,?)
         ON CONFLICT(endpoint) DO UPDATE SET player_id=?,p256dh=?,auth=?,updated_at=CURRENT_TIMESTAMP""",
         (g.user["player_id"], endpoint, p256dh, auth_key, g.user["player_id"], p256dh, auth_key))
@@ -1088,3 +1097,75 @@ def toggle_user(user_id):
             current_app.logger.error(f"Erro ao alternar status do usuário {user_id}: {exc}")
             flash("Erro interno ao atualizar acesso do usuário.", "danger")
     return redirect(url_for("auth.users"))
+
+
+@bp.get('/notifications/manager-push/public-key')
+@roles_allowed('manager')
+def manager_push_public_key():
+    from src.services.push_notifications import public_key
+    return jsonify(publicKey=public_key())
+
+
+@bp.post('/notifications/manager-push/prepare')
+@roles_allowed('manager')
+def manager_push_prepare():
+    from src.services.manager_push import DEVICE_COOKIE
+    from src.services.push_notifications import public_key
+    _revoke_manager_session()
+    session['manager_push_binding']=secrets.token_hex(32)
+    response=jsonify(publicKey=public_key())
+    response.set_cookie(DEVICE_COOKIE,secrets.token_hex(32),max_age=31536000,httponly=True,
+                        secure=request.is_secure or current_app.config.get('APP_ENV')!='local',samesite='Lax')
+    return response
+
+
+@bp.post('/notifications/manager-push/subscribe')
+@roles_allowed('manager')
+def manager_push_subscribe():
+    from src.services.manager_push import register, DEVICE_COOKIE
+    data=request.get_json(silent=True) or {}
+    if not isinstance(data,dict) or data.get('consent') is not True:
+        return jsonify(error='Confirmação de consentimento obrigatória.'),400
+    binding=session.get('manager_push_binding')
+    device=request.cookies.get(DEVICE_COOKIE,'')
+    if not binding or len(device)!=64 or any(c not in '0123456789abcdef' for c in device):
+        return jsonify(error='Inicie o consentimento neste dispositivo novamente.'),400
+    db=get_db()
+    try:
+        register(db,g.user['id'],binding,data,device=device)
+        db.commit()
+    except (ValueError,PermissionError):
+        db.rollback()
+        return jsonify(error='Assinatura ou autorização inválida.'),400
+    except Exception as exc:
+        db.rollback()
+        current_app.logger.warning('Cadastro de push gerencial indisponível: %s',type(exc).__name__)
+        return jsonify(error='Cadastro temporariamente indisponível.'),503
+    session['manager_push_binding']=binding
+    return jsonify(ok=True)
+
+
+@bp.post('/notifications/manager-push/unsubscribe')
+@roles_allowed('manager')
+def manager_push_unsubscribe():
+    _revoke_manager_session()
+    get_db().commit()
+    from src.services.manager_push import DEVICE_COOKIE
+    response=jsonify(ok=True)
+    response.delete_cookie(DEVICE_COOKIE,httponly=True,samesite='Lax')
+    return response
+
+
+def _revoke_manager_session():
+    from src.services.manager_push import revoke_binding, revoke_device, DEVICE_COOKIE
+    binding=session.get('manager_push_binding')
+    user_id=session.get('user_id')
+    device=request.cookies.get(DEVICE_COOKIE)
+    if (binding and user_id) or device:
+        db=get_db()
+        if binding and user_id:
+            revoke_binding(db,user_id,binding)
+        if device:
+            revoke_device(db,device,user_id)
+        db.commit()
+    session.pop('manager_push_binding',None)
