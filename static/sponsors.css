@@ -29,13 +29,13 @@
     min-height: 100dvh;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
     padding-top: max(.5rem, env(safe-area-inset-top)) !important;
     padding-bottom: max(.5rem, env(safe-area-inset-bottom)) !important;
   }
   .gpcta-login .login-layout { margin-top: 0 !important; }
   .gpcta-login .login-heading { margin-bottom: .65rem !important; }
-  .gpcta-login .club-card-logo-button, .gpcta-login .login-logo { width: 84px; height: 84px; }
+  .gpcta-login .club-card-logo-button, .gpcta-login .login-logo { width: 160px; height: 160px; }
   .gpcta-login .club-card-logo-button { margin-bottom: .5rem !important; }
   .gpcta-login .login-heading h1 { font-size: 1.35rem; margin-bottom: .25rem; }
   .gpcta-login .login-heading p { margin-bottom: 0; }
