@@ -13,6 +13,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="{{url_for('static',filename='icons/pwa-192.png')}}">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="{{url_for('static',filename='style.css')}}">
+  <script src="{{url_for('static',filename='pwa-update.js')}}"></script>
 </head>
 <body>
 {% if is_homologation %}<div class="alert alert-warning rounded-0 text-center fw-bold py-2 mb-0" role="status">🧪 AMBIENTE DE HOMOLOGAÇÃO</div>{% endif %}
@@ -29,7 +30,7 @@
 {% set infra_active=endpoint.startswith('infra.') or endpoint.startswith('maintenance.') %}
 {% set football_management_active=endpoint in ['football.dashboard','football.position_distribution','football.tenure_report','football.statistics','football.attendance','football.transfer_window','football.notifications'] %}
 {% set football_active=endpoint.startswith('football.') and not football_management_active %}
-{% set stock_active=endpoint in ['products.stock','products.correct_restock','products.stock_conference','products.purchase_planning','products.stock_financial','products.regularize_stock_cost'] %}
+{% set stock_active=endpoint in ['products.stock','products.correct_restock','products.stock_conference','products.purchase_planning','products.purchase_monitoring','products.stock_financial','products.regularize_stock_cost'] %}
 {% set urgent_active=endpoint == 'players.urgent' %}
 {% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) %}
 {% set calls_active=endpoint.startswith('maintenance.') %}
@@ -51,7 +52,7 @@
                 <a class="{{'active' if endpoint in ['products.stock','products.correct_restock']}}" href="{{url_for('products.stock')}}" {% if endpoint in ['products.stock','products.correct_restock'] %}aria-current="page"{% endif %}>Controle de Estoque</a>
                 <a class="{{'active' if endpoint == 'products.stock_conference'}}" href="{{url_for('products.stock_conference')}}" {% if endpoint == 'products.stock_conference' %}aria-current="page"{% endif %}>Conferência Mensal</a>
                 {% if current_user.role == 'manager' %}
-                <a class="{{'active' if endpoint == 'products.purchase_planning'}}" href="{{url_for('products.purchase_planning')}}" {% if endpoint == 'products.purchase_planning' %}aria-current="page"{% endif %}>Planejamento de Compras</a>
+                <a class="{{'active' if endpoint in ['products.purchase_planning','products.purchase_monitoring']}}" href="{{url_for('products.purchase_planning')}}" {% if endpoint in ['products.purchase_planning','products.purchase_monitoring'] %}aria-current="page"{% endif %}>Planejamento de Compras</a>
                 <a class="{{'active' if endpoint in ['products.stock_financial','products.regularize_stock_cost']}}" href="{{url_for('products.stock_financial')}}" {% if endpoint in ['products.stock_financial','products.regularize_stock_cost'] %}aria-current="page"{% endif %}>Visão Financeira</a>
                 {% endif %}
               </div>
@@ -114,6 +115,7 @@
 {% else %}
 <main class="container py-4">
 {% endif %}
+<div id="pwa-update" class="alert alert-info m-2" role="status" hidden><span id="pwa-update-message"></span> <button id="pwa-update-button" type="button" class="btn btn-primary btn-sm">Atualizar aplicativo</button></div>
 {% if current_user and today_birthdays %}{% set current_birthday = today_birthdays|selectattr('id', 'equalto', current_user.player_id)|list %}{% if current_user.role == 'client' and current_birthday %}<div class="alert alert-success mx-3 mt-3 mb-0" role="status"><strong>Parabéns, {% if current_birthday[0].gender != 'female' %}Peladeiro {% endif %}{{current_user.name}}! ⚽🍻</strong><br><br>Hoje é dia de comemorar! Desejamos a você muita saúde, felicidade, paz e sucesso. Que não faltem bons momentos, grandes amizades e, claro, muitas resenhas e gols na nossa pelada.<br><br>Feliz aniversário! Aproveite o seu dia!</div>{% else %}<div class="alert alert-info mx-3 mt-3 mb-0" role="status">{% if today_birthdays|length == 1 and today_birthdays[0].gender == 'female' %}🎉 Hoje é aniversário da <strong>{{today_birthdays[0].war_name or today_birthdays[0].name}}</strong>! Deseje parabéns à aniversariante.{% elif today_birthdays|length == 1 %}🎉 Hoje é aniversário do peladeiro <strong>{{today_birthdays[0].war_name or today_birthdays[0].name}}</strong>! Deseje parabéns ao aniversariante.{% else %}🎉 Hoje é aniversário de {% for birthday in today_birthdays %}<strong>{{birthday.war_name or birthday.name}}</strong>{% if not loop.last %}, {% endif %}{% endfor %}! Deseje parabéns aos aniversariantes.{% endif %}</div>{% endif %}{% endif %}
   {% for category,message in get_flashed_messages(with_categories=true) %}<div class="alert alert-{{category}} alert-dismissible fade show">{{message}}<button class="btn-close" data-bs-dismiss="alert"></button></div>{% endfor %}
   {% if current_user and current_user.role == 'client' and current_player and not current_player.football_join_date %}<div class="alert alert-warning d-flex flex-wrap align-items-center justify-content-between gap-3" role="alert"><div><strong>Cadastre sua data de apresentação na pelada</strong><br><span class="small">Essa informação é obrigatória para calcular seu tempo no grupo.</span></div><a class="btn btn-warning btn-lg" href="{{url_for('auth.my_account')}}#football-join-date">Cadastrar data</a></div>{% endif %}
@@ -131,7 +133,7 @@
   <button class="pwa-install-close" id="pwa-install-close" type="button" aria-label="Agora não">×</button>
 </aside>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="{{url_for('static',filename='pwa.js')}}" defer></script>
+<script src="{{url_for('static',filename='pwa.js')}}?v=7" defer></script>
 <script src="{{url_for('static',filename='football-goals.js')}}" defer></script>
 {% if current_user and current_user.role == 'client' %}<script src="{{url_for('static',filename='credit-pending.js')}}" defer></script>{% endif %}
 {% if current_user and not (guest_mode|default(false)) %}<script>

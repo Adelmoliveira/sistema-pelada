@@ -94,7 +94,9 @@
   let registrationPromise;
   if ("serviceWorker" in navigator) {
     registrationPromise = navigator.serviceWorker.register("/service-worker.js", {scope: "/"})
-      .then(registration => { serviceWorkerRegistration = registration; return registration.update().then(() => registration); })
+      .then(registration => { serviceWorkerRegistration = registration;
+        if (window.gpctaPwaUpdates) window.gpctaPwaUpdates.watch(registration);
+        return registration.update().catch(() => undefined).then(() => registration); })
       .catch(error => { console.warn("PWA indisponível:", error); throw error; });
     navigator.serviceWorker.addEventListener("message", event => {
       if (event.data && event.data.type === "notification-count") {
@@ -193,7 +195,8 @@
   const message = panel.querySelector("#pwa-install-message");
   const standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
   const isiOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const dismissedAt = Number(localStorage.getItem("pwa-install-dismissed") || 0);
+  let dismissedAt = 0;
+  try { dismissedAt = Number(localStorage.getItem("pwa-install-dismissed") || 0); } catch (_) {}
   const recentlyDismissed = Date.now() - dismissedAt < 7 * 24 * 60 * 60 * 1000;
   let installPrompt;
 
@@ -203,7 +206,7 @@
   const hidePanel = () => { panel.hidden = true; };
 
   close.addEventListener("click", () => {
-    localStorage.setItem("pwa-install-dismissed", String(Date.now()));
+    try { localStorage.setItem("pwa-install-dismissed", String(Date.now())); } catch (_) {}
     hidePanel();
   });
 

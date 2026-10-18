@@ -999,20 +999,26 @@ def process_notification_outbox_cron():
     return jsonify(ok=True, **result)
 
 
-@bp.get("/cron/process-purchase-observation")
+@bp.post("/cron/process-purchase-observation")
 def process_purchase_observation_cron():
-    if not _cron_authorized():
+    secret = current_app.config.get("PURCHASE_MONITOR_SECRET") or ""
+    supplied = request.headers.get("Authorization", "")
+    if not secret or not hmac.compare_digest(supplied.encode("utf-8"), ("Bearer " + secret).encode("utf-8")):
         return jsonify(error="Não autorizado."), 401
-    from src.services.purchase_observation import process_observation
+    from src.services.purchase_monitor import run_monitor
     from src.db import connect_db
-    # Own a fresh connection: connect_db's SET TIME ZONE starts a PostgreSQL
-    # transaction. Commit only that setup, never an operational transaction.
-    db = connect_db(current_app)
+    db = None
     try:
+        db = connect_db(current_app, connect_timeout=5)
         db.commit()
-        return jsonify(ok=True, **process_observation(db))
+        result = run_monitor(db, source="periodic")
+        return jsonify(result), 503 if result.get("failed") else 200
+    except Exception:
+        current_app.logger.warning("Monitoramento de compras indisponível")
+        return jsonify(failed=True, error="Monitoramento indisponível"), 503
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 @bp.get("/cron/expire-pix-checkouts")

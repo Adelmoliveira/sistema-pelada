@@ -1,9 +1,10 @@
-const CACHE_NAME = "peladeiros-gpcta-v6";
+const CACHE_NAME = "peladeiros-gpcta-v7";
 const OFFLINE_URL = "/offline";
 const APP_SHELL = [
   OFFLINE_URL,
   "/static/style.css",
-  "/static/pwa.js",
+  "/static/pwa.js?v=7",
+  "/static/pwa-update.js",
   "/static/manifest.webmanifest",
   "/static/icons/pwa-192.png",
   "/static/icons/pwa-512.png",
@@ -13,13 +14,13 @@ const APP_SHELL = [
 
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_SHELL)));
-  self.skipWaiting();
+
 });
 
 self.addEventListener("activate", event => {
   event.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))))
+      .then(keys => Promise.all(keys.filter(key => key.startsWith("peladeiros-gpcta-") && key !== CACHE_NAME).map(key => caches.delete(key))))
       .then(() => self.clients.claim())
   );
 });
@@ -61,20 +62,33 @@ self.addEventListener("notificationclick", event => {
   }));
 });
 
+self.addEventListener("message", event => {
+  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
+});
+
 self.addEventListener("fetch", event => {
   const request = event.request;
   if (request.method !== "GET") return;
-
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin || !url.pathname.startsWith("/static/")) return;
-
-  const refreshed = fetch(request).then(response => {
-    if (response.ok) {
-      const copy = response.clone();
-      caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
+  if (url.origin !== self.location.origin) return;
+  if (request.mode === "navigate") {
+    // Authenticated pages are network-only, never written to the offline cache.
+    event.respondWith(fetch(request).catch(async () => {
+      const cache = await caches.open(CACHE_NAME);
+      return (await cache.match(OFFLINE_URL)) || new Response("Sem conexão. Reconecte para continuar.", {
+        status: 503, headers: {"Content-Type": "text/plain; charset=utf-8"}
+      });
+    }));
+    return;
+  }
+  if (!APP_SHELL.includes(url.pathname + url.search) || url.pathname === OFFLINE_URL) return;
+  const refreshed = fetch(request).then(async response => {
+    if (response.ok && response.type !== "opaque" && !response.redirected) {
+      const cache = await caches.open(CACHE_NAME);
+      await cache.put(request, response.clone()).catch(() => undefined);
     }
     return response;
   });
   event.waitUntil(refreshed.catch(() => undefined));
-  event.respondWith(caches.match(request).then(cached => cached || refreshed));
+  event.respondWith(caches.open(CACHE_NAME).then(async cache => (await cache.match(request)) || refreshed));
 });

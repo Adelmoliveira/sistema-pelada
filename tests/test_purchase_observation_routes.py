@@ -50,9 +50,10 @@ class ObservationRoutesTest(unittest.TestCase):
 
     def test_recovery_endpoint_auth_no_ui_session_and_csrf_enabled(self):
         app.config['WTF_CSRF_ENABLED'] = True
-        self.assertEqual(self.client.get('/cron/process-purchase-observation').status_code, 401)
-        self.assertEqual(self.client.get('/cron/process-purchase-observation', headers={'Authorization':'Bearer wrong'}).status_code, 401)
-        response = self.client.get('/cron/process-purchase-observation', headers={'Authorization':'Bearer cron-secret-test'})
+        app.config['PURCHASE_MONITOR_SECRET'] = 'monitor-only-test'
+        self.assertEqual(self.client.post('/cron/process-purchase-observation').status_code, 401)
+        self.assertEqual(self.client.post('/cron/process-purchase-observation', headers={'Authorization':'Bearer wrong'}).status_code, 401)
+        response = self.client.post('/cron/process-purchase-observation', headers={'Authorization':'Bearer monitor-only-test'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()['processed'], 0)
 

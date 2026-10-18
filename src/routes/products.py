@@ -1513,3 +1513,41 @@ def correct_restock(restock_id):
         "correct_restock.html", restock=restock,
         effective_quantity=effective_quantity, effective_cost=effective_cost,
     )
+
+
+@bp.route('/stock/purchase-monitoring', methods=['GET', 'POST'])
+@roles_allowed('manager')
+def purchase_monitoring():
+    from src.db import connect_db
+    from src.services.purchase_monitor import monitor_status, run_monitor, deactivate_observation
+    from src.services.purchase_observation import activate_observation
+    db = None
+    try:
+        db = connect_db(current_app, connect_timeout=5)
+        db.commit()
+        if request.method == 'POST':
+            action = request.form.get('action')
+            if action == 'activate' and request.form.get('confirm') == 'yes':
+                result = activate_observation(db)
+            elif action == 'deactivate':
+                result = deactivate_observation(db)
+            elif action == 'process':
+                result = run_monitor(db, source='manual', requested_by=g.user['id'])
+            else:
+                abort(400)
+            if result.get('failed') or result.get('busy') or result.get('telemetry_pending'):
+                flash('Processamento não concluído. Consulte o estado e tente novamente.', 'warning')
+            else:
+                flash('Solicitação concluída. O baseline e os eventos são processados em lotes, sem notificações.', 'success')
+            return redirect(url_for('products.purchase_monitoring'))
+        before = request.args.get('before', type=int)
+        return render_template('purchase_monitoring.html', monitor=monitor_status(db, before))
+    except Exception as exc:
+        from werkzeug.exceptions import HTTPException
+        if isinstance(exc, HTTPException):
+            raise
+        current_app.logger.warning('Monitoramento de compras indisponível: %s', type(exc).__name__)
+        return render_template('purchase_monitoring.html', monitor=None), 503
+    finally:
+        if db is not None:
+            db.close()

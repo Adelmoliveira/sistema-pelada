@@ -61,6 +61,8 @@ def activate_observation(db):
         if not locked:
             return {"busy": True}
         if db.is_postgres:
+            db.execute("SET LOCAL lock_timeout = '1000ms'")
+            db.execute("SET LOCAL statement_timeout = '10000ms'")
             # Wait for pre-activation source writes to commit, then block new
             # writes until baseline invalidations and enabled flag commit.
             db.execute("LOCK TABLE products,sales,sale_items,sale_item_deliveries,"
