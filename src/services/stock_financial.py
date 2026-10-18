@@ -34,7 +34,7 @@ def stock_financial_data(db):
                COALESCE(c.corrected_unit_cost_cents,r.unit_cost_cents) acquisition_cost,
                EXISTS(SELECT 1 FROM stock_adjustments a
                       WHERE a.product_id=p.id AND a.difference>0
-                        AND a.reason NOT LIKE 'Correção da reposição #%') unvalued_increase
+                        AND a.reason NOT LIKE 'Correção da reposição #%%') unvalued_increase
         FROM products p
         LEFT JOIN restocks r ON r.product_id=p.id
         LEFT JOIN restock_corrections c ON c.id=(

@@ -133,6 +133,44 @@ class StockFinancialDataTest(unittest.TestCase):
         self.assertEqual(report['summary']['stock_value_cents'],0)
         self.assertFalse(report['summary']['partial'])
 
+    def test_postgres_parameter_binding_preserves_like_filter_and_sqlite_results(self):
+        from psycopg2.extensions import adapt
+
+        product = self.product()
+        self.buy(product,10,100)
+        self.db.execute("""INSERT INTO stock_adjustments
+            (product_id,previous_stock,new_stock,difference,reason)
+            VALUES(?,8,10,2,'Correção da reposição #1: quantidade')""", (product,))
+        manual = self.product('Acréscimo manual')
+        self.buy(manual,10,100)
+        self.db.execute("""INSERT INTO stock_adjustments
+            (product_id,previous_stock,new_stock,difference,reason)
+            VALUES(?,8,10,2,'Ajuste manual')""", (manual,))
+        self.product('Material excluído',category=SPORTS_MATERIAL_CATEGORY)
+        expected = stock_financial_data(self.db)
+        connection = self.connection
+
+        class BindingCursor:
+            def execute(self, sql, params):
+                # Model DB-API percent binding before SQL reaches the server.
+                # Adapt values as psycopg2 does; a bare wildcard must fail here.
+                arguments = tuple(adapt(value).getquoted().decode('utf-8') for value in params)
+                self.cursor = connection.execute(sql % arguments)
+
+            def fetchall(self):
+                return self.cursor.fetchall()
+
+        class PostgresConnection:
+            def cursor(self):
+                return BindingCursor()
+
+        actual = stock_financial_data(DbWrapper(PostgresConnection(), is_postgres=True))
+        self.assertEqual(actual,expected)
+        rows = {row['id']:row for row in actual['products']}
+        self.assertEqual(rows[product]['cost_status'],'historical_reference')
+        self.assertIn('unvalued_increase',rows[manual]['reason_codes'])
+        self.assertEqual(len(rows),2)
+
     def test_service_executes_only_one_select_and_changes_nothing(self):
         product = self.product()
         self.buy(product,10,100)
