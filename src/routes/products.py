@@ -6,7 +6,7 @@ import unicodedata
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, g, send_file, abort
 from werkzeug.utils import secure_filename
-from itsdangerous import URLSafeSerializer, BadSignature
+from itsdangerous import URLSafeSerializer, URLSafeTimedSerializer, BadSignature
 from src.services.stock_conferences import application, apply_conference, conference_transaction, locked_conference
 from src.services.stock_writes import correct_restock_stock, update_product_stock
 from src.db import get_db
@@ -18,6 +18,7 @@ from src.services.stock_alerts import notify_low_stock
 from src.services.material_photos import process_material_photo
 from src.services.purchase_forecast import purchase_forecast
 from src.services.stock_financial import stock_financial_data
+from src.services.stock_cost_references import parse_reference_cost, reference_snapshot, register_cost_reference
 from src.utils import local_today
 from src.catalog import SPORTS_MATERIAL_CATEGORY
 
@@ -691,6 +692,44 @@ def stock():
 @roles_allowed("manager")
 def stock_financial():
     return render_template("stock_financial.html", **stock_financial_data(get_db()))
+
+
+@bp.route('/stock/financial/<int:product_id>/regularize', methods=['GET', 'POST'])
+@roles_allowed('manager')
+def regularize_stock_cost(product_id):
+    db = get_db()
+    rows = stock_financial_data(db, product_id)['products']
+    if not rows or (request.method == 'POST' and not rows[0]['active']):
+        abort(404)
+    product = rows[0]
+    signer = URLSafeTimedSerializer(current_app.secret_key, salt='stock-cost-reference')
+    status = 200
+    if request.method == 'POST':
+        try:
+            expected = signer.loads(request.form.get('snapshot', ''), max_age=1800)
+            register_cost_reference(db, product_id, g.user['id'], expected,
+                                    parse_reference_cost(request.form.get('unit_cost', '')),
+                                    request.form.get('justification', ''), request.form.get('value_origin', ''),
+                                    confirmed=request.form.get('confirmed') == '1',
+                                    support_document=request.form.get('support_document', ''))
+            flash('Referência regularizada pelo gestor. Histórico preservado; nenhuma movimentação financeira ou de estoque foi criada.', 'success')
+            return redirect(url_for('products.stock_financial'), code=303)
+        except BadSignature:
+            flash('A confirmação expirou ou é inválida. Recarregue e revise os dados.', 'danger')
+            status = 409
+        except PermissionError:
+            abort(403)
+        except ValueError as exc:
+            flash(str(exc), 'danger')
+            status = 409
+    history = db.execute('SELECT * FROM stock_cost_references WHERE product_id=? ORDER BY id DESC LIMIT 50',
+                         (product_id,)).fetchall()
+    # Keep the original token after validation errors: a stale POST must never
+    # silently acquire authorization for a newer stock/history snapshot.
+    snapshot = (request.form.get('snapshot', '') if request.method == 'POST'
+                else signer.dumps(reference_snapshot(product)))
+    return render_template('regularize_stock_cost.html', product=product, history=history,
+                           snapshot=snapshot), status
 
 
 @bp.get("/stock/purchase-planning")

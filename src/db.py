@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from flask import g, current_app, has_request_context, request
+from src.cost_reference_schema import table_sql as cost_reference_table_sql
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS products (
     price_cents INTEGER NOT NULL CHECK(price_cents >= 0),
     cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents >= 0),
     stock_revision INTEGER NOT NULL DEFAULT 0,
+    cost_reference_revision BIGINT NOT NULL DEFAULT 0,
     stock INTEGER NOT NULL DEFAULT 0 CHECK(stock >= 0),
     min_stock INTEGER NOT NULL DEFAULT 5 CHECK(min_stock >= 0),
     supplier_email TEXT DEFAULT '',
@@ -907,6 +909,9 @@ CREATE TABLE IF NOT EXISTS football_transfer_window_settings (
 );
 """
 
+SCHEMA += cost_reference_table_sql()
+
+
 class CursorWrapper:
     def __init__(self, cursor):
         self.cursor = cursor
@@ -1488,11 +1493,14 @@ def init_sqlite(wrapper):
     migrate_sale_delivery_operations(conn)
     for table, column, definition in (
         ("products", "stock_revision", "INTEGER NOT NULL DEFAULT 0"),
+        ("products", "cost_reference_revision", "BIGINT NOT NULL DEFAULT 0"),
         ("stock_conference_items", "expected_revision", "INTEGER"),
         ("stock_adjustments", "conference_id", "INTEGER REFERENCES stock_conferences(id)"),
     ):
         if column not in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    from src.cost_reference_schema import schema_sql as cost_reference_schema_sql
+    conn.executescript(cost_reference_schema_sql())
     conn.executescript("""
         CREATE TRIGGER IF NOT EXISTS products_stock_revision
         AFTER UPDATE OF stock,active,category ON products

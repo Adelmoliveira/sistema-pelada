@@ -29,7 +29,7 @@
 {% set infra_active=endpoint.startswith('infra.') or endpoint.startswith('maintenance.') %}
 {% set football_management_active=endpoint in ['football.dashboard','football.position_distribution','football.tenure_report','football.statistics','football.attendance','football.transfer_window','football.notifications'] %}
 {% set football_active=endpoint.startswith('football.') and not football_management_active %}
-{% set stock_active=endpoint in ['products.stock','products.correct_restock','products.stock_conference','products.purchase_planning','products.stock_financial'] %}
+{% set stock_active=endpoint in ['products.stock','products.correct_restock','products.stock_conference','products.purchase_planning','products.stock_financial','products.regularize_stock_cost'] %}
 {% set urgent_active=endpoint == 'players.urgent' %}
 {% set admin_active=endpoint.startswith('auth.user') or (endpoint.startswith('players.') and not urgent_active) %}
 {% set calls_active=endpoint.startswith('maintenance.') %}
@@ -52,7 +52,7 @@
                 <a class="{{'active' if endpoint == 'products.stock_conference'}}" href="{{url_for('products.stock_conference')}}" {% if endpoint == 'products.stock_conference' %}aria-current="page"{% endif %}>Conferência Mensal</a>
                 {% if current_user.role == 'manager' %}
                 <a class="{{'active' if endpoint == 'products.purchase_planning'}}" href="{{url_for('products.purchase_planning')}}" {% if endpoint == 'products.purchase_planning' %}aria-current="page"{% endif %}>Planejamento de Compras</a>
-                <a class="{{'active' if endpoint == 'products.stock_financial'}}" href="{{url_for('products.stock_financial')}}" {% if endpoint == 'products.stock_financial' %}aria-current="page"{% endif %}>Visão Financeira</a>
+                <a class="{{'active' if endpoint in ['products.stock_financial','products.regularize_stock_cost']}}" href="{{url_for('products.stock_financial')}}" {% if endpoint in ['products.stock_financial','products.regularize_stock_cost'] %}aria-current="page"{% endif %}>Visão Financeira</a>
                 {% endif %}
               </div>
             </div><a class="{{'active' if endpoint.startswith('products.products') or endpoint.startswith('products.edit_product')}}" href="{{url_for('products.products')}}">Produtos</a><a class="orders-link {{'staff-orders-link' if current_user.role == 'staff' else ''}} {{'active' if endpoint == 'sales.orders'}}" href="{{url_for('sales.orders')}}">Pedidos</a><a class="{{'active' if endpoint == 'products.restock_request' or endpoint == 'products.restock_requests'}}" href="{{url_for('products.restock_requests' if current_user.role == 'manager' else 'products.restock_request')}}">Reposição{% if current_user.role == 'manager' and pending_restock_requests %} <span class="badge rounded-pill text-bg-danger">{{pending_restock_requests}}</span>{% elif current_user.role == 'staff' and unread_restock_notifications %} <span class="badge rounded-pill text-bg-primary">{{unread_restock_notifications}}</span>{% endif %}</a><div class="sidebar-submenu-group {{'active' if deliveries_active}}"><span>Entregas</span><a class="{{'active' if endpoint == 'sales.pending_delivery'}}" href="{{url_for('sales.pending_delivery')}}">Aguardando retiradas</a><a class="{{'active' if endpoint == 'sales.delivered_history'}}" href="{{url_for('sales.delivered_history')}}">Entregues recentemente</a><a class="{{'active' if endpoint == 'sales.canceled_history'}}" href="{{url_for('sales.canceled_history')}}">Cancelados recentemente</a></div>{% endif %}

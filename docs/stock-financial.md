@@ -38,7 +38,7 @@ O resultado utilizável recebe a classificação **Referência histórica estima
 - Acréscimo positivo em `stock_adjustments` sem aquisição monetária vinculada.
 - Saldo atual superior às quantidades adquiridas rastreadas.
 
-Não são aproveitadas apenas as compras conhecidas de um produto com histórico misto: isso esconderia a parte sem custo. Não há fallback para `products.cost_cents`, pois esse campo é editável e normalmente reflete o último custo, não uma apuração ponderada.
+Não são aproveitadas apenas as compras conhecidas de um produto com histórico misto: isso esconderia a parte sem custo. Não há fallback automático para `products.cost_cents`, pois esse campo é editável e normalmente reflete o último custo, não uma apuração ponderada. Quando o histórico não permite apuração e não há reposição individual corrigível, o gestor pode confirmar uma referência independente, com validade conservadora e auditoria imutável. Consulte [Regularização de custos](stock-cost-regularization.md).
 
 A origem das solicitações legadas é identificada pelo prefixo emitido pelo sistema em `restocks.notes`: `Reposição via solicitação #`. Mesmo uma correção posterior não comprova discriminação individual do documento de aquisição. Ajustes de correção de compra, cujo motivo começa por `Correção da reposição #`, não são tratados como acréscimos sem custo: seu efeito já está na compra corrigida.
 
@@ -58,4 +58,4 @@ PYTHONPYCACHEPREFIX=/tmp/gpcta-pycache .venv/bin/python -m unittest tests.test_s
 
 Os testes próprios usam o schema base em memória ou em arquivo temporário, sem inicializador/migrations. Cobrem ponderação, precisão, correções sucessivas, compras anuladas, custo desconhecido, rateio, acréscimos, ausência de histórico, consolidados parciais, inativos, esportivos, margens negativas, preço zero, estado vazio, permissões, escape HTML e ausência de gravação.
 
-Para homologar: acessar com gerente, confirmar o submenu aberto, comparar duas compras individuais de preços diferentes, verificar avisos de produtos sem custo e os totais parciais. Testar um produto inativo com saldo, uma compra por solicitação e um saldo zerado. Conferir que staff/cliente não acessam a rota. O POST não possui handler de persistência. A atualização dos dados ocorre ao recarregar a consulta; não há edição ou atualização automática do estoque.
+Para homologar: acessar com gerente, confirmar o submenu aberto, comparar duas compras individuais de preços diferentes, verificar avisos de produtos sem custo e os totais parciais. Testar um produto inativo com saldo, uma compra por solicitação e um saldo zerado. Conferir que staff/cliente não acessam a rota. O POST na consulta financeira não possui handler de persistência; a confirmação de referência usa rota própria, protegida e auditada. A atualização dos dados ocorre ao recarregar a consulta; não há edição ou atualização automática do estoque. O procedimento de migration, confirmação e rollback está no guia de regularização.
