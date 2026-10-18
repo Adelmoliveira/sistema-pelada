@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1 class="h3">Patrocinadores</h1>
+<p>As posições principais são fixas: VINAC à esquerda e Prudention à direita. Apenas patrocinadores ativos com logomarca aparecem no rodapé, sem nomes escritos. Envie as imagens oficiais; nenhuma imagem é criada automaticamente.</p>
+<p class="text-muted">PNG, JPEG ou WebP, até 2 MB e 12 megapixels. As imagens são otimizadas para até 128 KB. Atualizações podem levar até 60 segundos nos outros dispositivos.</p>
+{% macro editor(sponsor=none) %}
+<form method="post" enctype="multipart/form-data" class="card card-body mb-3">
+  <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+  <input type="hidden" name="revision" value="{{revision}}">
+  {% if sponsor %}<input type="hidden" name="sponsor_id" value="{{sponsor.id}}"><strong>{{'Principal · posição ' ~ sponsor.primary_slot if sponsor.primary_slot else 'Patrocinador comum'}}</strong>{% else %}<h2 class="h5">Cadastrar patrocinador comum</h2>{% endif %}
+  {% set key=sponsor.id if sponsor else 'new' %}
+  <label for="name-{{key}}" class="form-label">Nome / texto alternativo</label><input id="name-{{key}}" class="form-control" name="name" maxlength="100" required value="{{sponsor.name if sponsor else ''}}">
+  <label for="link-{{key}}" class="form-label mt-2">Link HTTPS (opcional)</label><input id="link-{{key}}" class="form-control" name="link_url" type="url" maxlength="2048" value="{{sponsor.link_url if sponsor else ''}}">
+  <label for="logo-{{key}}" class="form-label mt-2">Logomarca oficial</label><input id="logo-{{key}}" class="form-control" type="file" name="logo" accept="image/png,image/jpeg,image/webp">
+  {% if sponsor and sponsor.logo_version %}<span class="text-muted">Logomarca cadastrada.</span><label><input type="checkbox" name="remove_logo" value="1"> Remover logomarca</label>{% else %}<span class="text-muted">Aguardando upload da logomarca.</span>{% endif %}
+  <label class="my-2"><input type="checkbox" name="active" value="1" {{'checked' if sponsor and sponsor.active}}> Ativo</label>
+  <button class="btn btn-primary align-self-start">Salvar</button>
+</form>
+{% endmacro %}
+<h2 class="h4">Patrocinadores principais</h2>
+{% for sponsor in sponsors if sponsor.primary_slot %}{{editor(sponsor)}}{% endfor %}
+<h2 class="h4">Ordenar patrocinadores comuns</h2>
+<p>Arraste os itens ou use os botões para mover. Depois, salve a ordem. Inclui patrocinadores desativados.</p>
+<ol id="sponsor-order" class="list-group mb-2" data-revision="{{revision}}" data-url="{{url_for('sponsors.reorder')}}">
+{% for sponsor in sponsors if not sponsor.primary_slot %}<li class="list-group-item d-flex align-items-center gap-2" draggable="true" data-id="{{sponsor.id}}"><span class="flex-grow-1">{{sponsor.name}}</span><button type="button" class="btn btn-sm btn-outline-secondary" data-move="up" aria-label="Mover {{sponsor.name}} para cima">↑</button><button type="button" class="btn btn-sm btn-outline-secondary" data-move="down" aria-label="Mover {{sponsor.name}} para baixo">↓</button></li>{% endfor %}
+</ol>
+<button id="sponsor-save-order" class="btn btn-secondary mb-2" type="button">Salvar ordem</button><p id="sponsor-order-status" role="status" aria-live="polite"></p>
+{% for sponsor in sponsors if not sponsor.primary_slot %}{{editor(sponsor)}}{% endfor %}
+{{editor()}}
+{% endblock %}
+{% block scripts %}<script src="{{url_for('static',filename='sponsors.js')}}" defer></script>{% endblock %}

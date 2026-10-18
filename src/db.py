@@ -1494,6 +1494,8 @@ def init_sqlite(wrapper):
     conn.executescript(monitor_schema_sql())
     from src.purchase_alert_schema import schema_sql as alert_schema_sql
     conn.executescript(alert_schema_sql())
+    from src.sponsor_schema import schema_sql as sponsor_schema_sql
+    conn.executescript(sponsor_schema_sql())
     migrate_sale_delivery_operations(conn)
     for table, column, definition in (
         ("products", "stock_revision", "INTEGER NOT NULL DEFAULT 0"),

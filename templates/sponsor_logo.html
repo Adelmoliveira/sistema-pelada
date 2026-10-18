@@ -1,0 +1,3 @@
+{% if sponsor.link_url %}<a href="{{sponsor.link_url}}" target="_blank" rel="noopener noreferrer sponsored">{% endif %}
+<img src="{{url_for('sponsors.logo',sponsor_id=sponsor.id,version=sponsor.logo_version)}}" alt="{{sponsor.name}}" loading="lazy" decoding="async" onerror="this.hidden=true; if(this.parentElement.tagName==='A') this.parentElement.hidden=true;">
+{% if sponsor.link_url %}</a>{% endif %}
