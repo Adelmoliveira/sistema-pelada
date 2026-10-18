@@ -1,10 +1,10 @@
 {% extends 'base.html' %}
 {% block content %}
 <h1 class="h3">Patrocinadores</h1>
-<p>As posições principais são fixas: VINAC à esquerda e Prudention à direita. Apenas patrocinadores ativos com logomarca aparecem no rodapé, sem nomes escritos. Envie as imagens oficiais; nenhuma imagem é criada automaticamente.</p>
+<p>Editar preserva a posição de destaque. Excluir libera somente a posição daquele patrocinador, sem mover os demais. Apenas patrocinadores ativos com logomarca aparecem no rodapé, sem nomes escritos.</p>
 <p class="text-muted">PNG, JPEG ou WebP, até 2 MB e 12 megapixels. As imagens são otimizadas para até 128 KB. Atualizações podem levar até 60 segundos nos outros dispositivos.</p>
 {% macro editor(sponsor=none) %}
-<form method="post" enctype="multipart/form-data" class="card card-body mb-3">
+<form method="post" enctype="multipart/form-data" class="card-body d-flex flex-column" data-sponsor-editor data-preview-url="{{url_for('sponsors.preview')}}">
   <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
   <input type="hidden" name="revision" value="{{revision}}">
   {% if sponsor %}<input type="hidden" name="sponsor_id" value="{{sponsor.id}}"><strong>{{'Principal · posição ' ~ sponsor.primary_slot if sponsor.primary_slot else 'Patrocinador comum'}}</strong>{% else %}<h2 class="h5">Cadastrar patrocinador comum</h2>{% endif %}
@@ -12,20 +12,44 @@
   <label for="name-{{key}}" class="form-label">Nome / texto alternativo</label><input id="name-{{key}}" class="form-control" name="name" maxlength="100" required value="{{sponsor.name if sponsor else ''}}">
   <label for="link-{{key}}" class="form-label mt-2">Link HTTPS (opcional)</label><input id="link-{{key}}" class="form-control" name="link_url" type="url" maxlength="2048" value="{{sponsor.link_url if sponsor else ''}}">
   <label for="logo-{{key}}" class="form-label mt-2">Logomarca oficial</label><input id="logo-{{key}}" class="form-control" type="file" name="logo" accept="image/png,image/jpeg,image/webp">
+  <img class="sponsor-preview my-2" data-logo-preview loading="lazy" decoding="async" alt="Pré-visualização da logomarca" {% if sponsor and sponsor.logo_version %}src="{{url_for('sponsors.admin_logo',sponsor_id=sponsor.id)}}"{% else %}hidden{% endif %}>
+  <label class="my-2"><input type="checkbox" name="remove_background" value="1"> Remover somente fundo uniforme (opcional)</label>
+  <p class="small text-muted mb-2">Nenhuma remoção automática. A prévia remove apenas cores próximas ao fundo conectadas à borda. Confira se a marca foi preservada antes de confirmar.</p>
+  <button type="button" class="btn btn-sm btn-outline-secondary align-self-start" data-preview-logo>Gerar pré-visualização</button>
+  <label class="my-2"><input type="checkbox" name="confirm_background" value="1"> Revisei a prévia e confirmo a remoção do fundo ao salvar</label>
+  <span data-preview-status role="status" aria-live="polite"></span>
   {% if sponsor and sponsor.logo_version %}<span class="text-muted">Logomarca cadastrada.</span><label><input type="checkbox" name="remove_logo" value="1"> Remover logomarca</label>{% else %}<span class="text-muted">Aguardando upload da logomarca.</span>{% endif %}
   <label class="my-2"><input type="checkbox" name="active" value="1" {{'checked' if sponsor and sponsor.active}}> Ativo</label>
   <button class="btn btn-primary align-self-start">Salvar</button>
 </form>
 {% endmacro %}
+{% macro entry(sponsor) %}
+<article class="card mb-3" data-sponsor-entry="{{sponsor.id}}">
+  <div class="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
+    <div><strong>{{sponsor.name}}</strong> <small class="text-muted">{{'Principal · posição ' ~ sponsor.primary_slot if sponsor.primary_slot else 'Comum'}} · {{'Ativo' if sponsor.active else 'Desativado'}}</small></div>
+    <div class="d-flex gap-2">
+      <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="collapse" data-bs-target="#sponsor-edit-{{sponsor.id}}" aria-controls="sponsor-edit-{{sponsor.id}}" aria-expanded="false" aria-label="Editar {{sponsor.name}}">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="m16 3 5 5-12 12-6 2 2-6Z"/><path d="m14 5 5 5"/></svg> Editar
+      </button>
+      <a class="btn btn-sm btn-outline-danger" href="{{url_for('sponsors.delete',sponsor_id=sponsor.id)}}" aria-label="Excluir {{sponsor.name}}">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg> Excluir
+      </a>
+    </div>
+  </div>
+  <div class="collapse" id="sponsor-edit-{{sponsor.id}}">{{editor(sponsor)}}</div>
+</article>
+{% endmacro %}
 <h2 class="h4">Patrocinadores principais</h2>
-{% for sponsor in sponsors if sponsor.primary_slot %}{{editor(sponsor)}}{% endfor %}
+{% for sponsor in sponsors if sponsor.primary_slot %}{{entry(sponsor)}}{% endfor %}
+{% set occupied = sponsors|selectattr('primary_slot')|map(attribute='primary_slot')|list %}
+{% for slot in [1,2] if slot not in occupied %}<p class="small text-muted">Posição principal {{slot}} disponível. Nenhum patrocinador foi movido automaticamente.</p>{% endfor %}
 <h2 class="h4">Ordenar patrocinadores comuns</h2>
 <p>Arraste os itens ou use os botões para mover. Depois, salve a ordem. Inclui patrocinadores desativados.</p>
 <ol id="sponsor-order" class="list-group mb-2" data-revision="{{revision}}" data-url="{{url_for('sponsors.reorder')}}">
 {% for sponsor in sponsors if not sponsor.primary_slot %}<li class="list-group-item d-flex align-items-center gap-2" draggable="true" data-id="{{sponsor.id}}"><span class="flex-grow-1">{{sponsor.name}}</span><button type="button" class="btn btn-sm btn-outline-secondary" data-move="up" aria-label="Mover {{sponsor.name}} para cima">↑</button><button type="button" class="btn btn-sm btn-outline-secondary" data-move="down" aria-label="Mover {{sponsor.name}} para baixo">↓</button></li>{% endfor %}
 </ol>
 <button id="sponsor-save-order" class="btn btn-secondary mb-2" type="button">Salvar ordem</button><p id="sponsor-order-status" role="status" aria-live="polite"></p>
-{% for sponsor in sponsors if not sponsor.primary_slot %}{{editor(sponsor)}}{% endfor %}
-{{editor()}}
+{% for sponsor in sponsors if not sponsor.primary_slot %}{{entry(sponsor)}}{% endfor %}
+<div class="card mb-3">{{editor()}}</div>
 {% endblock %}
-{% block scripts %}<script src="{{url_for('static',filename='sponsors.js')}}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{url_for('static',filename='sponsors.js')}}" defer></script><script src="{{url_for('static',filename='sponsor-preview.js')}}" defer></script>{% endblock %}

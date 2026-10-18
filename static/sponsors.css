@@ -1,3 +1,45 @@
-.gpcta-footer{text-align:center;padding:1.5rem .5rem;color:#6c757d}.sponsor-logos{max-width:760px;margin:1rem auto 0}.sponsor-principals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin-bottom:1rem}.sponsor-primary-slot{display:flex;align-items:center;justify-content:center;min-width:0;min-height:75px}.sponsor-primary-slot img{max-width:100%;width:240px;height:100px;object-fit:contain}.sponsor-common{display:flex;justify-content:center;align-items:center;gap:1rem;flex-wrap:wrap}.sponsor-common img{width:120px;height:64px;object-fit:contain;max-width:100%}.sponsor-logos a{display:inline-flex;max-width:100%}.sponsor-logos a:focus-visible{outline:3px solid #0d6efd;outline-offset:4px}@media(max-width:400px){.sponsor-primary-slot img{height:75px}.sponsor-common img{width:96px;height:52px}}
-
-.sponsor-logos [hidden]{display:none!important}
+.gpcta-footer {
+  text-align: center;
+  padding: .75rem .5rem max(.5rem, env(safe-area-inset-bottom));
+  color: #6c757d;
+}
+.sponsor-logos { max-width: 640px; margin: 0 auto; }
+.sponsor-title { font-size: .72rem; font-weight: 600; letter-spacing: .12em; line-height: 1.3; margin: 0 0 .4rem; }
+.sponsor-principals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; max-width: 480px; margin: 0 auto; }
+.sponsor-primary-slot { display: flex; align-items: center; justify-content: center; min-width: 0; }
+.sponsor-primary-slot img { width: 220px; height: 72px; max-width: 100%; object-fit: contain; }
+.sponsor-common { display: flex; justify-content: center; align-items: center; gap: .4rem .75rem; flex-wrap: wrap; }
+.sponsor-principals + .sponsor-common:not(:empty) { margin-top: .4rem; }
+.sponsor-common img { width: 120px; height: 44px; object-fit: contain; max-width: 100%; }
+.sponsor-logos a { display: inline-flex; max-width: 100%; }
+.sponsor-logos a:focus-visible { outline: 3px solid #0d6efd; outline-offset: 3px; }
+.sponsor-logos [hidden] { display: none !important; }
+.gpcta-footer .login-copyright { display: block; font-size: .72rem; line-height: 1.4; margin: .45rem 0 0; padding: 0; }
+.sponsor-preview { width: 220px; height: 100px; object-fit: contain; max-width: 100%; border: 1px dashed #adb5bd; }
+.sponsor-preview[hidden] { display: none; }
+@media (max-width: 767px) {
+  .gpcta-footer { padding-top: .55rem; }
+  .sponsor-title { font-size: .66rem; margin-bottom: .25rem; }
+  .sponsor-primary-slot img { width: 180px; height: 52px; }
+  .sponsor-common img { width: 100px; height: 36px; }
+  .sponsor-common { gap: .3rem .6rem; }
+  .sponsor-principals + .sponsor-common:not(:empty) { margin-top: .25rem; }
+  .gpcta-login main.container {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding-top: max(.5rem, env(safe-area-inset-top)) !important;
+    padding-bottom: max(.5rem, env(safe-area-inset-bottom)) !important;
+  }
+  .gpcta-login .login-layout { margin-top: 0 !important; }
+  .gpcta-login .login-heading { margin-bottom: .65rem !important; }
+  .gpcta-login .club-card-logo-button, .gpcta-login .login-logo { width: 84px; height: 84px; }
+  .gpcta-login .club-card-logo-button { margin-bottom: .5rem !important; }
+  .gpcta-login .login-heading h1 { font-size: 1.35rem; margin-bottom: .25rem; }
+  .gpcta-login .login-heading p { margin-bottom: 0; }
+  .gpcta-login .login-card-body { padding: 1rem !important; }
+  .gpcta-login .login-card-body .mb-3, .gpcta-login .login-remember-help { margin-bottom: .65rem !important; }
+  .gpcta-login .gpcta-footer { padding-bottom: 0; }
+}

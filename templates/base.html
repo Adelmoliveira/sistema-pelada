@@ -17,7 +17,7 @@
   <script src="{{url_for('static',filename='pwa-update.js')}}"></script>
   <link rel="stylesheet" href="{{url_for('static',filename='sponsors.css')}}">
 </head>
-<body data-push-role="{{current_user.role if current_user else ''}}">
+<body {% if request.endpoint == 'auth.login' %}class="gpcta-login" {% endif %}data-push-role="{{current_user.role if current_user else ''}}">
 {% if is_homologation %}<div class="alert alert-warning rounded-0 text-center fw-bold py-2 mb-0" role="status">🧪 AMBIENTE DE HOMOLOGAÇÃO</div>{% endif %}
 {% if current_user and not (guest_mode|default(false)) %}
 {% set endpoint=request.endpoint or '' %}

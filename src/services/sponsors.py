@@ -9,6 +9,7 @@ from threading import RLock
 import time
 from urllib.parse import urlsplit
 import warnings
+from collections import deque
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -53,7 +54,45 @@ def validate_link(value):
     return value
 
 
-def process_logo(upload):
+def remove_uniform_background(image):
+    """Only an opaque, near-uniform border; never remove enclosed brand details."""
+    image = image.copy()
+    width, height = image.size
+    pixels = image.load()
+    border = [(x, 0) for x in range(width)] + [(x, height-1) for x in range(width)]
+    border += [(0, y) for y in range(height)] + [(width-1, y) for y in range(height)]
+    corners = [pixels[x, y] for x, y in [(0, 0), (width-1, 0), (0, height-1), (width-1, height-1)]]
+    if any(color[3] != 255 for color in corners):
+        raise ValueError('O fundo já tem transparência ou não é uniforme. Preserve a imagem original.')
+    background = tuple(sorted(color[channel] for color in corners)[1] for channel in range(3))
+
+    def matches(x, y):
+        color = pixels[x, y]
+        return color[3] == 255 and max(abs(color[i]-background[i]) for i in range(3)) <= 8
+
+    if not all(matches(x, y) for x, y in [(0, 0), (width-1, 0), (0, height-1), (width-1, height-1)]) or sum(matches(x, y) for x, y in border) < .95 * len(border):
+        raise ValueError('Não foi identificado um fundo uniforme seguro. Use a logomarca original.')
+    queue = deque(border)
+    visited = set()
+    removed = 0
+    while queue:
+        x, y = queue.popleft()
+        if (x, y) in visited:
+            continue
+        visited.add((x, y))
+        if not matches(x, y):
+            continue
+        pixels[x, y] = (*pixels[x, y][:3], 0)
+        removed += 1
+        for nx, ny in ((x-1, y), (x+1, y), (x, y-1), (x, y+1)):
+            if 0 <= nx < width and 0 <= ny < height:
+                queue.append((nx, ny))
+    if removed > width * height * .99:
+        raise ValueError('A remoção eliminaria quase toda a imagem. Use o arquivo original.')
+    return image
+
+
+def process_logo(upload, *, remove_background=False):
     formats = {'PNG': ('image/png', {'.png'}), 'JPEG': ('image/jpeg', {'.jpg', '.jpeg'}),
                'WEBP': ('image/webp', {'.webp'})}
     raw = upload.read(MAX_UPLOAD + 1)
@@ -74,6 +113,13 @@ def process_logo(upload):
                 image.load()
                 prepared = ImageOps.exif_transpose(image).convert('RGBA')
                 prepared.thumbnail((800, 320), Image.Resampling.LANCZOS)
+                if remove_background:
+                    prepared = remove_uniform_background(prepared)
+                # Trim only fully transparent outer pixels, never visible artwork.
+                bounds = prepared.getchannel('A').getbbox()
+                if not bounds:
+                    raise ValueError('A logomarca não contém pixels visíveis.')
+                prepared = prepared.crop(bounds)
                 prepared.info.clear()
                 output = BytesIO()
                 prepared.save(output, format='WEBP', quality=85, method=6)
