@@ -53,6 +53,25 @@ def stock_report_data(db, start_date="", end_date=""):
         GROUP BY i.product_id""",
         tuple(sale_params),
     ).fetchall()
+    adjustment_filters = []
+    adjustment_params = []
+    for operator, value in ((">=", start_date), ("<=", end_date)):
+        if value:
+            adjustment_filters.append(f"date(created_at) {operator} ?")
+            adjustment_params.append(value)
+    adjustment_where = " WHERE " + " AND ".join(adjustment_filters) if adjustment_filters else ""
+    # Purchase corrections already replace restock quantities above. Their
+    # stock_adjustments are audit records, not a second movement to count.
+    adjustments = db.execute(
+        "SELECT product_id,difference FROM stock_adjustments" +
+        (adjustment_where + " AND " if adjustment_where else " WHERE ") +
+        "reason NOT LIKE 'Correção da reposição #%'", tuple(adjustment_params),
+    ).fetchall()
+    positive, negative = {}, {}
+    for adjustment in adjustments:
+        target = positive if adjustment["difference"] > 0 else negative
+        pid = adjustment["product_id"]
+        target[pid] = target.get(pid, 0) + abs(adjustment["difference"])
     entries = {}
     for row in restocks:
         entries[row["product_id"]] = entries.get(row["product_id"], 0) + int(row["quantity"] or 0)
@@ -65,7 +84,10 @@ def stock_report_data(db, start_date="", end_date=""):
         outgoing = exits.get(product["id"], 0)
         rows.append({
             "name": product["name"], "stock": int(product["stock"] or 0),
-            "entries": incoming, "exits": outgoing, "net": incoming - outgoing,
+            "entries": incoming, "exits": outgoing,
+            "adjustments_positive": positive.get(product["id"], 0),
+            "adjustments_negative": negative.get(product["id"], 0),
+            "net": incoming - outgoing + positive.get(product["id"], 0) - negative.get(product["id"], 0),
         })
     return rows
 
@@ -93,7 +115,7 @@ def build_stock_report_pdf(rows, start_date, end_date, issued_on=None):
         Paragraph(f"Período das movimentações: {period} - Emitido em {issued_on.strftime('%d/%m/%Y')}", styles["StockSub"]),
         Spacer(1, 5 * mm),
     ]
-    headers = ("Produto", "Estoque atual", "Entradas", "Saídas", "Movimentação líquida")
+    headers = ("Produto", "Estoque atual", "Compras", "Vendas pagas", "Ajustes +", "Ajustes -", "Variação listada")
     table_rows = [[Paragraph(value, styles["StockHeader"]) for value in headers]]
     for row in rows:
         table_rows.append([
@@ -101,11 +123,13 @@ def build_stock_report_pdf(rows, start_date, end_date, issued_on=None):
             Paragraph(str(row["stock"]), styles["StockCenter"]),
             Paragraph(f"+{row['entries']}", styles["StockCenter"]),
             Paragraph(f"-{row['exits']}", styles["StockCenter"]),
+            Paragraph(f"+{row.get('adjustments_positive', 0)}", styles["StockCenter"]),
+            Paragraph(f"-{row.get('adjustments_negative', 0)}", styles["StockCenter"]),
             Paragraph(f"{row['net']:+d}", styles["StockCenter"]),
         ])
     if not rows:
-        table_rows.append([Paragraph("Nenhum produto cadastrado.", styles["StockCenter"])] + [""] * 4)
-    table = Table(table_rows, colWidths=[122 * mm, 36 * mm, 36 * mm, 36 * mm, 49 * mm], repeatRows=1, hAlign="LEFT")
+        table_rows.append([Paragraph("Nenhum produto cadastrado.", styles["StockCenter"])] + [""] * 6)
+    table = Table(table_rows, colWidths=[80 * mm, 30 * mm, 29 * mm, 33 * mm, 29 * mm, 29 * mm, 41 * mm], repeatRows=1, hAlign="LEFT")
     rules = [
         ("BACKGROUND", (0, 0), (-1, 0), NAVY), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("GRID", (0, 0), (-1, -1), .35, colors.HexColor("#CFD8DC")),
@@ -116,7 +140,7 @@ def build_stock_report_pdf(rows, start_date, end_date, issued_on=None):
     if not rows:
         rules.append(("SPAN", (0, 1), (-1, 1)))
     table.setStyle(TableStyle(rules))
-    story.extend([table, Spacer(1, 5 * mm), Paragraph(f"Produtos listados: <b>{len(rows)}</b> - Os totais de entradas e saídas consideram apenas o período informado.", styles["StockSub"])])
+    story.extend([table, Spacer(1, 5 * mm), Paragraph(f"Produtos listados: <b>{len(rows)}</b> - Compras corrigidas, vendas pagas e ajustes do período. Correções de compra não são somadas novamente como ajustes. A variação listada não reconstrói o saldo: pedidos pendentes e cancelamentos também afetam o estoque operacional atual.", styles["StockSub"])])
 
     def footer(canvas, doc):
         canvas.saveState()

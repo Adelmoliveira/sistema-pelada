@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS products (
     case_sale_enabled INTEGER NOT NULL DEFAULT 0 CHECK(case_sale_enabled IN (0,1)),
     price_cents INTEGER NOT NULL CHECK(price_cents >= 0),
     cost_cents INTEGER NOT NULL DEFAULT 0 CHECK(cost_cents >= 0),
+    stock_revision INTEGER NOT NULL DEFAULT 0,
     stock INTEGER NOT NULL DEFAULT 0 CHECK(stock >= 0),
     min_stock INTEGER NOT NULL DEFAULT 5 CHECK(min_stock >= 0),
     supplier_email TEXT DEFAULT '',
@@ -407,16 +408,6 @@ CREATE TABLE IF NOT EXISTS restock_corrections (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_restock_corrections_restock ON restock_corrections(restock_id,id);
-CREATE TABLE IF NOT EXISTS stock_adjustments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    product_id INTEGER NOT NULL REFERENCES products(id),
-    user_id INTEGER REFERENCES users(id),
-    previous_stock INTEGER NOT NULL CHECK(previous_stock >= 0),
-    new_stock INTEGER NOT NULL CHECK(new_stock >= 0),
-    difference INTEGER NOT NULL,
-    reason TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
 CREATE TABLE IF NOT EXISTS stock_conferences (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conference_month TEXT NOT NULL UNIQUE,
@@ -424,10 +415,28 @@ CREATE TABLE IF NOT EXISTS stock_conferences (
     performed_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS stock_conference_applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conference_id INTEGER NOT NULL UNIQUE REFERENCES stock_conferences(id),
+    user_id INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS stock_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    user_id INTEGER REFERENCES users(id),
+    conference_id INTEGER REFERENCES stock_conferences(id),
+    previous_stock INTEGER NOT NULL CHECK(previous_stock >= 0),
+    new_stock INTEGER NOT NULL CHECK(new_stock >= 0),
+    difference INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS stock_conference_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conference_id INTEGER NOT NULL REFERENCES stock_conferences(id) ON DELETE CASCADE,
     product_id INTEGER NOT NULL REFERENCES products(id),
+    expected_revision INTEGER,
     expected_stock INTEGER NOT NULL CHECK(expected_stock >= 0),
     physical_stock INTEGER NOT NULL CHECK(physical_stock >= 0),
     difference INTEGER NOT NULL,
@@ -1475,6 +1484,21 @@ def init_sqlite(wrapper):
     migrate_sale_delivery_operations(conn)
     conn.executescript(SCHEMA)
     migrate_sale_delivery_operations(conn)
+    for table, column, definition in (
+        ("products", "stock_revision", "INTEGER NOT NULL DEFAULT 0"),
+        ("stock_conference_items", "expected_revision", "INTEGER"),
+        ("stock_adjustments", "conference_id", "INTEGER REFERENCES stock_conferences(id)"),
+    ):
+        if column not in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.executescript("""
+        CREATE TRIGGER IF NOT EXISTS products_stock_revision
+        AFTER UPDATE OF stock,active,category ON products
+        FOR EACH ROW WHEN NEW.stock<>OLD.stock OR NEW.active<>OLD.active OR NEW.category<>OLD.category
+        BEGIN
+            UPDATE products SET stock_revision=OLD.stock_revision+1 WHERE id=NEW.id;
+        END;
+    """)
     topup_columns = {row[1] for row in conn.execute("PRAGMA table_info(bar_credit_topups)")}
     if "refunded_at" not in topup_columns:
         conn.execute("ALTER TABLE bar_credit_topups ADD COLUMN refunded_at TEXT")

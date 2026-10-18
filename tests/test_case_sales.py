@@ -161,7 +161,9 @@ class CaseSalesTest(unittest.TestCase):
 
     def test_product_configuration_and_quick_sale_render(self):
         self.configure()
-        response=self.client.post(f'/products/{self.product_id}/edit', data={'name':'Heineken','category':'Cerveja','units_per_case':'24','case_sale_enabled':'1','price':'15,00','cost':'1,00','stock':'100','min_stock':'5'})
+        with app.app_context():
+            revision=get_db().execute('SELECT stock_revision FROM products WHERE id=?',(self.product_id,)).fetchone()[0]
+        response=self.client.post(f'/products/{self.product_id}/edit', data={'stock_revision':str(revision),'name':'Heineken','category':'Cerveja','units_per_case':'24','case_sale_enabled':'1','price':'15,00','cost':'1,00','stock':'100','min_stock':'5'})
         self.assertIn(response.status_code,(302,303))
         with app.app_context():
             product=get_db().execute('SELECT * FROM products WHERE id=?',(self.product_id,)).fetchone()
