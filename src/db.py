@@ -1483,6 +1483,8 @@ def init_sqlite(wrapper):
     migrate_credit_payment_method(conn)
     migrate_sale_delivery_operations(conn)
     conn.executescript(SCHEMA)
+    from src.purchase_observation_schema import schema_sql
+    conn.executescript(schema_sql())
     migrate_sale_delivery_operations(conn)
     for table, column, definition in (
         ("products", "stock_revision", "INTEGER NOT NULL DEFAULT 0"),

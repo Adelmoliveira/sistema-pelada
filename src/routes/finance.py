@@ -999,6 +999,22 @@ def process_notification_outbox_cron():
     return jsonify(ok=True, **result)
 
 
+@bp.get("/cron/process-purchase-observation")
+def process_purchase_observation_cron():
+    if not _cron_authorized():
+        return jsonify(error="Não autorizado."), 401
+    from src.services.purchase_observation import process_observation
+    from src.db import connect_db
+    # Own a fresh connection: connect_db's SET TIME ZONE starts a PostgreSQL
+    # transaction. Commit only that setup, never an operational transaction.
+    db = connect_db(current_app)
+    try:
+        db.commit()
+        return jsonify(ok=True, **process_observation(db))
+    finally:
+        db.close()
+
+
 @bp.get("/cron/expire-pix-checkouts")
 def expire_pix_checkouts_cron():
     if not _cron_authorized():
