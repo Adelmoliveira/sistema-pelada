@@ -17,6 +17,7 @@ from src.services.stock_report_pdf import build_stock_report_pdf, stock_report_d
 from src.services.stock_alerts import notify_low_stock
 from src.services.material_photos import process_material_photo
 from src.services.purchase_forecast import purchase_forecast
+from src.services.stock_financial import stock_financial_data
 from src.utils import local_today
 from src.catalog import SPORTS_MATERIAL_CATEGORY
 
@@ -684,6 +685,12 @@ def stock():
                            history_total=history_total, history_page=history_page,
                            history_pages=history_pages, report_start=request.args.get("start", ""),
                            report_end=request.args.get("end", ""))
+
+
+@bp.get("/stock/financial")
+@roles_allowed("manager")
+def stock_financial():
+    return render_template("stock_financial.html", **stock_financial_data(get_db()))
 
 
 @bp.get("/stock/purchase-planning")

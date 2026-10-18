@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}Visão Financeira do Estoque · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+  <div><h1 class="h3 mb-1">Visão Financeira do Estoque</h1><p class="text-muted mb-0">Bar · Avaliação gerencial estimada, somente para consulta.</p></div>
+  <a class="btn btn-outline-secondary" href="{{url_for('products.stock')}}">Voltar ao estoque</a>
+</div>
+<div class="alert alert-info" role="note"><strong>Estimativa, não valor contábil.</strong> O custo médio histórico de referência utiliza as compras individuais registradas, com suas últimas correções. Não é média móvel nem identifica o custo dos lotes remanescentes. O saldo é o estoque operacional disponível: pedidos pendentes podem já tê-lo reduzido. Não inclui materiais esportivos.</div>
+{% if summary.partial %}<div class="alert alert-warning" role="alert"><strong>Totais de custo e margem parciais.</strong> {{summary.missing_products}} produto(s), {{summary.missing_units}} unidade(s) e {{summary.missing_revenue_cents|money}} de faturamento potencial estão fora da apuração de custo. Não há substituição por custo cadastrado ou por zero.</div>{% endif %}
+{% if summary.inactive_units %}<div class="alert alert-secondary">Há {{summary.inactive_units}} unidade(s) em produtos inativos. Estão incluídas para evidenciar o saldo remanescente; seu faturamento é apenas teórico e não pressupõe liberação para venda.</div>{% endif %}
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><div class="text-muted small">Estoque operacional do bar</div><strong class="fs-4">{{summary.units}} un.</strong><div class="small">{{summary.products}} produtos listados</div></div></div></div>
+  <div class="col-sm-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><div class="text-muted small">Valor estimado {% if summary.partial %}(parcial){% endif %}</div><strong class="fs-4">{{summary.stock_value_cents|money if summary.stock_value_cents is not none else 'Sem custo apurado'}}</strong><div class="small">{{summary.covered_products}} produtos com saldo e referência de custo</div></div></div></div>
+  <div class="col-sm-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><div class="text-muted small">Faturamento potencial total</div><strong class="fs-4">{{summary.revenue_cents|money}}</strong><div class="small">Preço unitário atual × saldo operacional</div></div></div></div>
+  <div class="col-sm-6 col-xl-3"><div class="card h-100 shadow-sm"><div class="card-body"><div class="text-muted small">Margem bruta potencial {% if summary.partial %}(parcial){% endif %}</div><strong class="fs-4">{{summary.margin_cents|money if summary.margin_cents is not none else 'Não apurada'}}</strong><div class="small">{{('%0.2f'|format(summary.margin_percent))|replace('.', ',') ~ '%' if summary.margin_percent is not none else 'Percentual não apurado'}} · mesma base com custo apurado</div></div></div></div>
+</div>
+<p class="small text-muted">Faturamento potencial dos produtos com custo apurado: {{summary.covered_revenue_cents|money}}. A margem usa somente essa base; não desconta impostos, taxas, despesas operacionais ou perdas futuras. Valores negativos são preservados.</p>
+<div class="card shadow-sm"><div class="card-header fw-bold">Produtos e qualidade da apuração</div><div class="table-responsive">
+<table class="table table-sm align-middle mb-0"><caption class="px-3">Valores monetários por unidade avulsa. Totais calculados antes do arredondamento do custo unitário exibido; pode haver diferença de centavos ao multiplicá-lo.</caption>
+<thead><tr><th scope="col">Produto</th><th scope="col">Quantidade</th><th scope="col">Custo médio histórico de referência</th><th scope="col">Valor estimado em estoque</th><th scope="col">Preço unitário de venda</th><th scope="col">Faturamento potencial</th><th scope="col">Margem bruta potencial</th><th scope="col">Classificação do custo</th></tr></thead>
+<tbody>{% for product in products %}<tr>
+<td><strong>{{product.name}}</strong><div class="small text-muted">{{product.category}}</div>{% if not product.active %}<span class="badge text-bg-secondary">Inativo · potencial teórico</span>{% endif %}</td>
+<td>{{product.stock}} un.</td>
+<td>{{product.unit_cost_cents|money if product.unit_cost_cents is not none else 'Sem custo apurado'}}</td>
+<td>{{product.stock_value_cents|money if product.stock_value_cents is not none else 'Não apurado'}}</td>
+<td>{{product.price_cents|money}}</td><td>{{product.revenue_cents|money}}</td>
+<td class="{{'text-danger' if product.margin_cents is not none and product.margin_cents < 0 else ''}}">{% if product.margin_cents is not none %}{{product.margin_cents|money}}<div class="small">{% if product.margin_percent is not none %}{{('%0.2f'|format(product.margin_percent))|replace('.', ',')}}%{% else %}Percentual não apurado{% endif %}</div>{% else %}Não apurada{% endif %}</td>
+<td>{% if product.cost_status == 'historical_reference' %}<span class="badge text-bg-info">Referência histórica estimada</span><div class="small">{{product.purchase_count}} compra(s) · {{product.purchase_units}} un. adquiridas</div>{% else %}<span class="badge text-bg-warning">Sem custo apurado</span>{% for reason in product.reasons %}<div class="small">{{reason}}</div>{% endfor %}{% endif %}</td>
+</tr>{% else %}<tr><td colspan="8" class="text-muted">Nenhum produto do bar para exibir.</td></tr>{% endfor %}</tbody></table></div></div>
+<details class="mt-3"><summary>Como interpretar os custos</summary><p class="small mt-2">A média pondera quantidade × custo de cada aquisição, usando todo o histórico disponível e a última correção de cada compra. Custo zero não comprova gratuidade. Compras por solicitação com rateio global, acréscimos sem aquisição vinculada e inconsistências impedem a apuração do produto. O estoque inicial e os lotes atuais não têm rastreabilidade monetária completa. Um custo utilizável é uma referência histórica estimada, nunca uma certificação contábil.</p></details>
+{% endblock %}

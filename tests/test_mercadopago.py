@@ -3017,7 +3017,7 @@ class MercadoPagoFlowTest(unittest.TestCase):
         self.assertIn('data-bs-target="#sidebar-bar"', page)
         self.assertIn('data-bs-target="#sidebar-stock"', page)
         self.assertIn('id="sidebar-stock"', page)
-        self.assertIn('>Visão geral</a>', page)
+        self.assertIn('>Controle de Estoque</a>', page)
         self.assertIn('>Planejamento de Compras</a>', page)
         self.assertNotIn('>Estoque → Planejamento de Compras</a>', page)
         self.assertIn(">Bar e vendas</a>", page)
