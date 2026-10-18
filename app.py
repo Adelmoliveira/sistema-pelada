@@ -28,6 +28,7 @@ from src.routes.display import bp as display_bp
 from src.routes.reports import bp as reports_bp
 from src.routes.football import bp as football_bp
 from src.routes.events import bp as events_bp
+from src.routes.sponsors import bp as sponsors_bp
 
 app = Flask(__name__)
 
@@ -128,6 +129,7 @@ app.register_blueprint(display_bp)
 app.register_blueprint(reports_bp)
 app.register_blueprint(football_bp)
 app.register_blueprint(events_bp)
+app.register_blueprint(sponsors_bp)
 
 
 @app.get("/service-worker.js")
@@ -223,7 +225,7 @@ def load_user_and_protect_routes():
 
     # Arquivos do PWA precisam continuar disponíveis mesmo durante uma
     # instabilidade momentânea do banco de dados.
-    if request.endpoint in {"static", "service_worker", "offline", "health"}:
+    if request.endpoint in {"static", "service_worker", "offline", "health", "sponsors.logo"}:
         return None
 
     def database_unavailable(exc, operation):
