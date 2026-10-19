@@ -7,7 +7,7 @@ from flask import Blueprint, Response, abort, current_app, flash, g, has_request
 
 from src.db import get_db
 from src.routes.auth import roles_allowed
-from src.services.sponsors import invalidate_cache, process_logo, public_sponsors, validate_link
+from src.services.sponsors import invalidate_cache, normalize_instagram, process_logo, public_sponsors, validate_link
 
 bp = Blueprint('sponsors', __name__)
 
@@ -61,7 +61,8 @@ def manage():
             name = request.form.get('name', '').strip()
             if not 1 <= len(name) <= 100:
                 raise ValueError('Informe um nome de até 100 caracteres para identificação e texto alternativo.')
-            link = validate_link(request.form.get('link_url'))
+            link = validate_link(request.form.get('link_url')) if 'link_url' in request.form else None
+            instagram = normalize_instagram(request.form.get('instagram')) if 'instagram' in request.form else None
             image = prepared_image(db)
             remove = request.form.get('remove_logo') == '1'
             if image and remove:
@@ -78,14 +79,15 @@ def manage():
                     row = db.execute('SELECT id FROM sponsors WHERE id=?', (sponsor_id,)).fetchone()
                     if row is None:
                         abort(404)
-                    db.execute('''UPDATE sponsors SET name=?,link_url=?,active=?,updated_at=?,updated_by=?
-                        WHERE id=?''', (name, link, active, datetime.now(timezone.utc).isoformat(), g.user['id'], sponsor_id))
+                    db.execute('''UPDATE sponsors SET name=?,link_url=COALESCE(?,link_url),
+                        instagram_username=COALESCE(?,instagram_username),active=?,updated_at=?,updated_by=?
+                        WHERE id=?''', (name, link, instagram, active, datetime.now(timezone.utc).isoformat(), g.user['id'], sponsor_id))
                 else:
                     positions = db.execute('SELECT COUNT(*) AS total,COALESCE(MAX(sort_order),-1)+1 AS next_order FROM sponsors WHERE primary_slot IS NULL').fetchone()
                     if positions['total'] >= 100:
                         raise ValueError('Limite de 100 patrocinadores comuns atingido.')
-                    sponsor_id = db.execute('''INSERT INTO sponsors(name,link_url,active,sort_order,updated_by)
-                        VALUES(?,?,?,?,?)''', (name, link, active, positions['next_order'], g.user['id'])).lastrowid
+                    sponsor_id = db.execute('''INSERT INTO sponsors(name,link_url,instagram_username,active,sort_order,updated_by)
+                        VALUES(?,?,?,?,?,?)''', (name, link or '', instagram or '', active, positions['next_order'], g.user['id'])).lastrowid
                 if image or remove:
                     db.execute('UPDATE sponsors SET logo_data=?,logo_version=? WHERE id=?',
                                (*image, sponsor_id) if image else (None, None, sponsor_id))
@@ -96,7 +98,7 @@ def manage():
             db.rollback()
             flash(str(exc), 'danger')
             return redirect(url_for('sponsors.manage'))
-    rows = [dict(row) for row in db.execute('''SELECT id,name,link_url,primary_slot,active,sort_order,logo_version
+    rows = [dict(row) for row in db.execute('''SELECT id,name,link_url,instagram_username,primary_slot,active,sort_order,logo_version
         FROM sponsors ORDER BY CASE WHEN primary_slot IS NULL THEN 1 ELSE 0 END,primary_slot,sort_order,id''').fetchall()]
     revision = db.execute('SELECT revision FROM sponsor_catalog WHERE id=1').fetchone()['revision']
     response = current_app.make_response(render_template('sponsors.html', sponsors=rows, revision=revision))

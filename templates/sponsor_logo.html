@@ -1,3 +1,11 @@
-{% if sponsor.link_url %}<a href="{{sponsor.link_url}}" target="_blank" rel="noopener noreferrer sponsored">{% endif %}
-<img src="{{url_for('sponsors.logo',sponsor_id=sponsor.id,version=sponsor.logo_version)}}" alt="{{sponsor.name}}" loading="lazy" decoding="async" onerror="this.hidden=true; if(this.parentElement.tagName==='A') this.parentElement.hidden=true;">
-{% if sponsor.link_url %}</a>{% endif %}
+{% set primary_link = sponsor.link_url or sponsor.instagram_url %}
+<span class="sponsor-item" data-sponsor-logo>
+{% if primary_link %}<a href="{{primary_link}}" target="_blank" rel="noopener noreferrer sponsored" aria-label="{{'Site' if sponsor.link_url else 'Instagram'}} de {{sponsor.name}} (abre em nova aba)">{% endif %}
+<img src="{{url_for('sponsors.logo',sponsor_id=sponsor.id,version=sponsor.logo_version)}}" alt="{{sponsor.name}}" loading="lazy" decoding="async" onerror="this.closest('[data-sponsor-logo]').hidden=true;">
+{% if primary_link %}</a>{% endif %}
+{% if sponsor.link_url and sponsor.instagram_url %}
+<a class="sponsor-instagram-link" href="{{sponsor.instagram_url}}" target="_blank" rel="noopener noreferrer sponsored" aria-label="Instagram de {{sponsor.name}} (abre em nova aba)">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg>
+</a>
+{% endif %}
+</span>

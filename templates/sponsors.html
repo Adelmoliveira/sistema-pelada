@@ -11,6 +11,8 @@
   {% set key=sponsor.id if sponsor else 'new' %}
   <label for="name-{{key}}" class="form-label">Nome / texto alternativo</label><input id="name-{{key}}" class="form-control" name="name" maxlength="100" required value="{{sponsor.name if sponsor else ''}}">
   <label for="link-{{key}}" class="form-label mt-2">Link HTTPS (opcional)</label><input id="link-{{key}}" class="form-control" name="link_url" type="url" maxlength="2048" value="{{sponsor.link_url if sponsor else ''}}">
+  <label for="instagram-{{key}}" class="form-label mt-2">Instagram (opcional)</label><input id="instagram-{{key}}" class="form-control" name="instagram" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="@usuario ou https://www.instagram.com/usuario/" value="{{sponsor.instagram_username if sponsor else ''}}">
+  <small class="text-muted">A logomarca abre o site quando informado; sem site, abre o Instagram. Com ambos, o ícone do Instagram oferece o segundo acesso.</small>
   <label for="logo-{{key}}" class="form-label mt-2">Logomarca oficial</label><input id="logo-{{key}}" class="form-control" type="file" name="logo" accept="image/png,image/jpeg,image/webp">
   <img class="sponsor-preview my-2" data-logo-preview loading="lazy" decoding="async" alt="Pré-visualização da logomarca" {% if sponsor and sponsor.logo_version %}src="{{url_for('sponsors.admin_logo',sponsor_id=sponsor.id)}}"{% else %}hidden{% endif %}>
   <label class="my-2"><input type="checkbox" name="remove_background" value="1"> Remover somente fundo uniforme (opcional)</label>

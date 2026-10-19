@@ -43,3 +43,18 @@
   .gpcta-login .login-card-body .mb-3, .gpcta-login .login-remember-help { margin-bottom: .65rem !important; }
   .gpcta-login .gpcta-footer { padding-bottom: 0; }
 }
+
+/* Secondary destination stays inside the existing logo box; no grid/size changes. */
+.sponsor-item { position: relative; display: inline-flex; max-width: 100%; vertical-align: middle; }
+.sponsor-logos .sponsor-instagram-link {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .94);
+  color: #07558c;
+}
