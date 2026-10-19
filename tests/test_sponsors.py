@@ -451,6 +451,7 @@ class SponsorPostgresTest(unittest.TestCase):
         with db:
             db.execute('CREATE TABLE users(id INTEGER PRIMARY KEY)')
             db.execute(Path('supabase/migrations/20261018050000_sponsors.sql').read_text())
+            db.execute(Path('supabase/migrations/20261018060000_sponsors_instagram.sql').read_text())
         db.close()
 
     def connect(self):

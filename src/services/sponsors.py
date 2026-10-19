@@ -20,6 +20,40 @@ _cache = {}
 _lock = RLock()
 
 
+def normalize_instagram(value):
+    """Conservative profile-only input; never fetch a user-supplied address."""
+    value = (value or '').strip()
+    if not value:
+        return ''
+    if len(value) > 2048 or any(ord(char) < 33 or ord(char) == 127 for char in value) or '\\' in value:
+        raise ValueError('Instagram inválido. Informe @usuario ou a URL HTTPS do perfil.')
+    if '://' in value:
+        try:
+            parsed = urlsplit(value)
+            match = re.fullmatch(r'/([A-Za-z0-9_.]{1,30})/?', parsed.path)
+            if (parsed.scheme != 'https' or parsed.hostname not in {'instagram.com', 'www.instagram.com', 'm.instagram.com'}
+                    or parsed.username is not None or parsed.password is not None or parsed.port not in (None, 443) or not match):
+                raise ValueError()
+            value = match.group(1)
+        except ValueError:
+            raise ValueError('Informe uma URL HTTPS de perfil no domínio instagram.com.') from None
+    elif value.startswith('@'):
+        value = value[1:]
+    username = value.lower()
+    reserved = {'accounts', 'explore', 'p', 'reel', 'reels', 'stories', 'direct', 'about', 'developer',
+                'developers', 'privacy', 'terms', 'legal', 'web', 'tv', 'api', 'graphql', 'challenge',
+                'oauth', 'emails', 'notifications', 'settings', 'ads', 'business', 'directory'}
+    if (not re.fullmatch(r'[a-z0-9_](?:[a-z0-9_.]{0,28}[a-z0-9_])?', username)
+            or '..' in username or username in reserved):
+        raise ValueError('Instagram inválido. Use até 30 letras, números, pontos ou sublinhados; informe um perfil, não uma publicação.')
+    return username
+
+
+def instagram_profile_url(username):
+    normalized = normalize_instagram(username)
+    return 'https://www.instagram.com/'+normalized+'/' if normalized else ''
+
+
 def validate_link(value):
     value = (value or '').strip()
     if not value:
@@ -145,10 +179,16 @@ def public_sponsors(db, namespace):
             return cached[1]
         db.execute('SAVEPOINT sponsor_footer')
         try:
-            rows = db.execute('''SELECT id,name,primary_slot,sort_order,link_url,logo_version
+            rows = db.execute('''SELECT id,name,primary_slot,sort_order,link_url,instagram_username,logo_version
                 FROM sponsors WHERE active=1 AND logo_data IS NOT NULL
                 ORDER BY CASE WHEN primary_slot IS NULL THEN 1 ELSE 0 END,primary_slot,sort_order,id''').fetchall()
             rows = [dict(row) for row in rows]
+            for row in rows:
+                try:
+                    row['instagram_url'] = instagram_profile_url(row['instagram_username'])
+                except ValueError:
+                    # Invalid direct/legacy data must not disable the existing site.
+                    row['instagram_url'] = ''
         except Exception as exc:
             # An additive, optional footer must not break existing screens during rollout.
             db.execute('ROLLBACK TO SAVEPOINT sponsor_footer')

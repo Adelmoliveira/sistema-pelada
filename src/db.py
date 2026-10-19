@@ -1498,6 +1498,7 @@ def init_sqlite(wrapper):
     conn.executescript(sponsor_schema_sql())
     migrate_sale_delivery_operations(conn)
     for table, column, definition in (
+        ("sponsors", "instagram_username", "TEXT NOT NULL DEFAULT ''"),
         ("products", "stock_revision", "INTEGER NOT NULL DEFAULT 0"),
         ("products", "cost_reference_revision", "BIGINT NOT NULL DEFAULT 0"),
         ("stock_conference_items", "expected_revision", "INTEGER"),

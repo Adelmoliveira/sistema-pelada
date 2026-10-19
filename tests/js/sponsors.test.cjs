@@ -67,3 +67,16 @@ test('conflict or expired session preserves page and displays error', async () =
     assert.match(p.status.textContent,/Recarregue/);
   }
 });
+
+test('a missing logo hides the entire sponsor including its secondary Instagram link', () => {
+  const template = fs.readFileSync('templates/sponsor_logo.html','utf8');
+  const handler = template.match(/onerror="([^"]+)"/)[1];
+  for (const hasPrimaryLink of [false,true]) {
+    const wrapper = {hidden:false};
+    const image = {parentElement:{tagName:hasPrimaryLink?'A':'SPAN'}, closest(selector){
+      assert.equal(selector,'[data-sponsor-logo]'); return wrapper;
+    }};
+    vm.runInNewContext('(function(){'+handler+'}).call(image)',{image});
+    assert.equal(wrapper.hidden,true);
+  }
+});
