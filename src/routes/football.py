@@ -1925,3 +1925,57 @@ def print_sumula(sumula_id):
         flash("Súmula não encontrada.", "danger")
         return redirect(url_for("football.sumulas"))
     return render_template("football_print.html", data=data, positions=POSITIONS, teams=TEAMS, incident_types=INCIDENT_TYPES, card_types=CARD_TYPES)
+
+
+@bp.route("/gozada/beneficiarios", methods=["GET", "POST"])
+@roles_allowed("manager", "football_manager")
+def benefit_beneficiaries():
+    from src.services.football_beneficiaries import (
+        CATEGORIES, MembershipConflict, list_memberships, save_membership,
+    )
+    db = get_db()
+    status = 200
+    if request.method == "POST":
+        try:
+            action = request.form.get("action", "create")
+            if action not in ("create", "edit", "end"):
+                raise ValueError("Operação inválida.")
+            membership_id = None
+            if action != "create":
+                membership_id = int(request.form.get("membership_id", ""))
+                if membership_id <= 0:
+                    raise ValueError("Vínculo inválido.")
+            save_membership(
+                db, g.user["id"], player_id=request.form.get("player_id"),
+                category=request.form.get("category"), starts_on=request.form.get("starts_on"),
+                ends_on=request.form.get("ends_on"), reason=request.form.get("reason", ""),
+                membership_id=membership_id, revision=request.form.get("revision"),
+                end_only=action == "end",
+            )
+            flash("Vigência salva. O histórico foi preservado.", "success")
+            response = redirect(url_for("football.benefit_beneficiaries"), code=303)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except MembershipConflict as exc:
+            flash(str(exc), "danger")
+            status = 409
+        except ValueError as exc:
+            flash(str(exc), "danger")
+            status = 400
+        except PermissionError:
+            return Response("Operador não autorizado.", status=403)
+    rows = list_memberships(db)
+    players = db.execute("SELECT id,name,war_name FROM players WHERE historical_only=0 ORDER BY name,id").fetchall()
+    try:
+        history_page = min(1000000, max(1, int(request.args.get("history_page", "1"))))
+    except ValueError:
+        history_page = 1
+    history = db.execute("""SELECT e.*,u.name AS actor_name,p.name AS player_name
+        FROM football_benefit_events e JOIN users u ON u.id=e.actor_id
+        JOIN players p ON p.id=e.player_id WHERE e.directorship_id IS NOT NULL
+        ORDER BY e.id DESC LIMIT 101 OFFSET ?""", ((history_page - 1) * 100,)).fetchall()
+    response = Response(render_template("football_beneficiaries.html", rows=rows,
+        players=players, history=history[:100], history_page=history_page,
+        has_more_history=len(history) > 100, categories=CATEGORIES), status=status)
+    response.headers["Cache-Control"] = "no-store"
+    return response

@@ -1496,6 +1496,8 @@ def init_sqlite(wrapper):
     conn.executescript(alert_schema_sql())
     from src.sponsor_schema import schema_sql as sponsor_schema_sql
     conn.executescript(sponsor_schema_sql())
+    from src.football_benefit_schema import schema_sql as benefit_schema_sql
+    conn.executescript(benefit_schema_sql())
     migrate_sale_delivery_operations(conn)
     for table, column, definition in (
         ("sponsors", "instagram_username", "TEXT NOT NULL DEFAULT ''"),

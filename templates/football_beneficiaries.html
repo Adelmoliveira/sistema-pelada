@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Beneficiários da Gozada Inteligente{% endblock %}
+{% block content %}
+<h1 class="h3">Beneficiários da Gozada Inteligente</h1>
+<p class="text-muted">Etapa 1 — cadastro institucional. Rodízio, presença e confirmação no quadro ainda não estão disponíveis. O cadastro não concede acesso administrativo.</p>
+<p>Diretoria e Oficiais Generais compartilharão o mesmo rodízio, entre quartas e sábados. Este cadastro não registra utilização do benefício.</p>
+<form method="post" class="card card-body mb-3">
+  <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+  <input type="hidden" name="action" value="create">
+  <h2 class="h5">Cadastrar vigência</h2>
+  <div class="row g-2">
+    <div class="col-md-5"><label for="player-id" class="form-label">Peladeiro</label><select id="player-id" name="player_id" class="form-select" required><option value="">Selecione</option>{% for p in players %}<option value="{{p.id}}">{{p.name}}{% if p.war_name %} ({{p.war_name}}){% endif %}</option>{% endfor %}</select></div>
+    <div class="col-md-3"><label for="category" class="form-label">Categoria</label><select id="category" name="category" class="form-select" required>{% for key,label in categories.items() %}<option value="{{key}}">{{label}}</option>{% endfor %}</select></div>
+    <div class="col-md-2"><label for="starts-on" class="form-label">Início</label><input id="starts-on" class="form-control" type="date" name="starts_on" required></div>
+    <div class="col-md-2"><label for="ends-on" class="form-label">Encerramento</label><input id="ends-on" class="form-control" type="date" name="ends_on"></div>
+    <div class="col-12"><label for="reason" class="form-label">Justificativa</label><input id="reason" class="form-control" name="reason" required minlength="3" maxlength="1000"></div>
+  </div>
+  <button class="btn btn-primary mt-3 align-self-start">Cadastrar beneficiário</button>
+</form>
+<p class="small text-muted">Datas inicial e final são inclusivas. O estado é calculado pela vigência, na data local do GPCTA. Um peladeiro não pode ter vigências sobrepostas, mesmo em categorias diferentes.</p>
+{% for row in rows %}
+<div class="card card-body mb-2">
+  <div class="d-flex flex-wrap justify-content-between gap-2"><strong>{{row.name}}</strong><span>{{categories[row.category]}} · {{row.validity_status}}</span></div>
+  <div class="small text-muted">{{row.starts_on|brdate}} até {{row.ends_on|brdate if row.ends_on else 'sem término'}} · revisão {{row.revision}}</div>
+  <details class="mt-2"><summary>Editar vigência</summary>
+    <form method="post" class="row g-2 mt-1">
+      <input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="action" value="edit"><input type="hidden" name="membership_id" value="{{row.id}}"><input type="hidden" name="revision" value="{{row.revision}}">
+      <div class="col-md-4"><label for="category-{{row.id}}" class="form-label">Categoria</label><select id="category-{{row.id}}" name="category" class="form-select">{% for key,label in categories.items() %}<option value="{{key}}" {% if row.category==key %}selected{% endif %}>{{label}}</option>{% endfor %}</select></div>
+      <div class="col-md-4"><label for="start-{{row.id}}" class="form-label">Início</label><input id="start-{{row.id}}" type="date" name="starts_on" value="{{row.starts_on}}" class="form-control" required></div>
+      <div class="col-md-4"><label for="end-{{row.id}}" class="form-label">Encerramento</label><input id="end-{{row.id}}" type="date" name="ends_on" value="{{row.ends_on or ''}}" class="form-control"></div>
+      <div class="col-12"><label for="edit-reason-{{row.id}}" class="form-label">Justificativa da alteração</label><input id="edit-reason-{{row.id}}" name="reason" class="form-control" required minlength="3" maxlength="1000"></div>
+      <div><button class="btn btn-outline-primary">Salvar alteração</button></div>
+    </form>
+  </details>
+  <details class="mt-2"><summary>Encerrar vigência</summary><form method="post" class="mt-2">
+    <input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="action" value="end"><input type="hidden" name="membership_id" value="{{row.id}}"><input type="hidden" name="revision" value="{{row.revision}}">
+    <label class="form-label" for="close-{{row.id}}">Último dia da vigência</label><input id="close-{{row.id}}" class="form-control" type="date" name="ends_on" required>
+    <label class="form-label mt-2" for="close-reason-{{row.id}}">Justificativa do encerramento</label><input id="close-reason-{{row.id}}" class="form-control" name="reason" required minlength="3" maxlength="1000">
+    <button class="btn btn-outline-secondary mt-2">Encerrar vigência</button>
+  </form></details>
+</div>
+{% else %}<p>Nenhum beneficiário cadastrado.</p>{% endfor %}
+<h2 class="h5 mt-4">Histórico de alterações</h2>
+<p class="small text-muted">Página {{history_page}} · até 100 eventos por página. O histórico completo permanece preservado.</p>
+{% for event in history %}<details class="border-bottom py-2"><summary>#{{event.id}} · {{event.player_name}} · {{event.event_type}} · {{event.recorded_at}} · {{event.actor_name}}</summary><p class="mb-1">{{event.reason}}</p><div class="small">Antes: <code>{{event.before_snapshot}}</code><br>Depois: <code>{{event.after_snapshot}}</code></div></details>{% else %}<p>Nenhuma alteração registrada.</p>{% endfor %}
+<nav class="d-flex gap-2 mt-3" aria-label="Páginas do histórico">
+{% if history_page>1 %}<a class="btn btn-outline-secondary" href="{{url_for('football.benefit_beneficiaries',history_page=history_page-1)}}">Anteriores</a>{% endif %}
+{% if has_more_history %}<a class="btn btn-outline-secondary" href="{{url_for('football.benefit_beneficiaries',history_page=history_page+1)}}">Próxima página</a>{% endif %}
+</nav>
+{% endblock %}
