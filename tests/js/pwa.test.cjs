@@ -146,16 +146,18 @@ test('persistent intelligent push identity claims once and can retry failed pres
 });
 function pushUI(role, permission='granted') {
   const calls=[],documentEvents={};
-  const subscription={toJSON:()=>({endpoint:'https://fcm.googleapis.com/test',keys:{p256dh:'public',auth:'key'}})};
-  const context={registrationPromise:Promise.resolve({pushManager:{getSubscription:async()=>subscription}}),
+  let unsubscribed=0,subscribed=0;
+  const makeSubscription=()=>({toJSON:()=>({endpoint:'https://fcm.googleapis.com/test',keys:{p256dh:'public',auth:'key'}}),unsubscribe:async()=>{unsubscribed++;}});
+  const subscription=makeSubscription();
+  const context={registrationPromise:Promise.resolve({pushManager:{getSubscription:async()=>subscription,subscribe:async()=>{subscribed++;return makeSubscription();}}}),
     document:{body:{dataset:{pushRole:role}},addEventListener(name,fn){documentEvents[name]=fn;},querySelector:()=>({content:'csrf-test'}),getElementById:()=>null},
     window:{PushManager:{}},Notification:{permission,requestPermission:async()=>'granted'},
-    fetch:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>({publicKey:'AA'})};},
+    fetch:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>({publicKey:'AA',forceRenew:role==='manager'})};},
     atob:s=>Buffer.from(s,'base64').toString('binary'),Uint8Array,console};
   context.window.Notification=context.Notification;
   const source=fs.readFileSync('static/pwa.js','utf8');
   vm.runInNewContext(source.slice(source.indexOf('  const publicKeyBytes'),source.indexOf('  const onboarding')),context);
-  return {context,calls,documentEvents};
+  return {context,calls,documentEvents,get unsubscribed(){return unsubscribed;},get subscribed(){return subscribed;}};
 }
 test('manager permission alone never silently grants consent; explicit enrollment includes CSRF',async()=>{
   const app=pushUI('manager');await new Promise(resolve=>setImmediate(resolve));assert.equal(app.calls.length,0);
@@ -164,6 +166,8 @@ test('manager permission alone never silently grants consent; explicit enrollmen
   assert.equal(request.url,'/notifications/manager-push/subscribe');
   assert.equal(request.options.headers['X-CSRFToken'],'csrf-test');
   assert.equal(JSON.parse(request.options.body).consent,true);
+  assert.equal(app.unsubscribed,1);
+  assert.equal(app.subscribed,1);
 });
 test('client subscription renewal stays on legacy endpoints',async()=>{
   const app=pushUI('client');await new Promise(resolve=>setImmediate(resolve));

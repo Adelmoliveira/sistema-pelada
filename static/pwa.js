@@ -152,7 +152,7 @@
     const applicationServerKey = publicKeyBytes(keyData.publicKey);
     let subscription = await registration.pushManager.getSubscription();
     ensureCurrent();
-    if (subscription && !sameKey(subscription, applicationServerKey)) {
+    if (subscription && (keyData.forceRenew === true || !sameKey(subscription, applicationServerKey))) {
       await subscription.unsubscribe();
       subscription = null;
     }
