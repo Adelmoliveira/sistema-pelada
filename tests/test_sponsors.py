@@ -114,6 +114,20 @@ class SponsorPagesTest(unittest.TestCase):
         self.assertNotIn('© 2026 GPCTA', html)
         self.assertIn('APOIADORES GPCTA', footer)
 
+    def test_footer_is_outside_main_for_public_and_authenticated_pages(self):
+        public_html = self.client.get('/login').get_data(as_text=True)
+        self.assertLess(public_html.index('</main>'), public_html.index('<footer class="gpcta-footer">'))
+        self.login(self.manager)
+        stock_html = self.client.get('/stock').get_data(as_text=True)
+        self.assertLess(stock_html.index('</main>'), stock_html.index('<footer class="gpcta-footer">'))
+        self.assertLess(stock_html.index('<div class="app-main">'), stock_html.index('<footer class="gpcta-footer">'))
+
+    def test_shared_footer_layout_reserves_full_width_below_content(self):
+        css = Path('static/sponsors.css').read_text()
+        self.assertIn('.app-main > .app-page { width: 100%; flex: 1 0 auto; }', css)
+        self.assertIn('flex-direction: column;', css)
+        self.assertIn('.sponsor-logos { width: 100%; max-width: 640px; min-width: 0;', css)
+
     def test_deactivate_remove_and_old_version(self):
         self.login(self.manager)
         self.add_logo()
