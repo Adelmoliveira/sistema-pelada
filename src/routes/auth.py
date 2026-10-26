@@ -1113,7 +1113,9 @@ def manager_push_prepare():
     from src.services.push_notifications import public_key
     _revoke_manager_session()
     session['manager_push_binding']=secrets.token_hex(32)
-    response=jsonify(publicKey=public_key())
+    # Explicit authorization always renews the browser subscription. This repairs
+    # stale provider/VAPID bindings without silently granting manager consent.
+    response=jsonify(publicKey=public_key(),forceRenew=True)
     response.set_cookie(DEVICE_COOKIE,secrets.token_hex(32),max_age=31536000,httponly=True,
                         secure=request.is_secure or current_app.config.get('APP_ENV')!='local',samesite='Lax')
     return response

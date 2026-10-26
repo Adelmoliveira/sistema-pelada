@@ -16,7 +16,7 @@ import test_purchase_planning as pages
 from src.purchase_alert_schema import schema_sql
 from src.services.purchase_observation import activate_observation, process_observation
 from src.services.purchase_alerts import set_enabled, classify, dispatch, process_alerts, _claim, status
-from src.services.manager_push import register, revoke, validate_subscription
+from src.services.manager_push import register, revoke, validate_subscription, vapid_configuration_error
 
 
 def subscription(suffix='one'):
@@ -43,7 +43,7 @@ class AlertContract:
         if self.db.is_postgres:
             self.db.execute(AUX); self.db.execute(schema_sql(True)); self.db.commit()
         else: self.db.conn.executescript(AUX+schema_sql())
-        mocked=patch('src.services.manager_push.ready',return_value=True); mocked.start(); self.addCleanup(mocked.stop)
+        mocked=patch('src.services.manager_push.vapid_configuration_error',return_value=None); mocked.start(); self.addCleanup(mocked.stop)
         self.send_mock=patch('src.services.manager_push.send',return_value=SimpleNamespace(status_code=201)).start()
         self.addCleanup(patch.stopall)
         self.call(activate_observation); self.drain()
@@ -156,6 +156,32 @@ class AlertContract:
         self.dispatch(); self.dispatch()
         self.assertEqual(self.send_mock.call_count,1)
         self.assertEqual(self.count('manager_push_subscriptions','active=1'),0)
+
+    def test_unknown_http_400_is_sanitized_and_retried(self):
+        self.opening()
+        error=type('WebPushException',(Exception,),{})('must not be persisted')
+        error.response=SimpleNamespace(status_code=400,text='unknown provider error endpoint=https://secret.invalid/token')
+        self.send_mock.side_effect=error
+        self.dispatch()
+        self.assertEqual(self.count('purchase_alert_deliveries',"status='pending'"),1)
+        self.assertEqual(self.query('SELECT error_code FROM purchase_alert_attempts')[0]['error_code'],'webpush_http_400')
+        self.assertEqual(self.count('manager_push_subscriptions','active=1'),1)
+        with self.db: self.db.execute("UPDATE purchase_alert_deliveries SET available_at='2000-01-01'")
+        self.dispatch()
+        self.assertEqual(self.send_mock.call_count,2)
+
+    def test_proven_permanent_http_400_revokes_without_retry_or_raw_body(self):
+        self.opening()
+        error=type('WebPushException',(Exception,),{})('secret exception')
+        error.response=SimpleNamespace(status_code=400,text='UnauthorizedRegistration endpoint=https://secret.invalid/token')
+        self.send_mock.side_effect=error
+        self.dispatch(); self.dispatch()
+        self.assertEqual(self.send_mock.call_count,1)
+        self.assertEqual(self.count('purchase_alert_deliveries',"status='failed'"),1)
+        self.assertEqual(self.count('manager_push_subscriptions','active=1'),0)
+        code=self.query('SELECT error_code FROM purchase_alert_attempts')[0]['error_code']
+        self.assertEqual(code,'push_subscription_unauthorized')
+        self.assertNotIn('secret',code)
 
     def test_crashed_lease_recovers_and_accepted_devices_do_not_repeat(self):
         self.opening(); self.register(4,'four') # new manager must not join the old audience
@@ -305,7 +331,7 @@ class AlertContract:
 
     def test_no_vapid_holds_pending_without_fake_acceptance(self):
         self.opening()
-        with patch('src.services.manager_push.ready',return_value=False): self.dispatch()
+        with patch('src.services.manager_push.vapid_configuration_error',return_value='vapid_unavailable'): self.dispatch()
         self.send_mock.assert_not_called()
         self.assertEqual(self.count('purchase_alert_attempts'),0)
         self.assertEqual(self.count('purchase_alert_deliveries',"status='pending'"),1)
@@ -383,6 +409,20 @@ class ManagerPushRoutesTest(unittest.TestCase):
         db=connect_sqlite(pages.app.config['DATABASE'])
         try: self.assertEqual(db.execute('SELECT active FROM manager_push_subscriptions').fetchone()[0],0)
         finally: db.close()
+
+    def test_vapid_pair_validation_never_returns_key_material(self):
+        from cryptography.hazmat.primitives.asymmetric.ec import derive_private_key, SECP256R1
+        from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
+        key=derive_private_key(1,SECP256R1())
+        private=(1).to_bytes(32,'big')
+        public=key.public_key().public_bytes(Encoding.X962,PublicFormat.UncompressedPoint)
+        encode=lambda value: base64.urlsafe_b64encode(value).decode().rstrip('=')
+        self.assertIsNone(vapid_configuration_error(encode(public),encode(private)))
+        der=key.private_bytes(Encoding.DER,PrivateFormat.PKCS8,NoEncryption())
+        self.assertIsNone(vapid_configuration_error(encode(public),encode(der)))
+        mismatch=derive_private_key(2,SECP256R1()).public_key().public_bytes(Encoding.X962,PublicFormat.UncompressedPoint)
+        self.assertEqual(vapid_configuration_error(encode(mismatch),encode(private)),'vapid_key_mismatch')
+        self.assertEqual(vapid_configuration_error('not-a-key',encode(private)),'vapid_invalid')
 
     def test_other_roles_and_csrf_rejected(self):
         for uid in (self.staff,self.client_user):

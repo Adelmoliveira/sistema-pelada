@@ -1,14 +1,24 @@
 """Explicit manager consent, account-bound endpoint ownership and safe transport."""
 import base64
 import hashlib
+import hmac
 import json
 import os
+import re
 import uuid
 from urllib.parse import urlsplit
 
 from src.services.purchase_observation import _now
 
 DEVICE_COOKIE = "gpcta_manager_push_device"
+
+_PERMANENT_400_REASONS = (
+    ('unauthorizedregistration', 'push_subscription_unauthorized'),
+    ('invalidregistration', 'push_subscription_invalid'),
+    ('invalidsubscription', 'push_subscription_invalid'),
+    ('expiredsubscription', 'push_subscription_expired'),
+    ('subscriptionnotfound', 'push_subscription_missing'),
+)
 
 
 def endpoint_lock(db):
@@ -105,8 +115,57 @@ def register(db, user_id, binding, data, *, device=None):
                (user_id,endpoint,p256dh,auth,uuid.uuid4().hex,digest,device_digest,_now(),_now()))
 
 
+def vapid_configuration_error(public_key=None, private_key=None):
+    """Validate the configured VAPID pair without returning or logging key material."""
+    public_key = (public_key if public_key is not None else os.environ.get('VAPID_PUBLIC_KEY') or '').strip()
+    private_key = (private_key if private_key is not None else os.environ.get('VAPID_PRIVATE_KEY') or '').strip()
+    if not public_key or not private_key:
+        return 'vapid_unavailable'
+    try:
+        public_bytes = base64.b64decode(public_key + '=' * (-len(public_key) % 4), altchars=b'-_', validate=True)
+        private_bytes = base64.b64decode(private_key + '=' * (-len(private_key) % 4), altchars=b'-_', validate=True)
+        if len(public_bytes) != 65 or public_bytes[0] != 4:
+            return 'vapid_invalid'
+        from cryptography.hazmat.primitives.asymmetric.ec import derive_private_key, EllipticCurvePrivateKey, SECP256R1
+        from cryptography.hazmat.primitives.serialization import load_der_private_key
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+        private = (derive_private_key(int.from_bytes(private_bytes, 'big'), SECP256R1())
+                   if len(private_bytes) == 32 else load_der_private_key(private_bytes, password=None))
+        if not isinstance(private, EllipticCurvePrivateKey) or not isinstance(private.curve, SECP256R1):
+            return 'vapid_invalid'
+        derived = private.public_key()
+        derived_bytes = derived.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+    except (ValueError, TypeError):
+        return 'vapid_invalid'
+    if not hmac.compare_digest(public_bytes, derived_bytes):
+        return 'vapid_key_mismatch'
+    return None
+
+
 def ready():
-    return bool((os.environ.get('VAPID_PRIVATE_KEY') or '').strip() and (os.environ.get('VAPID_PUBLIC_KEY') or '').strip())
+    return vapid_configuration_error() is None
+
+
+def error_details(exc):
+    """Return a bounded diagnostic code and whether the current subscription is unusable."""
+    response = getattr(exc, 'response', None)
+    status = getattr(response, 'status_code', None)
+    if status in (404, 410):
+        return 'push_subscription_gone', True
+    if type(exc).__name__ != 'WebPushException':
+        return type(exc).__name__[:100], False
+    if status != 400:
+        return ('webpush_http_' + str(status)) if status else 'webpush_transport_error', False
+    body = ''
+    try:
+        body = response.text or ''
+    except Exception:
+        pass
+    normalized = re.sub(r'[^a-z0-9]', '', str(body).lower())[:4096]
+    for marker, code in _PERMANENT_400_REASONS:
+        if marker in normalized:
+            return code, True
+    return 'webpush_http_400', False
 
 
 def send(subscription, alert_id):

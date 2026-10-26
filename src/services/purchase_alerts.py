@@ -164,7 +164,8 @@ def _claim(db):
 
 
 def dispatch(db, *, deadline, max_messages=5):
-    if not manager_push.ready(): return {'blocked':'vapid_unavailable','accepted':0}
+    configuration_error=manager_push.vapid_configuration_error()
+    if configuration_error: return {'blocked':configuration_error,'accepted':0}
     accepted=failed=0
     for _ in range(max_messages):
         if time.monotonic()+10 >= deadline: break
@@ -176,6 +177,7 @@ def dispatch(db, *, deadline, max_messages=5):
                          (row['id'],row['token'],SPORTS_MATERIAL_CATEGORY)).fetchone()
         db.commit()
         outcome,error,code='cancelled','authorization_changed',None
+        permanent=False
         if check:
             try:
                 response=manager_push.send(row,row['alert_id'])
@@ -184,15 +186,15 @@ def dispatch(db, *, deadline, max_messages=5):
                 outcome,error='accepted',None; accepted+=1
             except Exception as exc:
                 code=getattr(getattr(exc,'response',None),'status_code',None)
-                error=type(exc).__name__; outcome='failed'; failed+=1
+                error,permanent=manager_push.error_details(exc); outcome='failed'; failed+=1
         # Network I/O is never within a database transaction or observer lock.
         finishing=AlertDatabase(db,seconds=min(2,max(0.1,deadline-time.monotonic())))
         with finishing:
             finishing.execute('UPDATE purchase_alert_attempts SET finished_at=?,outcome=?,http_status=?,error_code=? WHERE delivery_id=? AND attempt_number=?',
                        (_now(),outcome,code,error,row['id'],row['attempt']))
-            terminal=outcome in ('accepted','cancelled') or row['attempt']>=5 or code in (404,410)
+            terminal=outcome in ('accepted','cancelled') or row['attempt']>=5 or permanent
             status=outcome if terminal else 'pending'
-            if code in (404,410):
+            if permanent:
                 finishing.execute('UPDATE manager_push_subscriptions SET active=0,revoked_at=? WHERE id=? AND version=?',(_now(),row['subscription_id'],row['subscription_version']))
             finishing.execute('UPDATE purchase_alert_deliveries SET status=?,available_at=?,finished_at=?,error_code=?,lease_token=NULL WHERE id=? AND lease_token=? AND status=\'processing\'',
                        (status,_after(min(900*2**(row['attempt']-1),7200)),_now() if terminal else None,error,row['id'],row['token']))
