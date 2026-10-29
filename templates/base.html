@@ -123,7 +123,7 @@
   {% if current_user and current_user.role == 'client' and current_player and not current_player.football_join_date %}<div class="alert alert-warning d-flex flex-wrap align-items-center justify-content-between gap-3" role="alert"><div><strong>Cadastre sua data de apresentação na pelada</strong><br><span class="small">Essa informação é obrigatória para calcular seu tempo no grupo.</span></div><a class="btn btn-warning btn-lg" href="{{url_for('auth.my_account')}}#football-join-date">Cadastrar data</a></div>{% endif %}
   {% if current_user and current_user.role == 'client' %}<div id="push-onboarding" class="alert alert-primary d-none d-flex flex-wrap align-items-center justify-content-between gap-3" role="status"><div><strong>Receba avisos da pelada no celular</strong><br><span class="small">Ative as notificações para saber de pagamentos, transferências e comunicados.</span></div><button id="push-onboarding-action" class="btn btn-primary btn-lg" type="button">Ativar avisos no celular</button></div>{% endif %}
   {% block content %}{% endblock %}
-  {% include 'sponsor_footer.html' %}
+  {% if request.endpoint != 'products.stock' %}{% include 'sponsor_footer.html' %}{% endif %}
 </main>
 {% if current_user and not (guest_mode|default(false)) %}
   </div>

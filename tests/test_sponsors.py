@@ -376,6 +376,21 @@ class SponsorPagesTest(unittest.TestCase):
         self.assertIn('100dvh', css); self.assertIn('safe-area-inset-bottom', css)
         self.assertNotIn('overflow-y', css)
 
+    def test_sponsor_footer_is_hidden_only_on_stock_control(self):
+        self.login(self.manager); self.add_logo()
+        stock = self.client.get('/stock').get_data(as_text=True)
+        self.assertNotIn('<footer class="gpcta-footer">', stock)
+        self.assertNotIn('APOIADORES GPCTA', stock)
+
+        admin = self.client.get('/admin/sponsors').get_data(as_text=True)
+        self.assertIn('<footer class="gpcta-footer">', admin)
+        self.assertIn('APOIADORES GPCTA', admin)
+
+        self.client.post('/logout')
+        login = self.client.get('/login').get_data(as_text=True)
+        self.assertIn('<footer class="gpcta-footer">', login)
+        self.assertIn('APOIADORES GPCTA', login)
+
 
 class SponsorAssetsTest(unittest.TestCase):
     def test_image_optimized_and_transparency_preserved(self):
