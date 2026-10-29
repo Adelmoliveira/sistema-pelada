@@ -75,6 +75,135 @@ class AlertContract:
     def dispatch(self):
         return self.call(dispatch,deadline=time.monotonic()+25)
 
+    def test_multiple_products_consolidated_per_device(self):
+        self.register()
+        with self.db:
+            self.db.execute(
+                "UPDATE products SET units_per_case=12 WHERE id=1"
+            )
+
+        self.baseline()
+
+        with self.db:
+            self.db.execute(
+                "UPDATE products SET stock=30 WHERE id IN (1,2)"
+            )
+        self.drain()
+        self.call(classify)
+
+        with self.db:
+            self.db.execute(
+                "UPDATE products SET stock=20 WHERE id IN (1,2)"
+            )
+        self.drain()
+        self.call(classify)
+
+        pending = self.count(
+            'purchase_alert_deliveries', "status='pending'"
+        )
+        self.assertEqual(pending, 2)
+
+        self.dispatch()
+
+        self.assertEqual(self.send_mock.call_count, 1)
+        self.assertEqual(
+            self.count('purchase_alert_deliveries', "status='accepted'"),
+            1
+        )
+        self.assertEqual(
+            self.count('purchase_alert_deliveries', "status='cancelled'"),
+            1
+        )
+
+        kwargs = self.send_mock.call_args.kwargs
+        items = kwargs['items']
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual(
+            {item['name'] for item in items},
+            {'\u00c1gua', 'Suco'}
+        )
+
+        self.dispatch()
+        self.assertEqual(self.send_mock.call_count, 1)
+    def test_consolidation_preserves_new_delivery_during_send(self):
+        self.opening()
+
+        original = self.query(
+            "SELECT id, alert_id, subscription_id, user_id, "
+            "subscription_version FROM purchase_alert_deliveries "
+            "WHERE status='pending'"
+        )
+        self.assertEqual(len(original), 1)
+
+        created = []
+
+        def send_and_enqueue(*args, **kwargs):
+            db = self.connect()
+            try:
+                with db:
+                    source = original[0]
+
+                    alert = db.execute(
+                        "SELECT episode_id, generation, kind, level, "
+                        "suggested_units, created_at "
+                        "FROM purchase_stock_alerts WHERE id=?",
+                        (source['alert_id'],)
+                    ).fetchone()
+
+                    cursor = db.execute(
+                        "INSERT INTO purchase_stock_alerts "
+                        "(episode_id, generation, kind, level, "
+                        "suggested_units, created_at) "
+                        "VALUES (?, ?, 'worsened', ?, ?, ?)",
+                        (
+                            alert['episode_id'],
+                            alert['generation'],
+                            alert['level'] + 1,
+                            alert['suggested_units'] + 1,
+                            alert['created_at']
+                        )
+                    )
+
+                    new_alert_id = cursor.lastrowid
+
+                    cursor = db.execute(
+                        "INSERT INTO purchase_alert_deliveries "
+                        "(alert_id, user_id, subscription_id, "
+                        "subscription_version, status, attempts, available_at) "
+                        "SELECT ?, user_id, subscription_id, "
+                        "subscription_version, 'pending', 0, available_at "
+                        "FROM purchase_alert_deliveries WHERE id=?",
+                        (new_alert_id, source['id'])
+                    )
+
+                    created.append(cursor.lastrowid)
+            finally:
+                db.close()
+
+            return SimpleNamespace(status_code=201)
+
+        self.send_mock.side_effect = send_and_enqueue
+
+        # Process only the original delivery in this invocation.
+        result = self.call(
+            dispatch,
+            deadline=time.monotonic() + 25,
+            max_messages=1
+        )
+
+        self.assertEqual(result['accepted'], 1)
+        self.assertEqual(self.send_mock.call_count, 1)
+        self.assertEqual(len(created), 1)
+
+        self.assertEqual(
+            self.query(
+                "SELECT status FROM purchase_alert_deliveries WHERE id=?",
+                (created[0],)
+            )[0]['status'],
+            'pending'
+        )
+
     def test_default_off_migration_reapply_and_legacy_constraint(self):
         self.assertEqual(self.query('SELECT enabled FROM purchase_alert_control')[0]['enabled'],0)
         self.assertEqual(self.count('purchase_stock_alerts'),0)
@@ -194,7 +323,7 @@ class AlertContract:
 
     def test_concurrent_dispatch_has_one_owner(self):
         self.opening(); started,release=Event(),Event()
-        def send(*args):
+        def send(*args, **kwargs):
             started.set(); self.assertTrue(release.wait(5)); return SimpleNamespace(status_code=201)
         self.send_mock.side_effect=send
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -241,7 +370,7 @@ class AlertContract:
 
     def test_each_device_revalidates_role_after_previous_device(self):
         self.register(1,'two'); self.opening()
-        def accepted_then_revoked(*args):
+        def accepted_then_revoked(*args, **kwargs):
             db=self.connect()
             try:
                 with db: db.execute("UPDATE users SET active=0 WHERE id=1")
@@ -472,7 +601,7 @@ class ManagerPushRoutesTest(unittest.TestCase):
                 manager_push.send(row,123)
         args=send.call_args.kwargs
         payload=json.loads(args['data'])
-        self.assertEqual(payload['url'],'/stock/purchase-monitoring')
+        self.assertEqual(payload['url'],'/stock/purchase-planning')
         self.assertEqual(set(payload),{'title','body','url','alert_id','kind'})
         self.assertEqual(args['timeout'],2); self.assertEqual(args['ttl'],900)
 
