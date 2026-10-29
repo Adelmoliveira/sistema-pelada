@@ -1,5 +1,6 @@
 """Persistent manager-only alerts. Never called inside an operational transaction."""
 from datetime import datetime, timezone, timedelta
+from math import ceil
 import time
 import uuid
 
@@ -154,13 +155,54 @@ def _claim(db):
         # Role, consent, generation and closure changes cancel, rather than retry.
         db.execute("UPDATE purchase_alert_deliveries SET status='cancelled',finished_at=?,error_code='ineligible' WHERE status='pending' AND id NOT IN (SELECT d.id"+JOIN+' WHERE '+VALID+')',(now,SPORTS_MATERIAL_CATEGORY))
         db.execute("UPDATE purchase_alert_deliveries SET status='cancelled',finished_at=?,error_code='expired' WHERE status='pending' AND alert_id IN (SELECT id FROM purchase_stock_alerts WHERE created_at<?)",(now,_after(-86400)))
-        row = db.execute('SELECT d.*,s.endpoint,s.p256dh,s.auth'+JOIN+" WHERE d.status='pending' AND d.attempts<5 AND d.available_at<=? AND "+VALID+FRESH+' ORDER BY d.id LIMIT 1',(now,SPORTS_MATERIAL_CATEGORY)).fetchone()
+        row = db.execute('SELECT d.*,s.endpoint,s.p256dh,s.auth'+JOIN+" WHERE d.status='pending' AND d.attempts<5 AND d.available_at<=? AND "+VALID+FRESH+' AND NOT EXISTS (SELECT 1 FROM purchase_alert_deliveries busy WHERE busy.subscription_id=d.subscription_id AND busy.status=\'processing\') ORDER BY d.id LIMIT 1',(now,SPORTS_MATERIAL_CATEGORY)).fetchone()
         if not row: return None
         row = dict(row); token=uuid.uuid4().hex; attempt=row['attempts']+1
+        # Capture the queue boundary. New events created during the network call
+        # must never be swallowed by the consolidated notification.
+        boundary = db.execute("SELECT MAX(id) FROM purchase_alert_deliveries WHERE subscription_id=? AND status='pending'", (row['subscription_id'],)).fetchone()[0]
+        row['consolidation_boundary'] = boundary or row['id']
         db.execute("UPDATE purchase_alert_deliveries SET status='processing',attempts=?,lease_token=?,lease_until=? WHERE id=?",(attempt,token,_after(90),row['id']))
         db.execute("INSERT INTO purchase_alert_attempts(delivery_id,attempt_number,started_at,outcome) VALUES(?,?,?,'started')",(row['id'],attempt,now))
         row.update(token=token,attempt=attempt)
         return row
+
+
+def _current_purchase_items(db, *, limit=1000):
+    """Read active, eligible needs using the monitor's own suggested units.
+
+    This is deliberately not the monthly forecast: the alert is driven by
+    current replenishment episodes and the same state used for eligibility.
+    """
+    rows = db.execute("""SELECT p.name, p.units_per_case, st.suggested_units
+        FROM purchase_replenishment_state st
+        JOIN products p ON p.id=st.product_id
+        JOIN purchase_replenishment_episodes e
+          ON e.product_id=st.product_id AND e.episode_number=st.episode_number
+        JOIN purchase_alert_product_state c ON c.product_id=st.product_id
+        CROSS JOIN purchase_alert_control ctl
+        CROSS JOIN purchase_observation_control obs
+        WHERE ctl.id=1 AND obs.id=1 AND ctl.enabled=1 AND obs.enabled=1
+          AND ctl.monitor_activation=obs.activated_at
+          AND c.generation=ctl.generation AND c.eligible=1
+          AND c.episode_number=e.episode_number
+          AND e.closed_at IS NULL AND st.needs_restock=1
+          AND p.active=1 AND COALESCE(p.category,'')<>?
+          AND NOT EXISTS (SELECT 1 FROM purchase_observation_events ev
+              WHERE ev.product_id=st.product_id AND ev.processed_at IS NULL)
+        ORDER BY p.name, p.id LIMIT ?""", (SPORTS_MATERIAL_CATEGORY, limit)).fetchall()
+    items = []
+    for row in rows:
+        units = max(0, int(row['suggested_units'] or 0))
+        per_case = max(0, int(row['units_per_case'] or 0))
+        if units <= 0:
+            continue
+        quantity = ceil(units / per_case) if per_case else units
+        items.append({'name': row['name'], 'quantity': quantity,
+                      'unit': 'caixa' if per_case and quantity == 1 else
+                              'caixas' if per_case else
+                              'unidade' if quantity == 1 else 'unidades'})
+    return items
 
 
 def dispatch(db, *, deadline, max_messages=5):
@@ -172,6 +214,9 @@ def dispatch(db, *, deadline, max_messages=5):
         limited=AlertDatabase(db,seconds=min(4,deadline-time.monotonic()-6))
         row=_claim(limited)
         if not row: break
+        # Prepare the current purchase list before the final authorization check.
+        items=_current_purchase_items(limited)
+        db.commit()
         # Fresh READ COMMITTED authorization immediately before external I/O.
         check=limited.execute('SELECT d.id'+JOIN+" WHERE d.id=? AND d.status='processing' AND d.lease_token=? AND "+VALID+FRESH,
                          (row['id'],row['token'],SPORTS_MATERIAL_CATEGORY)).fetchone()
@@ -180,7 +225,7 @@ def dispatch(db, *, deadline, max_messages=5):
         permanent=False
         if check:
             try:
-                response=manager_push.send(row,row['alert_id'])
+                response=manager_push.send(row,row['alert_id'],items=items)
                 code=getattr(response,'status_code',None)
                 if not code or not 200<=code<300: raise RuntimeError('Push not accepted')
                 outcome,error='accepted',None; accepted+=1
@@ -198,6 +243,24 @@ def dispatch(db, *, deadline, max_messages=5):
                 finishing.execute('UPDATE manager_push_subscriptions SET active=0,revoked_at=? WHERE id=? AND version=?',(_now(),row['subscription_id'],row['subscription_version']))
             finishing.execute('UPDATE purchase_alert_deliveries SET status=?,available_at=?,finished_at=?,error_code=?,lease_token=NULL WHERE id=? AND lease_token=? AND status=\'processing\'',
                        (status,_after(min(900*2**(row['attempt']-1),7200)),_now() if terminal else None,error,row['id'],row['token']))
+            if outcome == 'accepted':
+                # This push already includes the active purchase list. Close
+                # other queued deliveries for this same device that existed
+                # when the list was prepared, but not newer events.
+                finishing.execute(
+                    "UPDATE purchase_alert_deliveries SET status='cancelled', "
+                    "finished_at=?, error_code='consolidated' "
+                    "WHERE subscription_id=? AND user_id=? AND status='pending' "
+                    "AND id<=? AND alert_id IN ("
+                    "SELECT a.id FROM purchase_stock_alerts a "
+                    "JOIN purchase_replenishment_episodes e ON e.id=a.episode_id "
+                    "JOIN purchase_replenishment_state st ON st.product_id=e.product_id "
+                    "JOIN purchase_alert_product_state c ON c.product_id=e.product_id "
+                    "WHERE e.closed_at IS NULL AND st.needs_restock=1 "
+                    "AND st.episode_number=e.episode_number "
+                    "AND c.eligible=1 AND c.episode_number=e.episode_number)",
+                    (_now(), row['subscription_id'], row['user_id'],
+                     row['consolidation_boundary']))
     return {'accepted':accepted,'failed':failed}
 
 

@@ -168,12 +168,37 @@ def error_details(exc):
     return 'webpush_http_400', False
 
 
-def send(subscription, alert_id):
+def purchase_push_body(items, *, max_chars=220):
+    """Compact list for mobile notifications, without exposing other data."""
+    if not items:
+        return 'Há uma nova necessidade de reposição. Consulte o planejamento.'
+    lines = []
+    for index, item in enumerate(items):
+        name = ' '.join(str(item['name']).split())[:65]
+        line = f"{name}: {int(item['quantity'])} {item['unit']}"
+        remaining = len(items) - index - 1
+        suffix = f"\n+{remaining} produto(s) no planejamento" if remaining else ''
+        candidate = '\n'.join(lines + [line]) + suffix
+        if len(candidate) > max_chars:
+            break
+        lines.append(line)
+    if not lines:
+        return f"{len(items)} produto(s) precisam de reposição. Abra o planejamento."
+    remaining = len(items) - len(lines)
+    suffix = f"\n+{remaining} produto(s) no planejamento" if remaining else ''
+    return '\n'.join(lines) + suffix
+
+
+def send(subscription, alert_id, *, items=None):
     from pywebpush import webpush
-    # Generic lock-screen content; the destination independently checks manager access.
-    payload = dict(title='Compras Inteligentes',body='Há uma nova necessidade de reposição. Consulte o planejamento.',
-                   url='/stock/purchase-monitoring',alert_id=str(alert_id),kind='purchase-alert')
-    return webpush(subscription_info={'endpoint':subscription['endpoint'],'keys':{'p256dh':subscription['p256dh'],'auth':subscription['auth']}},
-                   data=json.dumps(payload),vapid_private_key=os.environ['VAPID_PRIVATE_KEY'],
-                   vapid_claims={'sub':os.environ.get('VAPID_SUBJECT','mailto:diretoriagpcta@gmail.com')},
-                   timeout=2,ttl=900,headers={'Topic':'gpcta-stock-' + str(alert_id)})
+    payload = dict(title='GPCTA - Compras Inteligentes',
+                   body=purchase_push_body(items or []),
+                   url='/stock/purchase-planning',
+                   alert_id=str(alert_id), kind='purchase-alert')
+    return webpush(
+        subscription_info={'endpoint':subscription['endpoint'],
+                           'keys':{'p256dh':subscription['p256dh'], 'auth':subscription['auth']}},
+        data=json.dumps(payload, ensure_ascii=False),
+        vapid_private_key=os.environ['VAPID_PRIVATE_KEY'],
+        vapid_claims={'sub':os.environ.get('VAPID_SUBJECT','mailto:diretoriagpcta@gmail.com')},
+        timeout=2, ttl=900)
