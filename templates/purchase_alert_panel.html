@@ -11,6 +11,22 @@
 {% else %}<label class="form-check mb-2"><input type="checkbox" class="form-check-input" name="confirm_alerts" value="yes" required> Confirmo a habilitação com baseline silencioso, somente para gestores com consentimento.</label><button class="btn btn-outline-primary" name="action" value="enable_alerts" {{'disabled' if not monitor.control.enabled}}>Habilitar alertas inteligentes</button>{% endif %}
 </form>
 <hr><button type="button" class="btn btn-outline-primary" id="manager-enable-push">Autorizar push neste dispositivo</button> <button type="button" class="btn btn-outline-secondary" id="manager-disable-push">Revogar push neste dispositivo</button><p id="manager-push-status" role="status"></p>
+<form id="manager-push-diagnostic-form"
+      method="post"
+      action="{{ url_for('products.manager_push_diagnostic_test') }}"
+      class="my-3">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button type="submit"
+          class="btn btn-outline-info"
+          >
+    Testar notificação push
+  </button>
+  <p class="small text-muted mt-2">
+    Envia uma notificação de teste somente para este dispositivo.
+    Permitido um teste a cada 60 segundos.
+    A aceitação pelo serviço push não garante a exibição no celular.
+  </p>
+</form>
 <details><summary>Histórico de alertas e tentativas</summary><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Data</th><th>Alerta</th><th>Produto</th><th>Dispositivos / aceitos / falhas</th></tr></thead><tbody>{% for a in alerts.history %}<tr><td>{{a.created_at}}</td><td>{{'Nova necessidade' if a.kind=='opened' else 'Agravamento'}}</td><td>{{a.product_name or ('#' ~ a.product_id)}}</td><td>{{a.devices}} / {{a.accepted or 0}} / {{a.failed or 0}}</td></tr>{% else %}<tr><td colspan="4">Nenhum alerta registrado.</td></tr>{% endfor %}</tbody></table></div>
 <ul>{% for a in alerts.attempts %}<li>{{a.started_at}}: {{a.outcome}}{% if a.http_status %} (HTTP {{a.http_status}}){% endif %}{% if a.error_code %} — {{a.error_code}}{% endif %}</li>{% endfor %}</ul></details>
 </div></section>
