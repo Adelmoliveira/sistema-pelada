@@ -1515,6 +1515,117 @@ def correct_restock(restock_id):
     )
 
 
+@bp.post('/stock/purchase-monitoring/test-push')
+@roles_allowed('manager')
+def manager_push_diagnostic_test():
+    """Explicit diagnostic push for the authenticated manager's device."""
+    from flask import session
+    from src.db import connect_db
+    from src.services.manager_push import DEVICE_COOKIE
+    from src.services.manager_push_diagnostic import (
+        find_current_subscription,
+        reserve_diagnostic,
+        send_diagnostic,
+    )
+
+    db = None
+    try:
+        binding = session.get('manager_push_binding')
+        device = request.cookies.get(DEVICE_COOKIE, '')
+
+        db = connect_db(current_app, connect_timeout=5)
+
+        subscription = find_current_subscription(
+            db, g.user['id'], binding, device
+        )
+
+        if subscription is None:
+            flash(
+                'Nenhuma inscrição push válida neste dispositivo. '
+                'Autorize novamente as notificações.',
+                'warning',
+            )
+            return redirect(
+                url_for('products.purchase_monitoring'), code=303
+            )
+
+        from src.services.manager_push import vapid_configuration_error
+
+        vapid_error = vapid_configuration_error()
+        if vapid_error:
+            db.rollback()
+            flash(
+                'Configuração VAPID inválida ou indisponível: ' + vapid_error,
+                'warning',
+            )
+            return redirect(
+                url_for('products.purchase_monitoring'), code=303
+            )
+
+        reserved = reserve_diagnostic(db, g.user['id'])
+        db.commit()
+
+        if not reserved:
+            flash(
+                'Aguarde 60 segundos antes de realizar outro teste.',
+                'warning',
+            )
+            return redirect(
+                url_for('products.purchase_monitoring'), code=303
+            )
+
+        # Recheck ownership after committing the reservation.
+        subscription = find_current_subscription(
+            db, g.user['id'], binding, device
+        )
+
+        if subscription is None:
+            flash(
+                'A autorização push mudou. Teste cancelado.',
+                'warning',
+            )
+            return redirect(
+                url_for('products.purchase_monitoring'), code=303
+            )
+
+        db.commit()
+        result = send_diagnostic(subscription)
+
+        if result['accepted']:
+            flash(
+                'Teste aceito pelo serviço push. '
+                'Verifique se a notificação apareceu no celular.',
+                'success',
+            )
+        else:
+            flash(
+                'O teste não foi aceito. Código técnico: '
+                + result['code'],
+                'warning',
+            )
+
+        return redirect(
+            url_for('products.purchase_monitoring'), code=303
+        )
+
+    except Exception as exc:
+        if db is not None:
+            db.rollback()
+        current_app.logger.warning(
+            'Diagnóstico push indisponível: %s',
+            type(exc).__name__,
+        )
+        flash(
+            'Diagnóstico temporariamente indisponível.',
+            'danger',
+        )
+        return redirect(
+            url_for('products.purchase_monitoring'), code=303
+        )
+    finally:
+        if db is not None:
+            db.close()
+
 @bp.route('/stock/purchase-monitoring', methods=['GET', 'POST'])
 @roles_allowed('manager')
 def purchase_monitoring():
