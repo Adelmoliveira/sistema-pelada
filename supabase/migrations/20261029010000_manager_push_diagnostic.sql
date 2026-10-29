@@ -1,4 +1,4 @@
-﻿-- Controle persistente de testes Web Push para gestores.
+-- Controle persistente de testes Web Push para gestores.
 -- Não altera estoque, episódios ou filas de alertas.
 
 SET LOCAL lock_timeout = '2000ms';
@@ -9,3 +9,5 @@ CREATE TABLE IF NOT EXISTS manager_push_diagnostic_control (
     last_attempt_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE manager_push_diagnostic_control ENABLE ROW LEVEL SECURITY;
