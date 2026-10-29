@@ -65,7 +65,7 @@ def stock_report_data(db, start_date="", end_date=""):
     adjustments = db.execute(
         "SELECT product_id,difference FROM stock_adjustments" +
         (adjustment_where + " AND " if adjustment_where else " WHERE ") +
-        "reason NOT LIKE 'Correção da reposição #%'", tuple(adjustment_params),
+        "reason NOT LIKE 'Correção da reposição #%%'", tuple(adjustment_params),
     ).fetchall()
     positive, negative = {}, {}
     for adjustment in adjustments:

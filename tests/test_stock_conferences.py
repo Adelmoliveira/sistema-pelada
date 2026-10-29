@@ -8,7 +8,7 @@ from unittest.mock import patch
 from tests import test_mercadopago as fixtures
 
 app = fixtures.app
-from src.db import connect_sqlite, get_db
+from src.db import DbWrapper, connect_sqlite, get_db
 from src.catalog import SPORTS_MATERIAL_CATEGORY
 from src.services.stock_conferences import apply_conference, application
 from src.services.stock_report_pdf import stock_report_data, build_stock_report_pdf
@@ -175,6 +175,39 @@ class StockConferenceTest(unittest.TestCase):
             self.assertEqual((filtered['adjustments_positive'],filtered['adjustments_negative']),(3,0))
             pdf=build_stock_report_pdf(rows,None,None)
             self.assertTrue(pdf.getvalue().startswith(b'%PDF'))
+
+    def test_report_adjustment_like_escapes_percent_for_postgres(self):
+        statements = []
+
+        class Cursor:
+            def execute(self, statement, params=None):
+                params = tuple(params or ())
+                statements.append(statement)
+                if statement.count('%s') != len(params):
+                    raise IndexError('tuple index out of range')
+                if '%' in statement.replace('%%', '').replace('%s', ''):
+                    raise IndexError('tuple index out of range')
+                if 'FROM stock_adjustments' in statement:
+                    self.rows = [{'product_id': 1, 'difference': 3}]
+                elif 'FROM products' in statement:
+                    self.rows = [{'id': 1, 'name': 'Água', 'stock': 5}]
+                else:
+                    self.rows = []
+
+            def fetchall(self):
+                return self.rows
+
+        class Connection:
+            def cursor(self):
+                return Cursor()
+
+        rows = stock_report_data(
+            DbWrapper(Connection(), is_postgres=True), '2026-10-01', '2026-10-31'
+        )
+
+        self.assertEqual(rows[0]['adjustments_positive'], 3)
+        adjustment_sql = next(sql for sql in statements if 'FROM stock_adjustments' in sql)
+        self.assertIn("reason NOT LIKE 'Correção da reposição #%%'", adjustment_sql)
 
     def test_alert_failure_does_not_undo_application(self):
         self.prepare(); self.register()
