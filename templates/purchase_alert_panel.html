@@ -10,7 +10,20 @@
 {% if alerts.control.enabled %}<button class="btn btn-outline-danger" name="action" value="disable_alerts">Desabilitar alertas inteligentes</button>
 {% else %}<label class="form-check mb-2"><input type="checkbox" class="form-check-input" name="confirm_alerts" value="yes" required> Confirmo a habilitação com baseline silencioso, somente para gestores com consentimento.</label><button class="btn btn-outline-primary" name="action" value="enable_alerts" {{'disabled' if not monitor.control.enabled}}>Habilitar alertas inteligentes</button>{% endif %}
 </form>
-<hr><button type="button" class="btn btn-outline-primary" id="manager-enable-push">Autorizar push neste dispositivo</button> <button type="button" class="btn btn-outline-secondary" id="manager-disable-push">Revogar push neste dispositivo</button><p id="manager-push-status" role="status"></p>
+<hr>
+<section aria-labelledby="manager-push-title" class="mt-3">
+  <h3 class="h6" id="manager-push-title">Notificações para gestores</h3>
+  <p class="text-muted mb-3">Receba avisos sobre novas necessidades de compras e agravamentos de estoque, mesmo com o aplicativo fechado.</p>
+  <div id="manager-push-consent-group" class="form-check mb-3">
+    <input class="form-check-input" type="checkbox" id="manager-push-consent" disabled>
+    <label class="form-check-label" for="manager-push-consent">Autorizo receber notificações push neste dispositivo.</label>
+  </div>
+  <div class="d-grid gap-2 d-sm-flex">
+    <button type="button" class="btn btn-primary" id="manager-enable-push" disabled>Ativar notificações</button>
+    <button type="button" class="btn btn-outline-secondary" id="manager-disable-push" hidden>Desativar notificações</button>
+  </div>
+  <p id="manager-push-status" class="small mt-2 mb-0" role="status" aria-live="polite"></p>
+</section>
 <form id="manager-push-diagnostic-form"
       method="post"
       action="{{ url_for('products.manager_push_diagnostic_test') }}"

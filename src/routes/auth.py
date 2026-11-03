@@ -1111,14 +1111,28 @@ def manager_push_public_key():
 def manager_push_prepare():
     from src.services.manager_push import DEVICE_COOKIE
     from src.services.push_notifications import public_key
-    _revoke_manager_session()
-    session['manager_push_binding']=secrets.token_hex(32)
-    # Explicit authorization always renews the browser subscription. This repairs
-    # stale provider/VAPID bindings without silently granting manager consent.
-    response=jsonify(publicKey=public_key(),forceRenew=True)
-    response.set_cookie(DEVICE_COOKIE,secrets.token_hex(32),max_age=31536000,httponly=True,
-                        secure=request.is_secure or current_app.config.get('APP_ENV')!='local',samesite='Lax')
+    session.setdefault('manager_push_binding',secrets.token_hex(32))
+    device=request.cookies.get(DEVICE_COOKIE,'')
+    valid_device=len(device)==64 and all(char in '0123456789abcdef' for char in device)
+    if not valid_device:
+        device=secrets.token_hex(32)
+    # The browser renews only when its VAPID applicationServerKey is incompatible.
+    # Re-registering a compatible endpoint is idempotent and avoids needless churn.
+    response=jsonify(publicKey=public_key(),forceRenew=False)
+    if not valid_device:
+        response.set_cookie(DEVICE_COOKIE,device,max_age=31536000,httponly=True,
+                            secure=request.is_secure or current_app.config.get('APP_ENV')!='local',samesite='Lax')
     return response
+
+
+@bp.post('/notifications/manager-push/status')
+@roles_allowed('manager')
+def manager_push_status():
+    from src.services.manager_push import active_for_device, DEVICE_COOKIE
+    data=request.get_json(silent=True) or {}
+    endpoint=data.get('endpoint') if isinstance(data,dict) else None
+    active=active_for_device(get_db(),g.user['id'],endpoint,request.cookies.get(DEVICE_COOKIE,''))
+    return jsonify(active=active)
 
 
 @bp.post('/notifications/manager-push/subscribe')
