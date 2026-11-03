@@ -138,6 +138,9 @@
     const ensureCurrent=()=>{if(managerPush && expectedEpoch!==managerPushEpoch)throw new Error('Consentimento cancelado pelo logout.');};
     const registration = await registrationPromise;
     ensureCurrent();
+    const permission = await Notification.requestPermission();
+    ensureCurrent();
+    if (permission !== "granted") throw new Error("As notificações estão bloqueadas nas configurações deste navegador.");
     const keyResponse = managerPush
       ? await fetch(pushRoot + "/prepare",{method:"POST",headers:pushHeaders(),body:"{}"})
       : await fetch(pushRoot + "/public-key");
@@ -146,9 +149,6 @@
     const keyData = await keyResponse.json();
     ensureCurrent();
     if (!keyData.publicKey) throw new Error("Notificações ainda não configuradas no servidor.");
-    const permission = await Notification.requestPermission();
-    ensureCurrent();
-    if (permission !== "granted") throw new Error("Permissão de notificação não concedida.");
     const applicationServerKey = publicKeyBytes(keyData.publicKey);
     let subscription = await registration.pushManager.getSubscription();
     ensureCurrent();
@@ -185,17 +185,79 @@
     const status=document.getElementById('manager-push-status');
     const enable=document.getElementById('manager-enable-push');
     const disable=document.getElementById('manager-disable-push');
-    const bind=(button,action,message)=>button && button.addEventListener('click',async()=>{
-      button.disabled=true;
-      try { await action(); status.textContent=message; }
-      catch(error){status.textContent=error.message;}
-      finally{button.disabled=false;}
+    const consent=document.getElementById('manager-push-consent');
+    const consentGroup=document.getElementById('manager-push-consent-group');
+    const setActive=active=>{
+      if (!enable || !disable || !consent || !consentGroup) return;
+      consentGroup.hidden=active;
+      enable.hidden=active;
+      disable.hidden=!active;
+      consent.checked=false;
+      consent.disabled=active;
+      enable.disabled=true;
+    };
+    const friendlyError=error=>{
+      if (error && error.name === 'TypeError') return 'Não foi possível concluir a operação. Verifique a conexão e tente novamente.';
+      if (error && error.message) return error.message;
+      return 'Não foi possível concluir a operação. Verifique a conexão e tente novamente.';
+    };
+    if (consent && enable) consent.addEventListener('change',()=>{enable.disabled=!consent.checked;});
+    if (enable) enable.addEventListener('click',async()=>{
+      if (!consent || !consent.checked) return;
+      enable.disabled=true;
+      status.textContent='Ativando notificações…';
+      try {
+        await window.enablePushNotifications();
+        setActive(true);
+        status.textContent='Notificações ativas neste dispositivo';
+      } catch(error) {
+        status.textContent=friendlyError(error);
+        enable.disabled=!consent.checked;
+      }
     });
-    bind(enable,window.enablePushNotifications,'Consentimento registrado neste dispositivo.');
-    bind(disable,window.disablePushNotifications,'Push gerencial revogado neste dispositivo.');
-    if ("Notification" in window && Notification.permission === "denied") {
-      fetch(pushRoot+'/unsubscribe',{method:'POST',headers:pushHeaders(),body:'{}'}).catch(()=>{});
-    }
+    if (disable) disable.addEventListener('click',async()=>{
+      disable.disabled=true;
+      status.textContent='Desativando notificações…';
+      try {
+        await window.disablePushNotifications();
+        setActive(false);
+        consent.disabled=false;
+        status.textContent='Notificações desativadas neste dispositivo.';
+      } catch(error) {
+        status.textContent=friendlyError(error);
+      } finally { disable.disabled=false; }
+    });
+    (async()=>{
+      if (!status || !consent || !enable || !disable) return;
+      if (!registrationPromise || !("PushManager" in window) || !("Notification" in window)) {
+        status.textContent='Este navegador não oferece suporte a notificações push.';
+        return;
+      }
+      if (Notification.permission === 'denied') {
+        status.textContent='As notificações estão bloqueadas nas configurações deste navegador.';
+        return;
+      }
+      try {
+        const registration=await registrationPromise;
+        const subscription=await registration.pushManager.getSubscription();
+        if (!subscription) {
+          consent.disabled=false;
+          return;
+        }
+        const response=await fetch(pushRoot+'/status',{
+          method:'POST',credentials:'same-origin',headers:pushHeaders(),
+          body:JSON.stringify({endpoint:subscription.endpoint})
+        });
+        if (!response.ok || response.redirected) throw new Error();
+        const data=await response.json();
+        if (data.active === true) {
+          setActive(true);
+          status.textContent='Notificações ativas neste dispositivo';
+        } else consent.disabled=false;
+      } catch(_) {
+        status.textContent='Não foi possível verificar as notificações deste dispositivo. Verifique a conexão e recarregue a página.';
+      }
+    })();
   }
 
   const onboarding = document.querySelector("#push-onboarding");

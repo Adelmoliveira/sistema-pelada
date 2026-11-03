@@ -557,19 +557,73 @@ class ManagerPushRoutesTest(unittest.TestCase):
         for uid in (self.staff,self.client_user):
             self.login(uid)
             self.assertEqual(self.client.post('/notifications/manager-push/subscribe',json=subscription(),headers={'Accept':'application/json'}).status_code,403)
+            self.assertEqual(self.client.post('/notifications/manager-push/status',json={'endpoint':subscription()['endpoint']},headers={'Accept':'application/json'}).status_code,403)
         self.login(self.manager); pages.app.config['WTF_CSRF_ENABLED']=True
         self.assertEqual(self.client.post('/notifications/manager-push/subscribe',json=subscription()).status_code,303)
+        self.assertEqual(self.client.post('/notifications/manager-push/status',json={'endpoint':subscription()['endpoint']}).status_code,303)
 
     def test_panel_independent_controls_default_off(self):
         self.login(self.manager)
         page=self.client.get('/stock/purchase-monitoring')
         self.assertEqual(page.status_code,200)
         self.assertIn('Desativados',page.get_data(as_text=True))
+        html=page.get_data(as_text=True)
+        self.assertIn('id="manager-push-consent" disabled',html)
+        self.assertIn('for="manager-push-consent"',html)
+        self.assertIn('id="manager-enable-push" disabled',html)
+        self.assertIn('aria-live="polite"',html)
+        self.assertIn('d-grid gap-2 d-sm-flex',html)
         self.client.post('/stock/purchase-monitoring',data={'action':'activate','confirm':'yes'})
         self.assertEqual(self.client.post('/stock/purchase-monitoring',data={'action':'enable_alerts','confirm_alerts':'yes'}).status_code,302)
         self.assertIn('Habilitados',self.client.get('/stock/purchase-monitoring').get_data(as_text=True))
         self.client.post('/stock/purchase-monitoring',data={'action':'disable_alerts'})
         self.assertIn('Desativados',self.client.get('/stock/purchase-monitoring').get_data(as_text=True))
+
+    def test_manager_status_is_read_only_and_device_bound(self):
+        self.login(self.manager)
+        data=subscription()
+        self.assertEqual(self.client.post('/notifications/manager-push/subscribe',json=data).status_code,200)
+        from src.db import connect_sqlite
+        db=connect_sqlite(pages.app.config['DATABASE'])
+        try:
+            before=dict(db.execute('SELECT * FROM manager_push_subscriptions').fetchone())
+            response=self.client.post('/notifications/manager-push/status',json={'endpoint':data['endpoint']})
+            after=dict(db.execute('SELECT * FROM manager_push_subscriptions').fetchone())
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(response.get_json(),{'active':True})
+            self.assertEqual(after,before)
+            self.assertEqual(self.client.post('/notifications/manager-push/status',json={'endpoint':subscription('other')['endpoint']}).get_json(),{'active':False})
+        finally: db.close()
+
+    def test_prepare_preserves_current_subscription_and_replacement_is_atomic(self):
+        self.login(self.manager)
+        first=subscription('first')
+        self.assertEqual(self.client.post('/notifications/manager-push/subscribe',json=first).status_code,200)
+        self.assertEqual(self.client.post('/notifications/manager-push/prepare',json={}).status_code,200)
+        from src.db import connect_sqlite
+        db=connect_sqlite(pages.app.config['DATABASE'])
+        try:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM manager_push_subscriptions WHERE endpoint=? AND active=1",(first['endpoint'],)).fetchone()[0],1)
+            invalid={**subscription('invalid'),'keys':{'p256dh':'bad','auth':'bad'}}
+            self.assertEqual(self.client.post('/notifications/manager-push/subscribe',json=invalid).status_code,400)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM manager_push_subscriptions WHERE endpoint=? AND active=1",(first['endpoint'],)).fetchone()[0],1)
+            second=subscription('second')
+            db.execute("""CREATE TRIGGER fail_manager_replacement BEFORE UPDATE OF active ON manager_push_subscriptions
+                        WHEN OLD.endpoint='https://fcm.googleapis.com/fcm/send/first' AND NEW.active=0
+                        BEGIN SELECT RAISE(ABORT,'simulated replacement failure'); END""")
+            db.commit()
+            self.assertEqual(self.client.post('/notifications/manager-push/subscribe',json=second).status_code,503)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM manager_push_subscriptions WHERE endpoint=? AND active=1",(first['endpoint'],)).fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM manager_push_subscriptions WHERE endpoint=?",(second['endpoint'],)).fetchone()[0],0)
+            db.execute('DROP TRIGGER fail_manager_replacement')
+            db.commit()
+            self.assertEqual(self.client.post('/notifications/manager-push/subscribe',json=second).status_code,200)
+            rows=db.execute('SELECT endpoint,active FROM manager_push_subscriptions ORDER BY endpoint').fetchall()
+            states={row['endpoint']:row['active'] for row in rows}
+            self.assertEqual(states,{first['endpoint']:0,second['endpoint']:1})
+            self.assertEqual(self.client.post('/notifications/manager-push/subscribe',json=second).status_code,200)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM manager_push_subscriptions WHERE endpoint=?",(second['endpoint'],)).fetchone()[0],1)
+        finally: db.close()
 
     def test_account_switch_and_legacy_subscription_takeover(self):
         self.login(self.manager)

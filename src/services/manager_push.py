@@ -113,6 +113,27 @@ def register(db, user_id, binding, data, *, device=None):
                'auth=excluded.auth,version=excluded.version,binding_hash=excluded.binding_hash,device_hash=excluded.device_hash,active=1,revoked_at=NULL,'
                'consented_at=excluded.consented_at,updated_at=excluded.updated_at',
                (user_id,endpoint,p256dh,auth,uuid.uuid4().hex,digest,device_digest,_now(),_now()))
+    # Keep the previous authorization usable until the replacement above has
+    # been validated and persisted. The route commits both operations together.
+    if device:
+        db.execute('UPDATE manager_push_subscriptions SET active=0,revoked_at=?,updated_at=? '
+                   'WHERE user_id=? AND device_hash=? AND endpoint<>? AND active=1',
+                   (_now(),_now(),user_id,device_digest,endpoint))
+
+
+def active_for_device(db, user_id, endpoint, device):
+    """Return only whether this browser endpoint is active for this device."""
+    if not isinstance(endpoint, str) or not endpoint or len(endpoint) > 4096:
+        return False
+    if not isinstance(device, str) or len(device) != 64 or any(char not in '0123456789abcdef' for char in device):
+        return False
+    device_digest=hashlib.sha256(device.encode()).hexdigest()
+    return db.execute(
+        'SELECT 1 FROM manager_push_subscriptions s JOIN users u ON u.id=s.user_id '
+        "WHERE s.user_id=? AND s.endpoint=? AND s.device_hash=? AND s.active=1 "
+        "AND s.revoked_at IS NULL AND u.active=1 AND u.role='manager'",
+        (user_id,endpoint,device_digest),
+    ).fetchone() is not None
 
 
 def vapid_configuration_error(public_key=None, private_key=None):

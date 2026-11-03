@@ -147,7 +147,7 @@ test('persistent intelligent push identity claims once and can retry failed pres
 function pushUI(role, permission='granted') {
   const calls=[],documentEvents={};
   let unsubscribed=0,subscribed=0;
-  const makeSubscription=()=>({toJSON:()=>({endpoint:'https://fcm.googleapis.com/test',keys:{p256dh:'public',auth:'key'}}),unsubscribe:async()=>{unsubscribed++;}});
+  const makeSubscription=()=>({endpoint:'https://fcm.googleapis.com/test',toJSON:()=>({endpoint:'https://fcm.googleapis.com/test',keys:{p256dh:'public',auth:'key'}}),unsubscribe:async()=>{unsubscribed++;}});
   const subscription=makeSubscription();
   const context={registrationPromise:Promise.resolve({pushManager:{getSubscription:async()=>subscription,subscribe:async()=>{subscribed++;return makeSubscription();}}}),
     document:{body:{dataset:{pushRole:role}},addEventListener(name,fn){documentEvents[name]=fn;},querySelector:()=>({content:'csrf-test'}),getElementById:()=>null},
@@ -174,10 +174,9 @@ test('client subscription renewal stays on legacy endpoints',async()=>{
   assert.ok(app.calls.some(call=>call.url==='/notifications/push/subscribe'));
   assert.ok(app.calls.every(call=>!call.url.includes('manager-push')));
 });
-test('revoked browser permission revokes manager association without polling',async()=>{
+test('denied browser permission does not revoke manager association on page load',async()=>{
   const app=pushUI('manager','denied');await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(app.calls.length,1);assert.equal(app.calls[0].url,'/notifications/manager-push/unsubscribe');
-  assert.equal(app.calls[0].options.headers['X-CSRFToken'],'csrf-test');
+  assert.equal(app.calls.length,0);
 });
 
 test('logout cancels a manager consent flow already awaiting preparation',async()=>{
@@ -188,4 +187,77 @@ test('logout cancels a manager consent flow already awaiting preparation',async(
   app.documentEvents.submit({target:{getAttribute:()=>'/logout'}});
   release({ok:true,json:async()=>({publicKey:'AA'})});
   await assert.rejects(flow,/logout/);
+});
+
+function managerControls({active=false, permission='default', statusFailure=false, subscribeFailure=false}={}) {
+  const calls=[];
+  const element=extra=>Object.assign({hidden:false,disabled:false,checked:false,textContent:'',listeners:{},
+    addEventListener(name,fn){this.listeners[name]=fn;}},extra);
+  const nodes={
+    'manager-push-status':element(),
+    'manager-enable-push':element({disabled:true}),
+    'manager-disable-push':element({hidden:true}),
+    'manager-push-consent':element({disabled:true}),
+    'manager-push-consent-group':element(),
+  };
+  let localSubscription=active ? {endpoint:'https://fcm.googleapis.com/active',toJSON(){return {endpoint:this.endpoint,keys:{p256dh:'public',auth:'key'}};},unsubscribe:async()=>{localSubscription=null;}} : null;
+  const registration={pushManager:{
+    getSubscription:async()=>localSubscription,
+    subscribe:async()=>{localSubscription={endpoint:'https://fcm.googleapis.com/new',toJSON(){return {endpoint:this.endpoint,keys:{p256dh:'public',auth:'key'}};},unsubscribe:async()=>{localSubscription=null;}};return localSubscription;}
+  }};
+  const context={registrationPromise:Promise.resolve(registration),
+    document:{body:{dataset:{pushRole:'manager'}},addEventListener(){},querySelector:()=>({content:'csrf-test'}),getElementById:id=>nodes[id] || null},
+    window:{PushManager:{}},Notification:{permission,requestPermission:async()=>permission === 'denied' ? 'denied' : 'granted'},
+    fetch:async(url,options)=>{
+      calls.push({url,options});
+      if (url.endsWith('/status')) {
+        if (statusFailure) throw new TypeError('network');
+        return {ok:true,redirected:false,json:async()=>({active})};
+      }
+      if (url.endsWith('/prepare')) return {ok:true,redirected:false,json:async()=>({publicKey:'AA',forceRenew:false})};
+      if (url.endsWith('/subscribe') && subscribeFailure) throw new TypeError('network');
+      return {ok:true,redirected:false,json:async()=>({ok:true})};
+    },
+    atob:s=>Buffer.from(s,'base64').toString('binary'),Uint8Array,console};
+  context.window.Notification=context.Notification;
+  const source=fs.readFileSync('static/pwa.js','utf8');
+  vm.runInNewContext(source.slice(source.indexOf('  const publicKeyBytes'),source.indexOf('  const onboarding')),context);
+  return {context,calls,nodes,settle:()=>new Promise(resolve=>setImmediate(resolve))};
+}
+
+test('manager consent checkbox gates activation and server success changes the UI',async()=>{
+  const app=managerControls();await app.settle();
+  const consent=app.nodes['manager-push-consent'];const enable=app.nodes['manager-enable-push'];
+  assert.equal(consent.checked,false);assert.equal(consent.disabled,false);assert.equal(enable.disabled,true);
+  consent.checked=true;consent.listeners.change();assert.equal(enable.disabled,false);
+  await enable.listeners.click();
+  assert.ok(app.calls.some(call=>call.url.endsWith('/prepare')));
+  assert.ok(app.calls.some(call=>call.url.endsWith('/subscribe')));
+  assert.equal(app.nodes['manager-push-status'].textContent,'Notificações ativas neste dispositivo');
+  assert.equal(enable.hidden,true);assert.equal(app.nodes['manager-disable-push'].hidden,false);
+});
+
+test('an already authorized manager device is recognized without prepare or renewal',async()=>{
+  const app=managerControls({active:true,permission:'granted'});await app.settle();
+  assert.deepEqual(app.calls.map(call=>call.url),['/notifications/manager-push/status']);
+  assert.equal(app.nodes['manager-enable-push'].hidden,true);
+  assert.equal(app.nodes['manager-disable-push'].hidden,false);
+  assert.equal(app.nodes['manager-push-status'].textContent,'Notificações ativas neste dispositivo');
+});
+
+test('denied permission and status network failure never revoke or enroll automatically',async()=>{
+  const denied=managerControls({permission:'denied'});await denied.settle();
+  assert.equal(denied.calls.length,0);
+  assert.match(denied.nodes['manager-push-status'].textContent,/bloqueadas/);
+  const failed=managerControls({active:true,statusFailure:true,permission:'granted'});await failed.settle();
+  assert.deepEqual(failed.calls.map(call=>call.url),['/notifications/manager-push/status']);
+  assert.match(failed.nodes['manager-push-status'].textContent,/verificar/);
+});
+
+test('activation network failure does not show success or silently disable consent',async()=>{
+  const app=managerControls({subscribeFailure:true});await app.settle();
+  const consent=app.nodes['manager-push-consent'];const enable=app.nodes['manager-enable-push'];
+  consent.checked=true;consent.listeners.change();await enable.listeners.click();
+  assert.equal(app.nodes['manager-push-status'].textContent,'Não foi possível concluir a operação. Verifique a conexão e tente novamente.');
+  assert.equal(consent.checked,true);assert.equal(enable.hidden,false);assert.equal(enable.disabled,false);
 });
