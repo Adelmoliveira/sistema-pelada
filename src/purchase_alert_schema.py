@@ -75,3 +75,24 @@ END;
                       'purchase_stock_alerts','purchase_alert_deliveries','purchase_alert_attempts'):
             sql += f'ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;\n'
     return sql
+
+
+def message_schema_sql(postgres=False):
+    """Persistent per-manager messages for eligible purchase alerts."""
+    identity = 'BIGSERIAL PRIMARY KEY' if postgres else 'INTEGER PRIMARY KEY AUTOINCREMENT'
+    sql = f"""
+CREATE TABLE IF NOT EXISTS purchase_alert_messages (
+ id {identity}, alert_id BIGINT NOT NULL REFERENCES purchase_stock_alerts(id) ON DELETE RESTRICT,
+ user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+ title TEXT NOT NULL, body TEXT NOT NULL, url TEXT NOT NULL,
+ read_at TEXT, deleted_at TEXT, created_at TEXT NOT NULL,
+ UNIQUE(alert_id,user_id)
+);
+CREATE INDEX IF NOT EXISTS purchase_alert_messages_user
+ ON purchase_alert_messages(user_id,deleted_at,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS purchase_alert_messages_unread
+ ON purchase_alert_messages(user_id,deleted_at,read_at);
+"""
+    if postgres:
+        sql += "ALTER TABLE purchase_alert_messages ENABLE ROW LEVEL SECURITY;\n"
+    return sql

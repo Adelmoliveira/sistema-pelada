@@ -13,9 +13,10 @@ from unittest.mock import patch
 
 import test_purchase_observation as fixtures
 import test_purchase_planning as pages
-from src.purchase_alert_schema import schema_sql
+from src.purchase_alert_schema import schema_sql, message_schema_sql
 from src.services.purchase_observation import activate_observation, process_observation
 from src.services.purchase_alerts import set_enabled, classify, dispatch, process_alerts, _claim, status
+from src.services.purchase_alert_messages import create_alert_messages
 from src.services.manager_push import register, revoke, validate_subscription, vapid_configuration_error
 
 
@@ -41,8 +42,8 @@ class AlertContract:
 
     def setup_alerts(self):
         if self.db.is_postgres:
-            self.db.execute(AUX); self.db.execute(schema_sql(True)); self.db.commit()
-        else: self.db.conn.executescript(AUX+schema_sql())
+            self.db.execute(AUX); self.db.execute(schema_sql(True)); self.db.execute(message_schema_sql(True)); self.db.commit()
+        else: self.db.conn.executescript(AUX+schema_sql()+message_schema_sql())
         mocked=patch('src.services.manager_push.vapid_configuration_error',return_value=None); mocked.start(); self.addCleanup(mocked.stop)
         self.send_mock=patch('src.services.manager_push.send',return_value=SimpleNamespace(status_code=201)).start()
         self.addCleanup(patch.stopall)
@@ -74,6 +75,76 @@ class AlertContract:
 
     def dispatch(self):
         return self.call(dispatch,deadline=time.monotonic()+25)
+
+    def eligible_opening(self):
+        self.baseline(); self.change(30); return self.change(20)
+
+    def test_manager_messages_do_not_require_push_subscription(self):
+        with self.db: self.db.execute("UPDATE users SET active=0 WHERE id=4")
+        self.eligible_opening()
+        self.assertEqual(self.count('purchase_alert_deliveries'),0)
+        messages=self.query('SELECT user_id,title,body,url,read_at,deleted_at FROM purchase_alert_messages')
+        self.assertEqual(len(messages),1)
+        self.assertEqual(messages[0]['user_id'],1)
+        self.assertIn('Nova necessidade',messages[0]['title'])
+        self.assertIn('Produto:',messages[0]['body'])
+        self.assertIn('Quantidade sugerida:',messages[0]['body'])
+        self.assertEqual(messages[0]['url'],'/stock/purchase-planning')
+        self.assertIsNone(messages[0]['read_at']); self.assertIsNone(messages[0]['deleted_at'])
+
+    def test_messages_fan_out_only_to_active_managers(self):
+        self.eligible_opening()
+        self.assertEqual([row['user_id'] for row in self.query('SELECT user_id FROM purchase_alert_messages ORDER BY user_id')],[1,4])
+        with self.db:
+            self.db.execute("UPDATE users SET active=0 WHERE id=4")
+            self.db.execute("UPDATE users SET role='staff' WHERE id=1")
+            self.db.execute("UPDATE users SET role='manager' WHERE id=2")
+        # A fresh worsening has a fresh audience: only the newly promoted user.
+        self.change(19)
+        newest=self.query('SELECT user_id FROM purchase_alert_messages WHERE alert_id=(SELECT MAX(id) FROM purchase_stock_alerts)')
+        self.assertEqual([row['user_id'] for row in newest],[2])
+
+    def test_baseline_opening_worsening_and_reprocessing_are_idempotent(self):
+        self.baseline()
+        self.assertEqual(self.count('purchase_alert_messages'),0)
+        self.change(30); self.assertEqual(self.count('purchase_alert_messages'),0)
+        self.change(20); self.assertEqual(self.count('purchase_alert_messages'),2)
+        self.call(classify); self.assertEqual(self.count('purchase_alert_messages'),2)
+        self.change(19); self.assertEqual(self.count('purchase_alert_messages'),4)
+
+    def test_logically_deleted_message_is_never_recreated(self):
+        self.eligible_opening()
+        alert_id=self.query('SELECT id FROM purchase_stock_alerts')[0]['id']
+        with self.db:
+            self.db.execute("UPDATE purchase_alert_messages SET deleted_at='2026-11-03T00:00:00+00:00' WHERE alert_id=? AND user_id=1",(alert_id,))
+        self.call(create_alert_messages,[alert_id])
+        rows=self.query('SELECT user_id,deleted_at FROM purchase_alert_messages ORDER BY user_id')
+        self.assertEqual(len(rows),2)
+        self.assertEqual(rows[0]['deleted_at'],'2026-11-03T00:00:00+00:00')
+
+    def test_predeployment_alerts_are_not_backfilled(self):
+        self.eligible_opening()
+        with self.db: self.db.execute('DELETE FROM purchase_alert_messages')
+        self.call(classify)
+        self.assertEqual(self.count('purchase_stock_alerts'),1)
+        self.assertEqual(self.count('purchase_alert_messages'),0)
+
+    def test_message_failure_rolls_back_alert_and_can_retry(self):
+        self.baseline(); self.change(30); self.stock(20); self.drain()
+        with patch('src.services.purchase_alerts.create_alert_messages',side_effect=RuntimeError('message storage unavailable')):
+            with self.assertRaises(RuntimeError): self.call(classify)
+        self.assertEqual(self.count('purchase_stock_alerts'),0)
+        self.assertEqual(self.count('purchase_alert_messages'),0)
+        self.call(classify)
+        self.assertEqual(self.count('purchase_stock_alerts'),1)
+        self.assertEqual(self.count('purchase_alert_messages'),2)
+
+    def test_push_failure_does_not_remove_committed_messages(self):
+        self.register(); self.eligible_opening()
+        self.send_mock.side_effect=TimeoutError('network')
+        self.dispatch()
+        self.assertEqual(self.count('purchase_alert_messages'),2)
+        self.assertEqual(self.count('purchase_alert_deliveries',"status='pending'"),1)
 
     def test_multiple_products_consolidated_per_device(self):
         self.register()
@@ -208,10 +279,11 @@ class AlertContract:
         self.assertEqual(self.query('SELECT enabled FROM purchase_alert_control')[0]['enabled'],0)
         self.assertEqual(self.count('purchase_stock_alerts'),0)
         if self.db.is_postgres:
-            self.db.execute(schema_sql(True)); self.db.commit()
-        else: self.db.conn.executescript(schema_sql())
+            self.db.execute(schema_sql(True)); self.db.execute(message_schema_sql(True)); self.db.commit()
+        else: self.db.conn.executescript(schema_sql()+message_schema_sql())
         self.assertEqual(self.count('purchase_replenishment_episodes','notifiable<>0'),0)
         self.assertTrue(Path('supabase/migrations/20261018040000_purchase_intelligent_alerts.sql').read_text().endswith(schema_sql(True)))
+        self.assertTrue(Path('supabase/migrations/20261103090000_purchase_alert_messages.sql').read_text().endswith(message_schema_sql(True)))
 
     def test_baseline_and_baseline_worsening_are_always_silent(self):
         self.register(); self.baseline()
@@ -396,11 +468,11 @@ class AlertContract:
     def test_migration_reapply_keeps_enabled_state_and_audit(self):
         self.opening(); self.dispatch()
         if self.db.is_postgres:
-            self.db.execute(schema_sql(True)); self.db.commit()
-            protected=self.query("SELECT relrowsecurity FROM pg_class WHERE relnamespace=(SELECT oid FROM pg_namespace WHERE nspname=current_schema()) AND relname IN ('manager_push_subscriptions','manager_push_revocations','purchase_alert_control','purchase_alert_product_state','purchase_stock_alerts','purchase_alert_deliveries','purchase_alert_attempts')")
-            self.assertEqual(len(protected),7)
+            self.db.execute(schema_sql(True)); self.db.execute(message_schema_sql(True)); self.db.commit()
+            protected=self.query("SELECT relrowsecurity FROM pg_class WHERE relnamespace=(SELECT oid FROM pg_namespace WHERE nspname=current_schema()) AND relname IN ('manager_push_subscriptions','manager_push_revocations','purchase_alert_control','purchase_alert_product_state','purchase_stock_alerts','purchase_alert_deliveries','purchase_alert_attempts','purchase_alert_messages')")
+            self.assertEqual(len(protected),8)
             self.assertTrue(all(row['relrowsecurity'] for row in protected))
-        else: self.db.conn.executescript(schema_sql())
+        else: self.db.conn.executescript(schema_sql()+message_schema_sql())
         self.assertEqual(self.query('SELECT enabled FROM purchase_alert_control')[0]['enabled'],1)
         self.assertEqual(self.count('purchase_alert_attempts',"outcome='accepted'"),1)
 
@@ -483,6 +555,18 @@ class SQLiteAlertTest(AlertContract,unittest.TestCase):
         finally: db.close()
         self.assertEqual(result['classified'],82)
         self.assertLess(len(queries),16)
+
+    def test_message_constraints_foreign_keys_and_listing_index(self):
+        self.eligible_opening()
+        indexes={row['name'] for row in self.query("PRAGMA index_list('purchase_alert_messages')")}
+        self.assertIn('purchase_alert_messages_user',indexes)
+        self.assertIn('purchase_alert_messages_unread',indexes)
+        foreign_keys=self.query("PRAGMA foreign_key_list('purchase_alert_messages')")
+        self.assertEqual({row['table'] for row in foreign_keys},{'purchase_stock_alerts','users'})
+        alert_id=self.query('SELECT id FROM purchase_stock_alerts')[0]['id']
+        with self.assertRaises(Exception):
+            with self.db: self.db.execute('DELETE FROM purchase_stock_alerts WHERE id=?',(alert_id,))
+        self.assertEqual(self.count('purchase_stock_alerts'),1)
 
 
 @unittest.skipUnless(os.environ.get('GPCTA_TEST_POSTGRES_SOCKET'),'disposable local PostgreSQL required')
@@ -578,6 +662,167 @@ class ManagerPushRoutesTest(unittest.TestCase):
         self.assertIn('Habilitados',self.client.get('/stock/purchase-monitoring').get_data(as_text=True))
         self.client.post('/stock/purchase-monitoring',data={'action':'disable_alerts'})
         self.assertIn('Desativados',self.client.get('/stock/purchase-monitoring').get_data(as_text=True))
+
+
+class ManagerMessagesRoutesTest(unittest.TestCase):
+    setUp=pages.PurchasePlanningPageTest.setUp
+
+    def login(self,user_id):
+        pages.PurchasePlanningPageTest.login(self,user_id)
+        if user_id == self.manager:
+            self.client.post('/notifications/manager-push/prepare',json={})
+
+    def add_manager(self,username='other.manager'):
+        from src.db import get_db
+        with pages.app.app_context():
+            db=get_db()
+            user_id=db.execute(
+                "INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,'manager')",
+                (username,'Outro gerente','hash'),
+            ).lastrowid
+            db.commit()
+            return user_id
+
+    def add_message(self,user_id,title='Nova necessidade: \u00c1gua',body='Produto: \u00c1gua\nQuantidade sugerida: 12 unidades.',created_at='2026-11-03 12:00:00'):
+        from src.db import get_db
+        with pages.app.app_context():
+            db=get_db()
+            episode_number=db.execute(
+                "SELECT COALESCE(MAX(episode_number),0)+1 FROM purchase_replenishment_episodes WHERE product_id=?",
+                (self.product,),
+            ).fetchone()[0]
+            episode=db.execute(
+                """INSERT INTO purchase_replenishment_episodes
+                   (product_id,episode_number,origin,opened_at,updated_at,closed_at,needed_units,suggested_units)
+                   VALUES(?,?,'transition',?,?,?,12,12)""",
+                (self.product,episode_number,created_at,created_at,created_at)
+            ).lastrowid
+            alert=db.execute(
+                """INSERT INTO purchase_stock_alerts
+                   (episode_id,generation,kind,level,suggested_units,created_at)
+                   VALUES(?,1,'opened',1,12,?)""",(episode,created_at)
+            ).lastrowid
+            message=db.execute(
+                """INSERT INTO purchase_alert_messages(alert_id,user_id,title,body,url,created_at)
+                   VALUES(?,?,?,?,?,?)""",
+                (alert,user_id,title,body,'/stock/purchase-planning',created_at),
+            ).lastrowid
+            db.commit()
+            return message
+
+    def message(self,message_id):
+        from src.db import get_db
+        with pages.app.app_context():
+            row=get_db().execute(
+                'SELECT * FROM purchase_alert_messages WHERE id=?',(message_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def test_empty_inbox_and_manager_menu(self):
+        self.login(self.manager)
+        response=self.client.get('/mensagens')
+        self.assertEqual(response.status_code,200)
+        html=response.get_data(as_text=True)
+        self.assertIn('Nenhuma mensagem recebida ainda.',html)
+        self.assertIn('href="/mensagens"',html)
+        self.assertIn('id="notification-bell"',html)
+
+    def test_listing_is_newest_first_does_not_mark_read_and_escapes_text(self):
+        older=self.add_message(self.manager,title='<script>older</script>',body='<img src=x onerror=alert(1)>',created_at='2026-11-03 10:00:00')
+        newer=self.add_message(self.manager,title='Mais recente',created_at='2026-11-03 11:00:00')
+        self.login(self.manager)
+        html=self.client.get('/mensagens').get_data(as_text=True)
+        self.assertLess(html.index('Mais recente'),html.index('&lt;script&gt;older&lt;/script&gt;'))
+        self.assertNotIn('<script>older</script>',html)
+        self.assertIn('&lt;img src=x onerror=alert(1)&gt;',html)
+        self.assertNotIn('<img src=x onerror=alert(1)>',html)
+        self.assertIsNone(self.message(older)['read_at'])
+        self.assertIsNone(self.message(newer)['read_at'])
+        self.assertIn('Quantidade sugerida:',html)
+        self.assertIn('Ver planejamento de compras',html)
+
+    def test_unread_count_read_and_soft_delete_are_individual(self):
+        first=self.add_message(self.manager,created_at='2026-11-03 10:00:00')
+        second=self.add_message(self.manager,created_at='2026-11-03 11:00:00')
+        self.login(self.manager)
+        self.assertEqual(self.client.get('/mensagens/nao-lidas').get_json(),{'count':2})
+        self.assertEqual(self.client.post(f'/mensagens/{first}/ler').status_code,303)
+        self.assertIsNotNone(self.message(first)['read_at'])
+        self.assertIsNone(self.message(second)['read_at'])
+        self.assertEqual(self.client.get('/mensagens/nao-lidas').get_json(),{'count':1})
+        self.assertEqual(self.client.post(f'/mensagens/{second}/excluir').status_code,303)
+        self.assertIsNotNone(self.message(second)['deleted_at'])
+        self.assertIsNone(self.message(first)['deleted_at'])
+        self.assertEqual(self.client.get('/mensagens/nao-lidas').get_json(),{'count':0})
+        self.assertNotIn('2026-11-03 11:00:00',self.client.get('/mensagens').get_data(as_text=True))
+
+    def test_other_manager_message_is_hidden_and_idor_returns_404(self):
+        other=self.add_manager()
+        own=self.add_message(self.manager,title='Minha mensagem')
+        foreign=self.add_message(other,title='Mensagem secreta')
+        self.login(self.manager)
+        html=self.client.get('/mensagens').get_data(as_text=True)
+        self.assertIn('Minha mensagem',html)
+        self.assertNotIn('Mensagem secreta',html)
+        self.assertEqual(self.client.post(f'/mensagens/{foreign}/ler').status_code,404)
+        self.assertEqual(self.client.post(f'/mensagens/{foreign}/excluir').status_code,404)
+        self.assertIsNone(self.message(foreign)['read_at'])
+        self.assertIsNone(self.message(foreign)['deleted_at'])
+        self.assertIsNone(self.message(own)['read_at'])
+
+    def test_write_routes_require_csrf(self):
+        message_id=self.add_message(self.manager)
+        self.login(self.manager)
+        pages.app.config['WTF_CSRF_ENABLED']=True
+        self.assertEqual(self.client.post(f'/mensagens/{message_id}/ler').status_code,303)
+        self.assertIsNone(self.message(message_id)['read_at'])
+        self.assertEqual(self.client.post(f'/mensagens/{message_id}/excluir').status_code,303)
+        self.assertIsNone(self.message(message_id)['deleted_at'])
+
+    def test_roles_and_anonymous_cannot_access_manager_messages(self):
+        message_id=self.add_message(self.manager)
+        paths=('/mensagens','/mensagens/nao-lidas')
+        for user_id in (self.staff,self.client_user):
+            self.login(user_id)
+            for path in paths:
+                self.assertEqual(self.client.get(path,headers={'Accept':'application/json'}).status_code,403)
+            self.assertEqual(self.client.post(f'/mensagens/{message_id}/ler',headers={'Accept':'application/json'}).status_code,403)
+            self.assertEqual(self.client.post(f'/mensagens/{message_id}/excluir',headers={'Accept':'application/json'}).status_code,403)
+        with self.client.session_transaction() as session: session.clear()
+        for path in paths:
+            self.assertEqual(self.client.get(path,headers={'Accept':'application/json'}).status_code,401)
+        self.assertEqual(self.client.post(f'/mensagens/{message_id}/ler',headers={'Accept':'application/json'}).status_code,401)
+
+    def test_delete_confirmation_mobile_layout_and_badge_refresh_contract(self):
+        message_id=self.add_message(self.manager)
+        self.login(self.manager)
+        html=self.client.get('/mensagens').get_data(as_text=True)
+        self.assertIn("confirm('Excluir esta mensagem?')",html)
+        self.assertIn('d-grid d-sm-flex',html)
+        self.assertIn(f'/mensagens/{message_id}/ler',html)
+        self.assertIn(f'/mensagens/{message_id}/excluir',html)
+        script=Path('static/pwa.js').read_text(encoding='utf-8')
+        self.assertIn('document.body.dataset.pushRole === "manager"',script)
+        self.assertIn('"/mensagens/nao-lidas"',script)
+        self.assertIn('visibilitychange',script)
+        self.assertIn('#manager-message-menu-count',script)
+
+    def test_player_inbox_routes_and_counter_remain_separate(self):
+        self.login(self.client_user)
+        self.assertEqual(self.client.get('/notificacoes').status_code,200)
+        self.assertEqual(self.client.get('/notifications/push/unread-count').status_code,200)
+        self.assertEqual(self.client.get('/mensagens',headers={'Accept':'application/json'}).status_code,403)
+        script=Path('static/pwa.js').read_text(encoding='utf-8')
+        self.assertIn('"/notifications/push/unread-count"',script)
+
+
+class ManagerPushAdditionalRoutesTest(unittest.TestCase):
+    setUp=pages.PurchasePlanningPageTest.setUp
+
+    def login(self,user_id):
+        pages.PurchasePlanningPageTest.login(self,user_id)
+        if user_id == self.manager:
+            self.client.post('/notifications/manager-push/prepare',json={})
 
     def test_manager_status_is_read_only_and_device_bound(self):
         self.login(self.manager)

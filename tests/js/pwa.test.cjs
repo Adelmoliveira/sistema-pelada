@@ -144,6 +144,32 @@ test('persistent intelligent push identity claims once and can retry failed pres
   await context.forgetPurchaseAlert('123');
   assert.equal(await context.claimPurchaseAlert('123'),true);
 });
+
+test('manager inbox counter uses its own endpoint and accessible label',async()=>{
+  const calls=[];
+  const bell={classList:{toggle(){}},setAttribute(name,value){this[name]=value;}};
+  const badge={hidden:true,textContent:''};
+  const menuBadge={hidden:true,textContent:''};
+  const nodes={'#notification-bell':bell,'#notification-bell-count':badge,'#manager-message-menu-count':menuBadge};
+  const documentEvents={};
+  const context={
+    document:{body:{dataset:{pushRole:'manager'}},hidden:false,
+      querySelector:selector=>nodes[selector] || null,
+      addEventListener(name,handler){documentEvents[name]=handler;}},
+    window:{},navigator:{setAppBadge:async()=>{}},
+    fetch:async url=>{calls.push(url);return {ok:true,json:async()=>({count:3})};},
+    console,
+  };
+  const source=fs.readFileSync('static/pwa.js','utf8');
+  const prefix=source.slice(0,source.indexOf('  const updatePendingDelivery'))+'})();';
+  vm.runInNewContext(prefix,context);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(calls,['/mensagens/nao-lidas']);
+  assert.equal(bell['aria-label'],'Mensagens: 3 não lido(s)');
+  assert.equal(badge.textContent,'3');
+  assert.equal(menuBadge.textContent,'3');
+  assert.equal(typeof documentEvents.visibilitychange,'function');
+});
 function pushUI(role, permission='granted') {
   const calls=[],documentEvents={};
   let unsubscribed=0,subscribed=0;
