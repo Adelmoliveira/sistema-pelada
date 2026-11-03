@@ -8,6 +8,7 @@ from src.catalog import SPORTS_MATERIAL_CATEGORY
 from src.services.purchase_observation import _transaction, _now, _insert
 from src.services.purchase_monitor import BudgetDatabase
 from src.services import manager_push
+from src.services.purchase_alert_messages import create_alert_messages
 
 
 class AlertDatabase(BudgetDatabase):
@@ -116,6 +117,10 @@ def classify(db, batch_size=100):
                 'SELECT id,episode_id,kind,level FROM purchase_stock_alerts WHERE generation=? AND episode_id IN ('+marks+')',
                 (ctl['generation'],*ids)).fetchall()}
             alert_ids=[known[(row[0],row[2],row[3])] for row in new_alerts]
+            # Persist the inbox audience independently from Web Push consent.
+            # This is part of the classifier transaction: a failure rolls the
+            # logical alert back so the next cron invocation can retry safely.
+            create_alert_messages(db,alert_ids)
             for alert_id in alert_ids:
                 deliveries.extend((alert_id,sub['user_id'],sub['id'],sub['version'],_now()) for sub in audience)
             # Supersede unsent older levels without repeating per-product queries.
