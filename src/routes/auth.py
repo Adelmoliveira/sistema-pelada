@@ -15,6 +15,29 @@ from src.utils import local_today, service_medals
 
 bp = Blueprint("auth", __name__)
 
+CHRISTMAS_MODE_SETTING_KEY = "christmas_mode_enabled"
+
+
+def christmas_mode_enabled():
+    """Return the global Christmas mode flag, failing closed."""
+    try:
+        row = get_db().execute(
+            "SELECT value FROM app_settings WHERE key=?",
+            (CHRISTMAS_MODE_SETTING_KEY,),
+        ).fetchone()
+        return bool(row and row["value"] == "1")
+    except Exception as exc:
+        current_app.logger.warning(
+            "Não foi possível consultar o Modo Natal; usando desativado: %s", exc
+        )
+        return False
+
+
+def _render_login(**context):
+    return render_template(
+        "login.html", christmas_mode_enabled=christmas_mode_enabled(), **context
+    )
+
 def home_endpoint(role):
     if role == "client":
         return "sales.sale"
@@ -170,7 +193,7 @@ def login():
         username = request.form.get("username", "").strip()
         if not username:
             flash("Informe seu nome de usuário ou nome de guerra.", "danger")
-            return render_template("login.html"), 200
+            return _render_login(), 200
         # Case insensitive query for username
         user = db.execute(
             "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND active=1",
@@ -192,7 +215,39 @@ def login():
                 code=303,
             )
         flash("Usuário ou senha inválidos.", "danger")
-    return render_template("login.html")
+    return _render_login()
+
+
+@bp.route("/administracao/modo-natal", methods=["GET", "POST"])
+@roles_allowed("manager")
+def christmas_mode_settings():
+    db = get_db()
+    enabled = christmas_mode_enabled()
+    if request.method == "POST":
+        value = request.form.get("enabled")
+        if value not in {"0", "1"}:
+            flash("Selecione um estado válido para o Modo Natal.", "danger")
+            return render_template("christmas_mode_settings.html", enabled=enabled), 400
+        try:
+            db.execute(
+                """INSERT INTO app_settings(key,value,updated_at)
+                   VALUES(?,?,CURRENT_TIMESTAMP)
+                   ON CONFLICT(key) DO UPDATE SET
+                       value=excluded.value, updated_at=CURRENT_TIMESTAMP
+                   RETURNING key""",
+                (CHRISTMAS_MODE_SETTING_KEY, value),
+            )
+            db.commit()
+            flash(
+                f"Modo Natal {'ativado' if value == '1' else 'desativado'} com sucesso.",
+                "success",
+            )
+            return redirect(url_for("auth.christmas_mode_settings"), code=303)
+        except Exception as exc:
+            db.rollback()
+            current_app.logger.exception("Erro ao atualizar o Modo Natal: %s", exc)
+            flash("Não foi possível atualizar o Modo Natal.", "danger")
+    return render_template("christmas_mode_settings.html", enabled=enabled)
 
 
 @bp.route("/esqueci-senha", methods=["GET", "POST"])

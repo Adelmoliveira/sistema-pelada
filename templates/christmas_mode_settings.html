@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+{% block title %}Modo Natal · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-md-8 col-xl-6">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div>
+        <h1 class="h3 mb-1">Modo Natal</h1>
+        <p class="text-muted mb-0">Controle global da experiência natalina na tela de login.</p>
+      </div>
+      <span class="badge fs-6 {{'text-bg-success' if enabled else 'text-bg-secondary'}}">
+        {{'Ativado' if enabled else 'Desativado'}}
+      </span>
+    </div>
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+        <form method="post">
+          <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+          <fieldset>
+            <legend class="h5">Estado do Modo Natal</legend>
+            <div class="form-check mb-2">
+              <input class="form-check-input" type="radio" name="enabled" id="christmas-mode-enabled" value="1" {{'checked' if enabled}} required>
+              <label class="form-check-label" for="christmas-mode-enabled">Ativado</label>
+            </div>
+            <div class="form-check mb-4">
+              <input class="form-check-input" type="radio" name="enabled" id="christmas-mode-disabled" value="0" {{'checked' if not enabled}} required>
+              <label class="form-check-label" for="christmas-mode-disabled">Desativado</label>
+            </div>
+          </fieldset>
+          <button class="btn btn-primary w-100 w-sm-auto" type="submit">Salvar</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
