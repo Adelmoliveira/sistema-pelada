@@ -18,9 +18,13 @@
 }
 
 @media (max-width: 575.98px) {
+  .gpcta-login .christmas-logo-wrap {
+    margin-top: 105px;
+  }
+
   .gpcta-login .christmas-santa-hat {
-    top: -125px;
+    top: -100px;
     left: 72%;
-    width: 270px;
+    width: 215px;
   }
 }
