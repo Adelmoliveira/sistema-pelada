@@ -1,0 +1,25 @@
+.gpcta-login .christmas-logo-wrap {
+  display: inline-block;
+  position: relative;
+  isolation: isolate;
+}
+
+.gpcta-login .christmas-santa-hat {
+  position: absolute;
+  z-index: 2;
+  top: -39px;
+  left: 49%;
+  width: 112px;
+  height: auto;
+  pointer-events: none;
+  user-select: none;
+  transform: translateX(-50%) rotate(-11deg);
+  transform-origin: 50% 100%;
+}
+
+@media (max-width: 575.98px) {
+  .gpcta-login .christmas-santa-hat {
+    top: -35px;
+    width: 102px;
+  }
+}
