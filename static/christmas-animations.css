@@ -1,0 +1,88 @@
+/* Christmas animations - login only */
+
+.gpcta-login .christmas-snow {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: layout paint;
+}
+
+.gpcta-login main.container {
+  position: relative;
+  z-index: 1;
+}
+
+.gpcta-login .christmas-flake {
+  position: absolute;
+  top: -20px;
+  left: var(--flake-x);
+  width: var(--flake-size);
+  height: var(--flake-size);
+  border-radius: 50%;
+  background: rgba(120, 170, 205, .65);
+  box-shadow: 0 0 5px rgba(255, 255, 255, .8);
+  opacity: 0;
+  animation: christmas-fall var(--flake-duration) linear
+             var(--flake-delay) infinite;
+}
+
+@keyframes christmas-fall {
+  0% {
+    transform: translate3d(0, -20px, 0);
+    opacity: 0;
+  }
+  8%, 90% { opacity: .75; }
+  100% {
+    transform: translate3d(var(--flake-drift), 105dvh, 0);
+    opacity: 0;
+  }
+}
+
+/* Animated Santa sleigh */
+.gpcta-login .christmas-sleigh {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: min(430px, 72vw);
+  height: auto;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0;
+  will-change: transform;
+}
+
+.gpcta-login .christmas-sleigh.is-flying {
+  animation: christmas-sleigh-flight var(--flight-duration) linear forwards;
+}
+
+@keyframes christmas-sleigh-flight {
+  0% {
+    transform: translate3d(var(--flight-start-x), var(--flight-start-y), 0);
+    opacity: 0;
+  }
+  5%, 95% { opacity: 1; }
+  100% {
+    transform: translate3d(var(--flight-end-x), var(--flight-end-y), 0);
+    opacity: 0;
+  }
+}
+
+.gpcta-login {
+  overflow-x: clip;
+}
+
+@media (max-width: 575.98px) {
+  .gpcta-login .christmas-sleigh {
+    width: min(260px, 72vw);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gpcta-login .christmas-snow,
+  .gpcta-login .christmas-sleigh {
+    display: none !important;
+  }
+}
