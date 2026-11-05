@@ -161,8 +161,8 @@ class ChristmasModeSettingsTests(unittest.TestCase):
         self.assertIn('class="christmas-santa-hat"', enabled)
         self.assertIn('aria-hidden="true"', enabled)
         self.assertIn('focusable="false"', enabled)
-        self.assertIn("christmas/santa-hat.svg?v=20261105-1", enabled)
-        self.assertIn("christmas-mode.css?v=20261105-1", enabled)
+        self.assertIn("christmas/santa-hat-realistic.png?v=20261105-3", enabled)
+        self.assertIn("christmas-mode.css?v=20261105-5", enabled)
 
     def test_christmas_decoration_preserves_logo_and_club_card_button(self):
         self.set_christmas_mode("1")
@@ -178,9 +178,9 @@ class ChristmasModeSettingsTests(unittest.TestCase):
         self.assertIn("pointer-events: none", css)
         self.assertIn("position: absolute", css)
         self.assertIn("@media (max-width: 575.98px)", css)
-        svg = self.client.get("/static/christmas/santa-hat.svg")
-        self.assertEqual(svg.status_code, 200)
-        self.assertIn(b"<svg", svg.data)
+        png = self.client.get("/static/christmas/santa-hat-realistic.png")
+        self.assertEqual(png.status_code, 200)
+        self.assertTrue(png.data.startswith(b"\x89PNG\r\n\x1a\n"))
 
 
 if __name__ == "__main__":
