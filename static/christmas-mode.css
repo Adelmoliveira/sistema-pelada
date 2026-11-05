@@ -23,8 +23,8 @@
   }
 
   .gpcta-login .christmas-santa-hat {
-    top: -100px;
-    left: 72%;
+    top: -92px;
+    left: calc(72% + 6px);
     width: 215px;
   }
 }
