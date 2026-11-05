@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}Mensagens · PELADEIROS GPCTA{% endblock %}
+{% block content %}
+<div class="d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-3 mb-4">
+  <div><h1 class="h3 mb-1">Mensagens</h1><p class="text-muted mb-0">Avisos das Compras Inteligentes destinados a você.</p></div>
+  <a class="btn btn-outline-secondary align-self-start" href="{{url_for('products.purchase_planning')}}">← Planejamento de compras</a>
+</div>
+<div class="row g-3">
+{% for message in messages %}
+  <div class="col-12">
+    <article class="card shadow-sm {{'border-primary border-2' if not message.read_at else 'border-0'}}"{% if not message.read_at %} aria-label="Mensagem não lida"{% endif %}>
+      <div class="card-body p-3 p-sm-4">
+        <div class="d-flex flex-column flex-sm-row justify-content-between gap-1 gap-sm-3">
+          <h2 class="h5 mb-1">{{message.title}}</h2>
+          <small class="text-muted text-nowrap">{{message.created_at|brdate}}</small>
+        </div>
+        {% if not message.read_at %}<span class="badge text-bg-primary mb-2">Não lida</span>{% endif %}
+        <p class="mb-3" style="white-space:pre-line">{{message.body}}</p>
+        <div class="d-grid d-sm-flex gap-2 align-items-sm-center">
+          <a class="btn btn-primary" href="{{url_for('products.purchase_planning')}}">Ver planejamento de compras</a>
+          {% if not message.read_at %}<form method="post" action="{{url_for('auth.read_manager_message',message_id=message.id)}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-outline-primary w-100" type="submit">Marcar como lida</button></form>{% endif %}
+          <form method="post" action="{{url_for('auth.delete_manager_message',message_id=message.id)}}" onsubmit="return confirm('Excluir esta mensagem?')"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-outline-danger w-100" type="submit">Excluir</button></form>
+        </div>
+      </div>
+    </article>
+  </div>
+{% else %}
+  <div class="col-12"><div class="card shadow-sm"><div class="card-body text-muted">Nenhuma mensagem recebida ainda.</div></div></div>
+{% endfor %}
+</div>
+{% endblock %}

@@ -462,6 +462,64 @@ def clear_notifications_inbox():
     return redirect(url_for("auth.notifications_inbox"))
 
 
+@bp.get("/mensagens")
+@roles_allowed("manager")
+def manager_messages():
+    messages = get_db().execute(
+        """SELECT id,title,body,read_at,created_at
+           FROM purchase_alert_messages
+           WHERE user_id=? AND deleted_at IS NULL
+           ORDER BY created_at DESC,id DESC LIMIT 100""",
+        (g.user["id"],),
+    ).fetchall()
+    return render_template("manager_messages.html", messages=messages)
+
+
+@bp.get("/mensagens/nao-lidas")
+@roles_allowed("manager")
+def manager_messages_unread_count():
+    row = get_db().execute(
+        """SELECT COUNT(*) AS total FROM purchase_alert_messages
+           WHERE user_id=? AND read_at IS NULL AND deleted_at IS NULL""",
+        (g.user["id"],),
+    ).fetchone()
+    return jsonify(count=int(row["total"] or 0))
+
+
+@bp.post("/mensagens/<int:message_id>/ler")
+@roles_allowed("manager")
+def read_manager_message(message_id):
+    db = get_db()
+    result = db.execute(
+        """UPDATE purchase_alert_messages SET read_at=COALESCE(read_at,CURRENT_TIMESTAMP)
+           WHERE id=? AND user_id=? AND deleted_at IS NULL""",
+        (message_id, g.user["id"]),
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        abort(404)
+    db.commit()
+    flash("Mensagem marcada como lida.", "success")
+    return redirect(url_for("auth.manager_messages"), code=303)
+
+
+@bp.post("/mensagens/<int:message_id>/excluir")
+@roles_allowed("manager")
+def delete_manager_message(message_id):
+    db = get_db()
+    result = db.execute(
+        """UPDATE purchase_alert_messages SET deleted_at=CURRENT_TIMESTAMP
+           WHERE id=? AND user_id=? AND deleted_at IS NULL""",
+        (message_id, g.user["id"]),
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        abort(404)
+    db.commit()
+    flash("Mensagem excluída.", "success")
+    return redirect(url_for("auth.manager_messages"), code=303)
+
+
 @bp.route("/minha-conta", methods=["GET", "POST"])
 @roles_allowed("client", "manager")
 def my_account():

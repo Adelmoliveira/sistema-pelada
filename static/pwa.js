@@ -1,18 +1,26 @@
 (() => {
+  const managerMessages = document.body.dataset.pushRole === "manager";
   const updateNotificationBell = count => {
     const bell = document.querySelector("#notification-bell");
     const badge = document.querySelector("#notification-bell-count");
     if (!bell || !badge) return;
     const total = Math.max(0, Number(count) || 0);
     bell.classList.toggle("has-notifications", total > 0);
-    bell.setAttribute("aria-label", total > 0 ? `Avisos: ${total} não lido(s)` : "Avisos");
+    const label = managerMessages ? "Mensagens" : "Avisos";
+    bell.setAttribute("aria-label", total > 0 ? `${label}: ${total} não lido(s)` : label);
     badge.textContent = total > 99 ? "99+" : String(total || "");
     badge.hidden = total === 0;
+    const managerMenuBadge = document.querySelector("#manager-message-menu-count");
+    if (managerMenuBadge) {
+      managerMenuBadge.textContent = total > 99 ? "99+" : String(total || "");
+      managerMenuBadge.hidden = total === 0;
+    }
   };
 
   const syncAppBadge = async () => {
     try {
-      const response = await fetch("/notifications/push/unread-count", {credentials: "same-origin", cache: "no-store"});
+      const endpoint = managerMessages ? "/mensagens/nao-lidas" : "/notifications/push/unread-count";
+      const response = await fetch(endpoint, {credentials: "same-origin", cache: "no-store"});
       if (!response.ok) return;
       const data = await response.json();
       updateNotificationBell(data.count);

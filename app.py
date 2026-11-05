@@ -297,6 +297,7 @@ def inject_user():
     player = None
     today_birthdays = []
     unread_notifications = 0
+    unread_manager_messages = 0
     unread_restock_notifications = 0
     pending_restock_requests = 0
     user = g.get("user")
@@ -308,6 +309,11 @@ def inject_user():
                 unread_notifications = db.execute("SELECT COUNT(*) AS total FROM push_inbox WHERE player_id=? AND read_at IS NULL", (user["player_id"],)).fetchone()["total"]
             if user["role"] == "manager":
                 pending_restock_requests = db.execute("SELECT COUNT(*) AS total FROM bar_restock_requests WHERE status='PENDENTE'").fetchone()["total"]
+                unread_manager_messages = db.execute(
+                    """SELECT COUNT(*) AS total FROM purchase_alert_messages
+                       WHERE user_id=? AND read_at IS NULL AND deleted_at IS NULL""",
+                    (user["id"],),
+                ).fetchone()["total"]
             if user["role"] == "staff":
                 unread_restock_notifications = db.execute("SELECT COUNT(*) AS total FROM bar_restock_notifications WHERE user_id=? AND read_at IS NULL", (user["id"],)).fetchone()["total"]
             today_birthdays = db.execute("""SELECT id, name, war_name, gender, thumbnail_data
@@ -318,10 +324,11 @@ def inject_user():
             player = None
             today_birthdays = []
             unread_notifications = 0
+            unread_manager_messages = 0
             unread_restock_notifications = 0
             pending_restock_requests = 0
     medals = service_medals(player["football_join_date"]) if player else []
-    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "unread_restock_notifications": unread_restock_notifications, "pending_restock_requests": pending_restock_requests, "service_medals": medals, "is_homologation": app.config.get("IS_HOMOLOGATION", False)}
+    return {"current_user": user, "current_player": player, "today_birthdays": today_birthdays, "unread_notifications": unread_notifications, "unread_manager_messages": unread_manager_messages, "unread_restock_notifications": unread_restock_notifications, "pending_restock_requests": pending_restock_requests, "service_medals": medals, "is_homologation": app.config.get("IS_HOMOLOGATION", False)}
 
 if __name__ == "__main__":
     app.run(debug=True)
