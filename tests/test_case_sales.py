@@ -95,6 +95,101 @@ class CaseSalesTest(unittest.TestCase):
         self.assertEqual(sum(i['quantity'] for i in response.get_json()['remaining_items']),19)
         self.assert_sale(24,36000,76)
 
+    def test_event_partial_delivery(self):
+        self.configure(stock=100, enabled=0)
+
+        response = self.buy(quantity=10, mode='unit', method='Débito')
+        self.assertEqual(response.status_code, 303)
+        sale_id = self.assert_sale(10, 15000, 90)
+
+        with app.app_context():
+            db = get_db()
+            event_id = db.execute(
+                "INSERT INTO bar_events(name) VALUES(?)",
+                ("Festa de teste",),
+            ).lastrowid
+            db.execute(
+                "UPDATE sales SET event_id=? WHERE id=?",
+                (event_id, sale_id),
+            )
+            item_id = db.execute(
+                "SELECT id FROM sale_items WHERE sale_id=?",
+                (sale_id,),
+            ).fetchone()["id"]
+            db.commit()
+
+        first = self.client.post(
+            f"/orders/{sale_id}/deliver",
+            json={"sale_item_id": item_id, "quantity": 4},
+        )
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertTrue(first.get_json()["partial"])
+        self.assertEqual(
+            sum(item["quantity"] for item in first.get_json()["remaining_items"]),
+            6,
+        )
+
+        with app.app_context():
+            db = get_db()
+            self.assertIsNone(
+                db.execute(
+                    "SELECT delivered_at FROM sales WHERE id=?",
+                    (sale_id,),
+                ).fetchone()["delivered_at"]
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT stock FROM products WHERE id=?",
+                    (self.product_id,),
+                ).fetchone()["stock"],
+                90,
+            )
+
+        second = self.client.post(
+            f"/orders/{sale_id}/deliver",
+            json={"sale_item_id": item_id, "quantity": 6},
+        )
+        self.assertEqual(second.status_code, 200, second.get_json())
+        self.assertFalse(second.get_json()["partial"])
+
+        with app.app_context():
+            db = get_db()
+            self.assertIsNotNone(
+                db.execute(
+                    "SELECT delivered_at FROM sales WHERE id=?",
+                    (sale_id,),
+                ).fetchone()["delivered_at"]
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT SUM(quantity) FROM sale_item_deliveries WHERE sale_item_id=?",
+                    (item_id,),
+                ).fetchone()[0],
+                10,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT stock FROM products WHERE id=?",
+                    (self.product_id,),
+                ).fetchone()["stock"],
+                90,
+            )
+
+        extra = self.client.post(
+            f"/orders/{sale_id}/deliver",
+            json={"sale_item_id": item_id, "quantity": 1},
+        )
+        self.assertEqual(extra.status_code, 409)
+
+        with app.app_context():
+            db = get_db()
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM sale_item_deliveries WHERE sale_item_id=?",
+                    (item_id,),
+                ).fetchone()[0],
+                2,
+            )
     def test_case_delivery_and_statement(self):
         self.configure()
         self.buy(method='Débito')
