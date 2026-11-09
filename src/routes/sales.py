@@ -2191,100 +2191,106 @@ def deliver_order(sale_id):
         requested_quantity = int(requested_quantity) if requested_quantity is not None else None
     except (TypeError, ValueError):
         return jsonify(error="Quantidade de retirada inválida."), 400
-    sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
-    if not sale or not sale["ready_for_delivery"] or sale["delivered_at"]:
-        return jsonify(error="Pedido não encontrado ou já entregue."), 409
-    if has_bar_plan(db, sale_id) and not bar_withdrawal_allowed(db, sale_id):
-        return jsonify(error="A primeira parcela ainda não foi confirmada."), 409
-    if db.execute("SELECT 1 FROM sports_installment_plans WHERE sale_id=?", (sale_id,)).fetchone() and not installment_withdrawal_allowed(db, sale_id):
-        return jsonify(error="A primeira parcela ainda não foi confirmada."), 409
-    if sale["payment_method"] == "Dinheiro" and (
-        not sale["paid"] or sale["payment_status"] != "approved"
-    ):
-        return jsonify(error="Confirme o pagamento em dinheiro antes da entrega."), 409
-    item_rows = db.execute(
-        """SELECT si.id,si.quantity,p.name,
-                  COALESCE((SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
-                            FROM sale_item_deliveries sid
-                            LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
-                            WHERE sid.sale_item_id=si.id),0) delivered_quantity
-           FROM sale_items si JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
-        (sale_id,),
-    ).fetchall()
-    if not item_rows:
-        return jsonify(error="O pedido não possui itens para entregar."), 409
-    # Pedidos vinculados a eventos/festas são entregues integralmente. Eles
-    # não participam do fluxo de retirada parcial usado nas compras normais.
-    if sale["event_id"] and requested_item_id is not None:
-        return jsonify(error="Pedidos de eventos devem ser entregues integralmente. Use 'Entregar todos os produtos'."), 400
-    if requested_item_id is None:
-        deliver_plan = {item["id"]: max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0)) for item in item_rows}
-    else:
-        deliver_plan = {item["id"]: (requested_quantity or 0) if item["id"] == requested_item_id else 0 for item in item_rows}
-    deliver_plan = {item_id: quantity for item_id, quantity in deliver_plan.items() if quantity > 0}
-    if not deliver_plan:
-        return jsonify(error="Não há unidades pendentes para entregar."), 409
-    item_by_id = {item["id"]: item for item in item_rows}
-    for item_id, quantity in deliver_plan.items():
-        pending = int(item_by_id[item_id]["quantity"] or 0) - int(item_by_id[item_id]["delivered_quantity"] or 0)
-        if quantity > pending:
-            return jsonify(error=f"A quantidade pendente de {item_by_id[item_id]['name']} é {pending}."), 409
-    delivered_items = [{"name": item["name"], "quantity": deliver_plan[item["id"]]} for item in item_rows if item["id"] in deliver_plan]
-    remaining_items = [
-        {
-           "name": item["name"],
-           "quantity": max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0) - deliver_plan.get(item["id"], 0)),
-        }
-        for item in item_rows
-        if max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0) - deliver_plan.get(item["id"], 0)) > 0
-    ]
     try:
         with db:
-           delivery_operation = db.execute(
-               "INSERT INTO sale_delivery_operations(sale_id,delivered_by,delivered_at) VALUES(?,?,CURRENT_TIMESTAMP)",
-               (sale_id, g.user["id"]),
-           )
-           delivery_operation_id = delivery_operation.lastrowid
-           for item_id, quantity in deliver_plan.items():
-               db.execute(
-                   "INSERT INTO sale_item_deliveries(delivery_operation_id,sale_item_id,quantity,delivered_by,delivered_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
-                   (delivery_operation_id, item_id, quantity, g.user["id"]),
-               )
-           delivered_totals = db.execute(
-               """SELECT si.quantity,COALESCE(SUM(sid.quantity-COALESCE(r.quantity,0)),0) delivered_quantity
-                   FROM sale_items si LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
-                   LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
-                   WHERE si.sale_id=? GROUP BY si.id,si.quantity""", (sale_id,)
-           ).fetchall()
-           fully_delivered = all(int(item["delivered_quantity"] or 0) >= int(item["quantity"] or 0) for item in delivered_totals)
-           if fully_delivered:
-               db.execute("UPDATE sales SET delivered_at=CURRENT_TIMESTAMP,delivered_by=? WHERE id=?", (g.user["id"], sale_id))
-           if sale["player_id"]:
-               delivered_total = sum(item["quantity"] for item in delivered_items)
-               delivery_time_row = db.execute(
-                   "SELECT delivered_at FROM sale_delivery_operations WHERE id=?",
-                   (delivery_operation_id,),
-               ).fetchone()
-               delivery_time = delivery_time_row["delivered_at"] if delivery_time_row else datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-               delivered_at = brdate(delivery_time)
-               payload = {
-                   "delivery_push": {
-                       "player_id": sale["player_id"],
-                       "kind": "pedido_retirada",
-                       "period": f"{sale_id}-{delivery_operation_id}-{delivery_time}",
-                       "title": "Retirada confirmada",
-                       "body": f"{('Pedido totalmente entregue' if not remaining_items else 'Retirada parcial registrada')}. {delivered_total} item(ns) retirado(s) em {delivered_at}." + (f" Restam {sum(item['quantity'] for item in remaining_items)} item(ns)." if remaining_items else ""),
-                       "url": url_for("auth.my_purchases"),
-                   },
-                   "delivery_update_email": {
-                       "sale_id": sale_id,
-                       "delivered_items": delivered_items,
-                       "remaining_items": remaining_items,
-                   },
-                   "purchase_receipt_email": {"sale_id": sale_id},
-               }
-               from src.services.notification_outbox import enqueue_delivery_events
-               enqueue_delivery_events(db, sale_id, delivery_operation_id, payload)
+            # Serialize delivery operations before reading the pending quantities.
+            if db.is_postgres:
+                sale = db.execute(
+                    "SELECT * FROM sales WHERE id=? FOR UPDATE", (sale_id,)
+                ).fetchone()
+            else:
+                if not db.conn.in_transaction:
+                    db.execute("BEGIN IMMEDIATE")
+                sale = db.execute(
+                    "SELECT * FROM sales WHERE id=?", (sale_id,)
+                ).fetchone()
+            if not sale or not sale["ready_for_delivery"] or sale["delivered_at"]:
+                return jsonify(error="Pedido não encontrado ou já entregue."), 409
+            if has_bar_plan(db, sale_id) and not bar_withdrawal_allowed(db, sale_id):
+                return jsonify(error="A primeira parcela ainda não foi confirmada."), 409
+            if db.execute("SELECT 1 FROM sports_installment_plans WHERE sale_id=?", (sale_id,)).fetchone() and not installment_withdrawal_allowed(db, sale_id):
+                return jsonify(error="A primeira parcela ainda não foi confirmada."), 409
+            if sale["payment_method"] == "Dinheiro" and (
+                not sale["paid"] or sale["payment_status"] != "approved"
+            ):
+                return jsonify(error="Confirme o pagamento em dinheiro antes da entrega."), 409
+            item_rows = db.execute(
+                """SELECT si.id,si.quantity,p.name,
+                          COALESCE((SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
+                                    FROM sale_item_deliveries sid
+                                    LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                                    WHERE sid.sale_item_id=si.id),0) delivered_quantity
+                   FROM sale_items si JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
+                (sale_id,),
+            ).fetchall()
+            if not item_rows:
+                return jsonify(error="O pedido não possui itens para entregar."), 409
+            if requested_item_id is None:
+                deliver_plan = {item["id"]: max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0)) for item in item_rows}
+            else:
+                deliver_plan = {item["id"]: (requested_quantity or 0) if item["id"] == requested_item_id else 0 for item in item_rows}
+            deliver_plan = {item_id: quantity for item_id, quantity in deliver_plan.items() if quantity > 0}
+            if not deliver_plan:
+                return jsonify(error="Não há unidades pendentes para entregar."), 409
+            item_by_id = {item["id"]: item for item in item_rows}
+            for item_id, quantity in deliver_plan.items():
+                pending = int(item_by_id[item_id]["quantity"] or 0) - int(item_by_id[item_id]["delivered_quantity"] or 0)
+                if quantity > pending:
+                    return jsonify(error=f"A quantidade pendente de {item_by_id[item_id]['name']} é {pending}."), 409
+            delivered_items = [{"name": item["name"], "quantity": deliver_plan[item["id"]]} for item in item_rows if item["id"] in deliver_plan]
+            remaining_items = [
+                {
+                   "name": item["name"],
+                   "quantity": max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0) - deliver_plan.get(item["id"], 0)),
+                }
+                for item in item_rows
+                if max(0, int(item["quantity"] or 0) - int(item["delivered_quantity"] or 0) - deliver_plan.get(item["id"], 0)) > 0
+            ]
+            delivery_operation = db.execute(
+                "INSERT INTO sale_delivery_operations(sale_id,delivered_by,delivered_at) VALUES(?,?,CURRENT_TIMESTAMP)",
+                (sale_id, g.user["id"]),
+            )
+            delivery_operation_id = delivery_operation.lastrowid
+            for item_id, quantity in deliver_plan.items():
+                db.execute(
+                    "INSERT INTO sale_item_deliveries(delivery_operation_id,sale_item_id,quantity,delivered_by,delivered_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
+                    (delivery_operation_id, item_id, quantity, g.user["id"]),
+                )
+            delivered_totals = db.execute(
+                """SELECT si.quantity,COALESCE(SUM(sid.quantity-COALESCE(r.quantity,0)),0) delivered_quantity
+                    FROM sale_items si LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
+                    LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
+                    WHERE si.sale_id=? GROUP BY si.id,si.quantity""", (sale_id,)
+            ).fetchall()
+            fully_delivered = all(int(item["delivered_quantity"] or 0) >= int(item["quantity"] or 0) for item in delivered_totals)
+            if fully_delivered:
+                db.execute("UPDATE sales SET delivered_at=CURRENT_TIMESTAMP,delivered_by=? WHERE id=?", (g.user["id"], sale_id))
+            if sale["player_id"]:
+                delivered_total = sum(item["quantity"] for item in delivered_items)
+                delivery_time_row = db.execute(
+                    "SELECT delivered_at FROM sale_delivery_operations WHERE id=?",
+                    (delivery_operation_id,),
+                ).fetchone()
+                delivery_time = delivery_time_row["delivered_at"] if delivery_time_row else datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+                delivered_at = brdate(delivery_time)
+                payload = {
+                    "delivery_push": {
+                        "player_id": sale["player_id"],
+                        "kind": "pedido_retirada",
+                        "period": f"{sale_id}-{delivery_operation_id}-{delivery_time}",
+                        "title": "Retirada confirmada",
+                        "body": f"{('Pedido totalmente entregue' if not remaining_items else 'Retirada parcial registrada')}. {delivered_total} item(ns) retirado(s) em {delivered_at}." + (f" Restam {sum(item['quantity'] for item in remaining_items)} item(ns)." if remaining_items else ""),
+                        "url": url_for("auth.my_purchases"),
+                    },
+                    "delivery_update_email": {
+                        "sale_id": sale_id,
+                        "delivered_items": delivered_items,
+                        "remaining_items": remaining_items,
+                    },
+                    "purchase_receipt_email": {"sale_id": sale_id},
+                }
+                from src.services.notification_outbox import enqueue_delivery_events
+                enqueue_delivery_events(db, sale_id, delivery_operation_id, payload)
     except Exception as exc:
         current_app.logger.error("Erro ao registrar retirada parcial do pedido %s: %s", sale_id, exc)
         return jsonify(error="Não foi possível registrar a retirada."), 500
