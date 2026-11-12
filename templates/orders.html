@@ -6,6 +6,10 @@
   <div class="d-flex flex-wrap align-items-center gap-2"><label class="visually-hidden" for="payment-filter">Forma de pagamento</label><select id="payment-filter" class="form-select form-select-sm" style="width:auto"><option value="">Todos os pagamentos</option><option>Pix</option><option>Dinheiro</option><option>Débito</option><option>Cortesia</option></select><button id="sound-toggle" class="btn btn-sm btn-outline-secondary" type="button">🔇 Ativar som</button><span id="connection" class="badge bg-secondary">Conectando...</span></div>
 </div>
 <div id="new-order-alert" class="alert alert-warning d-none fw-bold" role="alert">Novo pedido recebido!</div>
+<div id="cancel-item-success" class="alert alert-success" role="status" aria-live="polite" aria-atomic="true" style="overflow-wrap:anywhere" hidden>
+  <span id="cancel-item-success-message"></span>
+  <button id="cancel-item-success-close" type="button" class="btn-close ms-2" aria-label="Fechar mensagem de sucesso"></button>
+</div>
 <div id="pending-orders" class="row g-3"></div>
 <div id="empty-orders" class="card shadow-sm d-none"><div class="card-body text-center py-5"><div class="display-6 mb-2">✓</div><strong>Nenhum pedido aguardando entrega.</strong></div></div>
 <dialog id="cancel-item-dialog" class="border-0 rounded shadow p-3" style="width:min(94vw,440px)">
@@ -37,11 +41,13 @@ function enableSound(){soundEnabled=true;localStorage.setItem('gpcta-order-sound
 function updateSoundLabel(){soundToggle.textContent=soundEnabled?'🔊 Som ativado':'🔇 Ativar som'}
 async function refresh(){clearTimeout(refreshTimer);try{const url=new URL(feedUrl,window.location.href);if(paymentFilter.value)url.searchParams.set('payment_method',paymentFilter.value);const response=await fetch(url,{cache:'no-store',headers:{Accept:'application/json'}}),data=await response.json();if(!response.ok)throw new Error(data.error||'Falha ao atualizar.');const ids=new Set(data.pending.map(order=>order.id));if(knownOrders&&data.pending.some(order=>!knownOrders.has(order.id))){newAlert.classList.remove('d-none');setTimeout(()=>newAlert.classList.add('d-none'),5000);beep()}knownOrders=ids;currentOrders=new Map(data.pending.map(order=>[order.id,order]));pendingBox.innerHTML=data.pending.map(pendingCard).join('');pendingBox.querySelectorAll('.cash-payment').forEach(updateCashChange);emptyBox.classList.toggle('d-none',data.pending.length>0);connection.className='badge bg-success';connection.textContent=`Atualizado · ${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`}catch(error){connection.className='badge bg-danger';connection.textContent='Sem conexão'}finally{refreshTimer=setTimeout(refresh,3000)}}
 const cancelDialog=document.querySelector('#cancel-item-dialog'),cancelForm=document.querySelector('#cancel-item-form'),cancelQuantity=document.querySelector('#cancel-item-quantity');
+const cancelSuccess=document.querySelector('#cancel-item-success');
+document.querySelector('#cancel-item-success-close').addEventListener('click',()=>{cancelSuccess.hidden=true});
 function updateCancelCredit(){document.querySelector('#cancel-item-credit').textContent=money(Number(cancelQuantity.value)*cancelDraft.unitCredit)}
 pendingBox.addEventListener('click',event=>{
  const button=event.target.closest('.cancel-item');if(!button)return;
  const order=currentOrders.get(Number(button.dataset.id)),item=order?.items.find(i=>i.id===Number(button.dataset.itemId));if(!item?.can_cancel)return;
- cancelForm.reset();cancelDraft={saleId:order.id,itemId:item.id,unitCredit:item.unit_credit_cents,key:crypto.randomUUID()};
+ cancelSuccess.hidden=true;cancelForm.reset();cancelDraft={saleId:order.id,itemId:item.id,unitCredit:item.unit_credit_cents,key:crypto.randomUUID()};
  document.querySelector('#cancel-item-description').textContent=`${item.name} — ${item.pending_quantity} unidade(s) disponível(is) para cancelamento`;
  document.querySelector('#cancel-item-recipient').textContent=order.player_full_name||order.player_name;
  cancelQuantity.max=item.pending_quantity;cancelQuantity.value=1;updateCancelCredit();document.querySelector('#cancel-item-error').textContent='';cancelDialog.showModal();
@@ -50,11 +56,14 @@ cancelQuantity.addEventListener('input',updateCancelCredit);
 document.querySelector('#cancel-item-close').addEventListener('click',()=>cancelDialog.close());
 cancelForm.addEventListener('submit',async event=>{
  event.preventDefault();if(!cancelForm.reportValidity())return;
- const submit=cancelForm.querySelector('[type=submit]');submit.disabled=true;
+ const submit=cancelForm.querySelector('[type=submit]');if(submit.disabled)return;submit.disabled=true;
+ const draft=cancelDraft;
  // Freeze the exact request across retries, including a lost response after commit.
- if(!cancelDraft.body)cancelDraft.body={sale_item_id:cancelDraft.itemId,quantity:Number(cancelQuantity.value),reason:document.querySelector('#cancel-item-reason').value.trim(),confirmed:true,idempotency_key:cancelDraft.key};
- try{const response=await fetch(cancelItemBase.replace('/0/','/'+cancelDraft.saleId+'/'),{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrfToken,Accept:'application/json'},body:JSON.stringify(cancelDraft.body)}),data=await response.json();if(!response.ok){if(response.status<500)cancelDraft.body=null;throw new Error(data.error||'Falha no cancelamento.')}
- cancelDialog.close();await refresh();
+ if(!draft.body)draft.body={sale_item_id:draft.itemId,quantity:Number(cancelQuantity.value),reason:document.querySelector('#cancel-item-reason').value.trim(),confirmed:true,idempotency_key:draft.key};
+ try{const response=await fetch(cancelItemBase.replace('/0/','/'+draft.saleId+'/'),{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrfToken,Accept:'application/json'},body:JSON.stringify(draft.body)}),data=await response.json();if(!response.ok){if(response.status<500)draft.body=null;throw new Error(data.error||'Falha no cancelamento.')}
+ if(data.ok!==true||!Number.isSafeInteger(data.operation?.amount_cents)||data.operation.amount_cents<=0||data.operation.sale_id!==draft.saleId||data.operation.sale_item_id!==draft.itemId||data.operation.idempotency_key!==draft.key)throw new Error('Resposta não confirmada. Tente novamente para consultar a mesma operação.');
+ document.querySelector('#cancel-item-success-message').textContent=`Item cancelado com sucesso. ${money(data.operation.amount_cents)} adicionados aos créditos do peladeiro. Estoque atualizado.`;
+ cancelDialog.close();cancelSuccess.hidden=false;cancelSuccess.scrollIntoView({behavior:'smooth',block:'nearest'});await refresh();
  }catch(error){document.querySelector('#cancel-item-error').textContent=error.message||'Falha de conexão. Tente novamente para consultar a mesma operação.'}finally{submit.disabled=false}
 });
 pendingBox.addEventListener('input',event=>{const container=event.target.closest('.cash-payment');if(!container)return;updateCashChange(container);const saleId=Number(container.closest('.card').querySelector('.confirm-payment').dataset.id);cashPaymentDrafts.set(saleId,{amount:container.querySelector('.amount-received').value,convert:Boolean(container.querySelector('.convert-change')?.checked)})});

@@ -6,7 +6,7 @@
 
 Verificações não visuais executadas: 21 testes focados aprovados; login real com senha sintética e CSRF via HTTP em localhost; `/orders` HTTP 200; dois pedidos no feed com itens elegíveis; template com diálogo/justificativa/confirmação; manifesto `display=standalone`; service worker sem cache para POST e páginas autenticadas. Isso não comprova ausência de overflow, aspecto do modal, interação com teclado nem instalação PWA.
 
-**Achado por leitura do código:** após sucesso, o diálogo fecha e a fila é atualizada, mas não há mensagem textual explícita de sucesso. Erros são escritos no diálogo. Como a solicitação inclui mensagens de sucesso, registrar esse ponto para ajuste/aceite antes de liberar. Não houve alteração de comportamento do produto nesta validação.
+**Ajuste final implementado:** após resposta HTTP bem-sucedida com `ok=true`, valor inteiro positivo e identificação da mesma operação, aparece “Item cancelado com sucesso. R$ XX,XX adicionados aos créditos do peladeiro. Estoque atualizado.” O valor vem do servidor. O aviso não expira automaticamente: fica até o operador fechar ou iniciar outro cancelamento. Erros, JSON inválido e respostas incertas não exibem sucesso; retries preservam corpo/chave. Esta lógica foi executada em teste JavaScript; a aparência ainda exige inspeção real.
 
 ## Ambiente sintético reproduzível
 
@@ -35,7 +35,7 @@ Execute cada passo nas duas larguras, com banco reiniciado entre ciclos. Use Dev
 | Peladeiro | Pendente | Pendente | Nome completo no destinatário, sem confusão com outros pedidos |
 | Quantidade/crédito | Pendente | Pendente | #1: 1 / R$12; #2: alterar de 1 para 2 muda crédito para R$24 |
 | Justificativa/confirmação | Pendente | Pendente | Vazio, menos de 5 caracteres, quantidade 0/maior que pendente e confirmação desmarcada impedem operação |
-| Sucesso | Pendente | Pendente | Confirmar #1: fecha diálogo, remove pedido sem pendências; registrar ausência atual de mensagem explícita |
+| Sucesso | Pendente | Pendente | Confirmar #1: fecha diálogo, remove pedido sem pendências; mensagem verde usa o valor confirmado e permanece até fechamento manual |
 | Erro | Pendente | Pendente | Offline durante envio: erro legível no diálogo, possibilidade de tentar novamente; nenhum sucesso falso |
 | Atualização parcial | Pendente | Pendente | #2 cancelar duas: uma batata pendente, R$24 creditados, cerveja intacta; sem recriar pedido |
 | Rolagem horizontal | Pendente | Pendente | Nenhuma na página, cards ou diálogo; conteúdo longo não empurra botões |
@@ -49,6 +49,8 @@ Para medir overflow, além da inspeção visual, executar no console local:
 ```
 
 Com modal aberto, conferir também seus limites (`getBoundingClientRect`) e `scrollWidth <= clientWidth`. Capturar screenshots antes, durante e após cancelamento. Não declarar aprovação por existir CSS responsivo.
+
+Verificação objetiva adicional do aviso, em ambas as larguras: concluir #1 e ler a mensagem completa com R$12,00; aguardar pelo menos 15 segundos e confirmar que continua presente mesmo após a atualização periódica da fila; fechar pelo botão. Reiniciar o cenário, desligar a rede durante envio e confirmar que não aparece aviso de sucesso. Sem screenshots reais, esses itens permanecem pendentes.
 
 ## Mensagens e segurança em falhas
 

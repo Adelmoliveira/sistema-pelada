@@ -1,5 +1,7 @@
 # GPCTA — validação final do PR #249
 
+Registro da rodada anterior. A finalização posterior do aviso de sucesso e os testes recentes estão em [pr249-urgent-final-results.md](pr249-urgent-final-results.md); esse documento posterior prevalece para prontidão de liberação.
+
 ## Etapa 1 — concluída em PR separado
 
 [PR #250](https://github.com/Adelmoliveira/sistema-pelada/pull/250), branch `test/fix-sports-eligibility-fixture`, commit `f80fef0cc10276ec5c11744ed6e3546f850f8400`.

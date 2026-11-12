@@ -73,6 +73,26 @@ WHERE target.id=813
                                  AND target.created_at::timestamp+INTERVAL '1 day'
 ORDER BY s.created_at,s.id,i.id;
 
+-- Sinais para conferência humana do #813 ANTES de qualquer cancelamento real.
+-- Não autorizam escrita e não substituem a leitura de todas as linhas acima.
+SELECT s.id,p.name,p.war_name,
+       lower(trim(COALESCE(p.war_name,'')))='mascote' AS nickname_matches_mascote,
+       s.paid=1 AND s.payment_status='approved' AS payment_approved,
+       EXISTS(SELECT 1 FROM sale_items i JOIN products prod ON prod.id=i.product_id
+              WHERE i.sale_id=s.id AND prod.name ILIKE '%Ruffles%'
+                AND i.unit_price_cents=1200) AS has_ruffles_at_1200,
+       EXISTS(SELECT 1 FROM sale_cancellations c WHERE c.sale_id=s.id) AS has_whole_cancellation,
+       EXISTS(SELECT 1 FROM bar_credit_transactions t
+              WHERE t.sale_id=s.id AND t.amount_cents>0) AS has_any_prior_linked_credit
+FROM sales s LEFT JOIN players p ON p.id=s.player_id WHERE s.id=813;
+
+-- Créditos manuais sem sale_id podem existir: revisar auditoria do titular;
+-- texto contendo 813 é apenas indício, não vínculo contábil comprovado.
+SELECT a.* FROM bar_credit_audit a
+WHERE a.player_id=(SELECT player_id FROM sales WHERE id=813)
+  AND (a.amount_cents>0 OR a.reason ILIKE '%813%')
+ORDER BY a.created_at DESC,a.id DESC LIMIT 200;
+
 -- 9. Inspeção da presença do schema do hotfix; não executar a seção 10 se ausente.
 SELECT to_regclass('public.sale_item_cancellations') AS cancellations_table,
        to_regclass('public.sale_items_net') AS items_view,

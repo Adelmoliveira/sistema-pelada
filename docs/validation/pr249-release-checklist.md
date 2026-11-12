@@ -1,6 +1,6 @@
 # PR #249 — decisão de liberação e implantação futura
 
-**Recomendação atual: não liberar para produção ainda.** O núcleo financeiro foi aprovado em cenários sintéticos e a fixture tem correção separada no PR #250, mas faltam inspeção visual em 375/390 px e PWA instalado. Há também ausência de mensagem explícita de sucesso no fluxo atual, identificada por leitura do código. Confirmar ajuste/aceite desse requisito e concluir a inspeção antes de autorizar implantação.
+**Atualização final:** mensagem explícita de sucesso implementada e testada, usando exclusivamente confirmação/valor do servidor. Permanece pendente a inspeção visual real em 375/390 px e PWA instalado. Não liberar o merge sem concluir essa conferência ou decisão expressa do responsável. Sequência operacional exata e resultados recentes em `pr249-production-sequence.md` e `pr249-urgent-final-results.md`.
 
 ## Evidências da revisão
 
@@ -33,7 +33,7 @@ Ambos contêm exclusivamente SELECT e comentários. Foram executados somente no 
 ## Antes da janela autorizada
 
 - [ ] Revisar/aprovar separadamente o PR #250 e a integração da fixture com o hotfix. Não depende de mudança financeira em produção.
-- [ ] Concluir e anexar a matriz visual em `pr249-mobile-manual.md`; decidir/implementar feedback explícito de sucesso e retestar, se exigido.
+- [ ] Concluir e anexar a matriz visual em `pr249-mobile-manual.md`; confirmar o aviso de sucesso persistente nas duas larguras.
 - [ ] Aprovar explicitamente commit, equipe/projeto/ambiente, migration e responsável pela janela. Esta documentação não autoriza execução.
 - [ ] Confirmar backup recuperável de vendas, itens, partes, entregas, carteira, auditoria e produtos, além do procedimento de recuperação integral consistente. Não registrar credenciais nos artefatos.
 - [ ] Registrar baseline com SELECT, versões/migrations instaladas, schema `public`, índices, grants e papéis usados pelo servidor. Verificar que o nome das views não conflita com objetos existentes: CREATE OR REPLACE não garante equivalência do objeto anterior.
