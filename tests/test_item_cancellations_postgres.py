@@ -119,3 +119,13 @@ class PostgresItemCancellationTest(unittest.TestCase):
             self.assertEqual(db.execute('SELECT balance_cents FROM bar_credit_accounts').fetchone()[0],1500)
             self.assertEqual(db.execute('SELECT SUM(amount_cents) FROM bar_credit_transactions').fetchone()[0],1500)
         finally:db.close()
+
+    def test_prepared_select_only_audit_scripts(self):
+        # Execute only against this disposable synthetic schema, never production.
+        self.cancel()
+        db=self.connect()
+        try:
+            with db.conn.cursor() as cursor:
+                for name in ['pr249-order-813-select-only.sql','pr249-post-migration-select-only.sql']:
+                    cursor.execute(Path('docs/validation',name).read_text())
+        finally:db.close()
