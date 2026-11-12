@@ -47,5 +47,5 @@ def build_membership_report_pdf(rows, summary, period):
 
 def build_sale_detail_pdf(sale, items):
     data = [(item["product_name"], item["quantity"], money(item["unit_price_cents"]), money(item["quantity"] * item["unit_price_cents"])) for item in items]
-    subtitle = f"Pedido #{sale['id']} · {sale['player_name']} · {sale['sale_date']} · Pagamento: {sale['payment_method']} · Total: {money(sale['total_cents'])}"
+    subtitle = f"Pedido #{sale['id']} · {sale['player_name']} · {sale['sale_date']} · Pagamento: {sale['payment_method']} · Bruto: {money(sale['total_cents'])} · Cancelado/crédito: {money(sale['canceled_cents'])} · Líquido: {money(sale['net_total_cents'])}"
     return _pdf("Detalhe da venda", subtitle, ("Produto", "Quantidade", "Preço unitário", "Total"), data)

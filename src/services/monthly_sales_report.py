@@ -23,10 +23,11 @@ def monthly_sales_data(db, requested_month=None):
     month, start, end = month_bounds(requested_month)
     summary = db.execute(
         """SELECT
+        COALESCE(SUM(total_cents),0) gross_revenue,COALESCE(SUM(canceled_cents),0) canceled_cents,
         COUNT(CASE WHEN payment_method<>'Cortesia' THEN 1 END) sales_count,
-        COALESCE(SUM(CASE WHEN payment_method<>'Cortesia' THEN total_cents ELSE 0 END),0) revenue,
+        COALESCE(SUM(CASE WHEN payment_method<>'Cortesia' THEN net_total_cents ELSE 0 END),0) revenue,
         COUNT(CASE WHEN payment_method='Cortesia' THEN 1 END) courtesy_sales
-        FROM sales WHERE paid=1 AND COALESCE(paid_at,created_at)>=? AND COALESCE(paid_at,created_at)<?""",
+        FROM sales_net WHERE paid=1 AND COALESCE(paid_at,created_at)>=? AND COALESCE(paid_at,created_at)<?""",
         (start, end),
     ).fetchone()
     item_summary = db.execute(
@@ -35,13 +36,13 @@ def monthly_sales_data(db, requested_month=None):
         COALESCE(SUM(CASE WHEN s.payment_method='Cortesia' THEN i.quantity ELSE 0 END),0) courtesy_items,
         COALESCE(SUM(CASE WHEN s.payment_method<>'Cortesia' THEN i.quantity*i.unit_cost_cents ELSE 0 END),0) cost,
         COALESCE(SUM(CASE WHEN s.payment_method<>'Cortesia' THEN i.quantity*(i.unit_price_cents-i.unit_cost_cents) ELSE 0 END),0) profit
-        FROM sale_items i JOIN sales s ON s.id=i.sale_id
+        FROM sale_items_net i JOIN sales_net s ON s.id=i.sale_id
         WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?""",
         (start, end),
     ).fetchone()
     payments = db.execute(
-        """SELECT payment_method,COUNT(*) sales_count,COALESCE(SUM(total_cents),0) total
-        FROM sales WHERE paid=1 AND payment_method<>'Cortesia'
+        """SELECT payment_method,COUNT(*) sales_count,COALESCE(SUM(net_total_cents),0) total
+        FROM sales_net WHERE paid=1 AND payment_method<>'Cortesia'
         AND COALESCE(paid_at,created_at)>=? AND COALESCE(paid_at,created_at)<?
         GROUP BY payment_method ORDER BY sales_count DESC,total DESC""",
         (start, end),
@@ -53,15 +54,15 @@ def monthly_sales_data(db, requested_month=None):
         COALESCE(SUM(CASE WHEN s.payment_method<>'Cortesia' THEN i.quantity*i.unit_price_cents ELSE 0 END),0) revenue,
         COALESCE(SUM(CASE WHEN s.payment_method<>'Cortesia' THEN i.quantity*i.unit_cost_cents ELSE 0 END),0) cost,
         COALESCE(SUM(CASE WHEN s.payment_method<>'Cortesia' THEN i.quantity*(i.unit_price_cents-i.unit_cost_cents) ELSE 0 END),0) profit
-        FROM sale_items i JOIN sales s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id
+        FROM sale_items_net i JOIN sales_net s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id
         WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?
         GROUP BY p.id,p.name ORDER BY quantity DESC,revenue DESC,p.name""",
         (start, end),
     ).fetchall()
     consumers = db.execute(
-        """SELECT COALESCE(p.name,s.guest_name,'Convidado') name,COUNT(s.id) purchases,COALESCE(SUM(s.total_cents),0) total,
-        COALESCE(SUM((SELECT COALESCE(SUM(i.quantity),0) FROM sale_items i WHERE i.sale_id=s.id)),0) items
-        FROM sales s LEFT JOIN players p ON p.id=s.player_id
+        """SELECT COALESCE(p.name,s.guest_name,'Convidado') name,COUNT(s.id) purchases,COALESCE(SUM(s.net_total_cents),0) total,
+        COALESCE(SUM((SELECT COALESCE(SUM(i.quantity),0) FROM sale_items_net i WHERE i.sale_id=s.id)),0) items
+        FROM sales_net s LEFT JOIN players p ON p.id=s.player_id
         WHERE s.paid=1 AND s.payment_method<>'Cortesia'
         AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?
         GROUP BY COALESCE(p.name,s.guest_name,'Convidado') ORDER BY total DESC,purchases DESC,name""",
@@ -69,8 +70,8 @@ def monthly_sales_data(db, requested_month=None):
     ).fetchall()
     daily = db.execute(
         """SELECT date(COALESCE(paid_at,created_at)) business_date,COUNT(*) sales_count,
-        COALESCE(SUM(total_cents),0) revenue
-        FROM sales WHERE paid=1 AND payment_method<>'Cortesia'
+        COALESCE(SUM(net_total_cents),0) revenue
+        FROM sales_net WHERE paid=1 AND payment_method<>'Cortesia'
         AND COALESCE(paid_at,created_at)>=? AND COALESCE(paid_at,created_at)<?
         GROUP BY date(COALESCE(paid_at,created_at)) ORDER BY business_date""",
         (start, end),
@@ -84,6 +85,8 @@ def monthly_sales_data(db, requested_month=None):
         "summary": {
             "sales_count": sales_count,
             "revenue": revenue,
+            "gross_revenue": int(summary["gross_revenue"] or 0),
+            "canceled_cents": int(summary["canceled_cents"] or 0),
             "ticket_average": round(revenue / sales_count) if sales_count else 0,
             "items_sold": int(item_summary["items_sold"] or 0),
             "courtesy_sales": int(summary["courtesy_sales"] or 0),
@@ -156,7 +159,7 @@ def build_monthly_sales_pdf(data, issued_on):
     cards.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), LIGHT_BLUE), ("BOX", (0,0), (-1,-1), .5, colors.HexColor("#B9D5E1")), ("INNERGRID", (0,0), (-1,-1), .5, colors.HexColor("#B9D5E1")), ("TOPPADDING", (0,0), (-1,-1), 5), ("BOTTOMPADDING", (0,0), (-1,-1), 5)]))
     story.extend([
         cards, Spacer(1, 3*mm),
-        Paragraph(f"Cortesias: <b>{summary['courtesy_sales']} registro(s), {summary['courtesy_items']} item(ns)</b> - Custo estimado das vendas: <b>{money(summary['cost'])}</b>", styles["SalesSub"]),
+        Paragraph(f"Bruto: <b>{money(summary['gross_revenue'])}</b> · Cancelado/crédito: <b>{money(summary['canceled_cents'])}</b> · Cortesias: <b>{summary['courtesy_sales']} registro(s), {summary['courtesy_items']} item(ns)</b> - Custo estimado das vendas: <b>{money(summary['cost'])}</b>", styles["SalesSub"]),
         Spacer(1, 3*mm), Paragraph(f"Forma de pagamento mais utilizada: <b>{escape(data['most_used_payment'])}</b>", styles["SalesHeading"]), Paragraph("Formas de pagamento", styles["SalesHeading"]),
     ])
 

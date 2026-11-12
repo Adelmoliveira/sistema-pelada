@@ -142,11 +142,11 @@ def dashboard():
         period_label = period_start.strftime("%m/%Y")
     metrics = db.execute("""
         SELECT
-          COALESCE(SUM(CASE WHEN date(created_at)=? AND payment_method!='Cortesia' THEN total_cents END),0) day_total,
-          COALESCE(SUM(CASE WHEN created_at>=? AND created_at<? AND payment_method!='Cortesia' THEN total_cents END),0) month_total,
+          COALESCE(SUM(CASE WHEN date(created_at)=? AND payment_method!='Cortesia' THEN net_total_cents END),0) day_total,
+          COALESCE(SUM(CASE WHEN created_at>=? AND created_at<? AND payment_method!='Cortesia' THEN net_total_cents END),0) month_total,
           COUNT(CASE WHEN created_at>=? AND created_at<? THEN 1 END) month_sales,
-          COALESCE(SUM(CASE WHEN created_at>=? AND created_at<? AND payment_method='Débito' THEN total_cents END),0) debit_total
-        FROM sales WHERE paid=1
+          COALESCE(SUM(CASE WHEN created_at>=? AND created_at<? AND payment_method='Débito' THEN net_total_cents END),0) debit_total
+        FROM sales_net WHERE paid=1
     """, (today, start, end, start, end, start, end)).fetchone()
     current_month_start = today_date.replace(day=1)
     current_month_end = (current_month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -155,14 +155,14 @@ def dashboard():
     ticket_rows = db.execute(
         """SELECT
              COALESCE(SUM(CASE WHEN COALESCE(paid_at,created_at)>=?
-                                    AND COALESCE(paid_at,created_at)<? THEN total_cents END),0) month_revenue,
+                                    AND COALESCE(paid_at,created_at)<? THEN net_total_cents END),0) month_revenue,
              COUNT(CASE WHEN COALESCE(paid_at,created_at)>=?
                               AND COALESCE(paid_at,created_at)<? THEN 1 END) month_sales,
              COALESCE(SUM(CASE WHEN COALESCE(paid_at,created_at)>=?
-                                    AND COALESCE(paid_at,created_at)<? THEN total_cents END),0) year_revenue,
+                                    AND COALESCE(paid_at,created_at)<? THEN net_total_cents END),0) year_revenue,
              COUNT(CASE WHEN COALESCE(paid_at,created_at)>=?
                               AND COALESCE(paid_at,created_at)<? THEN 1 END) year_sales
-           FROM sales WHERE paid=1 AND payment_method!='Cortesia'""",
+           FROM sales_net WHERE paid=1 AND payment_method!='Cortesia'""",
         (
             current_month_start.isoformat(), current_month_end.isoformat(),
             current_month_start.isoformat(), current_month_end.isoformat(),
@@ -184,7 +184,7 @@ def dashboard():
     low = db.execute(
         "SELECT id,name,stock,min_stock FROM products WHERE active=1 AND stock<=min_stock ORDER BY stock,name"
     ).fetchall()
-    recent = db.execute("""SELECT s.*, COALESCE(p.name,s.guest_name,'Convidado') player_name FROM sales s LEFT JOIN players p ON p.id=s.player_id
+    recent = db.execute("""SELECT s.*, COALESCE(p.name,s.guest_name,'Convidado') player_name FROM sales_net s LEFT JOIN players p ON p.id=s.player_id
                             WHERE s.paid=1 ORDER BY s.id DESC LIMIT 8""").fetchall()
     finance = finance_summary(db)
     bar = latest_bar_balances(db)
@@ -239,8 +239,8 @@ def dashboard():
         chart_start = max(period_start, local_today() - timedelta(days=6)) if period == "month" else period_start
         trend_rows = db.execute(
             """SELECT date(COALESCE(paid_at,created_at)) business_date,
-                      COALESCE(SUM(total_cents),0) total
-               FROM sales WHERE paid=1 AND payment_method!='Cortesia'
+                      COALESCE(SUM(net_total_cents),0) total
+               FROM sales_net WHERE paid=1 AND payment_method!='Cortesia'
                  AND date(COALESCE(paid_at,created_at))>=? AND date(COALESCE(paid_at,created_at))<?
                GROUP BY date(COALESCE(paid_at,created_at)) ORDER BY business_date""",
             (chart_start.isoformat(), period_end.isoformat()),
@@ -252,8 +252,8 @@ def dashboard():
     else:
         trend_rows = db.execute(
             """SELECT substr(CAST(date(COALESCE(paid_at,created_at)) AS TEXT),1,7) business_month,
-                      COALESCE(SUM(total_cents),0) total
-               FROM sales WHERE paid=1 AND payment_method!='Cortesia'
+                      COALESCE(SUM(net_total_cents),0) total
+               FROM sales_net WHERE paid=1 AND payment_method!='Cortesia'
                  AND date(COALESCE(paid_at,created_at))>=? AND date(COALESCE(paid_at,created_at))<?
                GROUP BY substr(CAST(date(COALESCE(paid_at,created_at)) AS TEXT),1,7) ORDER BY business_month""",
             (start, end),
@@ -268,8 +268,8 @@ def dashboard():
         chart_labels = [f"{month_names[point.month - 1]}/{point.year}" for point in chart_points]
         trend_data = [trend_values.get(point.strftime("%Y-%m"), 0) for point in chart_points]
     payment_rows = db.execute(
-        """SELECT payment_method,COALESCE(SUM(total_cents),0) total
-           FROM sales WHERE paid=1 AND payment_method!='Cortesia'
+        """SELECT payment_method,COALESCE(SUM(net_total_cents),0) total
+           FROM sales_net WHERE paid=1 AND payment_method!='Cortesia'
              AND COALESCE(paid_at,created_at)>=? AND COALESCE(paid_at,created_at)<?
            GROUP BY payment_method ORDER BY total DESC""",
         (start, end),
@@ -282,7 +282,7 @@ def dashboard():
     ).fetchall()
     product_rows = db.execute(
         """SELECT p.name,COALESCE(SUM(i.quantity),0) quantity
-           FROM sale_items i JOIN sales s ON s.id=i.sale_id
+           FROM sale_items_net i JOIN sales_net s ON s.id=i.sale_id
            JOIN products p ON p.id=i.product_id
            WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=?
              AND COALESCE(s.paid_at,s.created_at)<?
@@ -291,7 +291,7 @@ def dashboard():
     ).fetchall()
     courtesy = db.execute(
         """SELECT COALESCE(SUM(i.quantity),0) quantity
-           FROM sale_items i JOIN sales s ON s.id=i.sale_id
+           FROM sale_items_net i JOIN sales_net s ON s.id=i.sale_id
            WHERE s.paid=1 AND s.payment_method='Cortesia'
              AND COALESCE(s.paid_at,s.created_at)>=?
              AND COALESCE(s.paid_at,s.created_at)<?""",
@@ -299,14 +299,14 @@ def dashboard():
     ).fetchone()
     total_items = db.execute(
         """SELECT COALESCE(SUM(i.quantity),0)
-           FROM sale_items i JOIN sales s ON s.id=i.sale_id
+           FROM sale_items_net i JOIN sales_net s ON s.id=i.sale_id
            WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=?
              AND COALESCE(s.paid_at,s.created_at)<?""",
         (start, end),
     ).fetchone()
     player_rows = db.execute(
-        """SELECT COALESCE(p.name,s.guest_name,'Convidado') name,p.war_name,COALESCE(SUM(s.total_cents),0) total
-           FROM sales s LEFT JOIN players p ON p.id=s.player_id
+        """SELECT COALESCE(p.name,s.guest_name,'Convidado') name,p.war_name,COALESCE(SUM(s.net_total_cents),0) total
+           FROM sales_net s LEFT JOIN players p ON p.id=s.player_id
            WHERE s.paid=1 AND s.payment_method!='Cortesia'
              AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)< ?
            GROUP BY COALESCE(p.name,s.guest_name,'Convidado'),p.war_name ORDER BY total DESC LIMIT 8""",
@@ -314,7 +314,7 @@ def dashboard():
     ).fetchall()
     player_product_rows = db.execute(
         """SELECT p.war_name,COALESCE(p.name,s.guest_name,'Convidado') player_name,pr.name product_name,COALESCE(SUM(i.quantity),0) quantity
-           FROM sale_items i JOIN sales s ON s.id=i.sale_id
+           FROM sale_items_net i JOIN sales_net s ON s.id=i.sale_id
            LEFT JOIN players p ON p.id=s.player_id JOIN products pr ON pr.id=i.product_id
            WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)< ?
            GROUP BY p.id,p.war_name,COALESCE(p.name,s.guest_name,'Convidado'),pr.id,pr.name
@@ -359,16 +359,16 @@ def reports():
     db = get_db()
     month, start, end = month_bounds(request.args.get("month"))
     
-    summary = db.execute("""SELECT COALESCE(SUM(CASE WHEN payment_method!='Cortesia' THEN total_cents END),0) revenue,
-        COUNT(*) sales_count, COALESCE(SUM(CASE WHEN payment_method='Pix' THEN total_cents END),0) pix,
-        COALESCE(SUM(CASE WHEN payment_method='Dinheiro' THEN total_cents END),0) cash,
-        COALESCE(SUM(CASE WHEN payment_method='Débito' THEN total_cents END),0) debit,
-        COALESCE(SUM(CASE WHEN payment_method='Cortesia' THEN total_cents END),0) courtesy
-        FROM sales WHERE paid=1 AND COALESCE(paid_at,created_at)>=? AND COALESCE(paid_at,created_at)<?""", (start, end)).fetchone()
+    summary = db.execute("""SELECT COALESCE(SUM(CASE WHEN payment_method!='Cortesia' THEN net_total_cents END),0) revenue,
+        COUNT(*) sales_count, COALESCE(SUM(CASE WHEN payment_method='Pix' THEN net_total_cents END),0) pix,
+        COALESCE(SUM(CASE WHEN payment_method='Dinheiro' THEN net_total_cents END),0) cash,
+        COALESCE(SUM(CASE WHEN payment_method='Débito' THEN net_total_cents END),0) debit,
+        COALESCE(SUM(CASE WHEN payment_method='Cortesia' THEN net_total_cents END),0) courtesy
+        FROM sales_net WHERE paid=1 AND COALESCE(paid_at,created_at)>=? AND COALESCE(paid_at,created_at)<?""", (start, end)).fetchone()
 
     courtesy_items = db.execute(
         """SELECT COALESCE(SUM(i.quantity),0)
-           FROM sale_items i JOIN sales s ON s.id=i.sale_id
+           FROM sale_items_net i JOIN sales_net s ON s.id=i.sale_id
            WHERE s.paid=1 AND s.payment_method='Cortesia'
              AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?""",
         (start, end),
@@ -378,16 +378,16 @@ def reports():
         SUM(CASE WHEN s.payment_method='Cortesia' THEN i.quantity ELSE 0 END) courtesy_quantity,
         SUM(CASE WHEN s.payment_method!='Cortesia' THEN i.quantity*i.unit_price_cents ELSE 0 END) total,
         SUM(CASE WHEN s.payment_method!='Cortesia' THEN i.quantity*(i.unit_price_cents-i.unit_cost_cents) ELSE 0 END) profit
-        FROM sale_items i JOIN sales s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id
+        FROM sale_items_net i JOIN sales_net s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id
         WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<? GROUP BY p.id, p.name ORDER BY quantity DESC""", (start, end)).fetchall()
         
-    by_player = db.execute("""SELECT COALESCE(p.name,s.guest_name,'Convidado') name, COUNT(s.id) purchases, SUM(s.total_cents) total
-        FROM sales s LEFT JOIN players p ON p.id=s.player_id
+    by_player = db.execute("""SELECT COALESCE(p.name,s.guest_name,'Convidado') name, COUNT(s.id) purchases, SUM(s.net_total_cents) total
+        FROM sales_net s LEFT JOIN players p ON p.id=s.player_id
         WHERE s.paid=1 AND s.payment_method!='Cortesia' AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?
         GROUP BY COALESCE(p.name,s.guest_name,'Convidado') ORDER BY total DESC""", (start, end)).fetchall()
         
     sales_rows = db.execute("""SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,COALESCE(s.paid_at,s.created_at) sale_date
-        FROM sales s LEFT JOIN players p ON p.id=s.player_id
+        FROM sales_net s LEFT JOIN players p ON p.id=s.player_id
         WHERE s.paid=1 AND COALESCE(s.paid_at,s.created_at)>=? AND COALESCE(s.paid_at,s.created_at)<?
         ORDER BY COALESCE(s.paid_at,s.created_at) DESC,s.id DESC""", (start, end)).fetchall()
         

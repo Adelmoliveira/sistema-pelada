@@ -814,14 +814,14 @@ def my_purchases():
     if sales:
         placeholders = ",".join("?" for _ in sales)
         item_rows = db.execute(
-            f"""SELECT i.sale_id,i.id item_id,i.quantity,p.name product_name,p.category,p.thumbnail_data,
+            f"""SELECT i.sale_id,i.id item_id,i.quantity,i.canceled_quantity,p.name product_name,p.category,p.thumbnail_data,
                        d.variant_size,d.custom_name,d.custom_number,d.order_mode,d.fulfillment_status,d.delivered_at sports_delivered_at,
                        t.code material_type_code,
                        COALESCE((SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
                                  FROM sale_item_deliveries sid
                                  LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
                                  WHERE sid.sale_item_id=i.id),0) bar_delivered_quantity
-                FROM sale_items i JOIN products p ON p.id=i.product_id
+                FROM sale_items_net i JOIN products p ON p.id=i.product_id
                 LEFT JOIN sports_sale_item_details d ON d.sale_item_id=i.id
                 LEFT JOIN sports_product_config c ON c.product_id=p.id
                 LEFT JOIN sports_material_types t ON t.id=c.type_id
@@ -869,6 +869,12 @@ def my_purchases():
             sale_items = [item for item in item_rows if item["sale_id"] == sale["id"]]
             sale["delivered_quantity"] = sum(int(item["quantity"] or 0) if item["fulfillment_status"] == "delivered" else int(item["bar_delivered_quantity"] or 0) for item in sale_items)
             sale["pending_quantity"] = sum(max(0, int(item["quantity"] or 0) - (int(item["quantity"] or 0) if item["fulfillment_status"] == "delivered" else int(item["bar_delivered_quantity"] or 0))) for item in sale_items)
+            if any(item['canceled_quantity'] for item in sale_items):
+                sale['display_status_label'] = 'Cancelamento parcial · crédito concedido'
+                sale['display_status_class'] = 'info'
+                if not sale['pending_quantity']:
+                    sale['display_status'] = 'ENTREGUE'
+                    sale['display_status_label'] = 'Finalizado · cancelamento com crédito'
             sports_items = [item for item in sale_items if item["fulfillment_status"]]
             if sports_items:
                 if all(item["fulfillment_status"] == "delivered" for item in sports_items):
@@ -970,7 +976,7 @@ def pending_purchase_count():
                  ELSE 0
              END pending_quantity
              FROM sales s
-             JOIN sale_items i ON i.sale_id=s.id
+             JOIN sale_items_net i ON i.sale_id=s.id
              WHERE s.player_id=?
                AND (s.paid=1 OR ({withdrawal_sql(db)}))
                AND s.delivered_at IS NULL

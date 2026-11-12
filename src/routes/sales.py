@@ -735,6 +735,11 @@ def delete_sale(sale_id):
             "SELECT product_id, quantity FROM sale_items WHERE sale_id=?", (sale_id,)
         ).fetchall()
         with db:
+            if not db.is_postgres and not db.conn.in_transaction:
+                db.execute('BEGIN IMMEDIATE')
+            db.execute('SELECT id FROM sales WHERE id=?' + (' FOR UPDATE' if db.is_postgres else ''), (sale_id,)).fetchone()
+            if db.execute('SELECT 1 FROM sale_item_cancellations WHERE sale_id=?', (sale_id,)).fetchone():
+                return jsonify(error='Venda com cancelamento parcial possui histórico financeiro e não pode ser apagada.'), 409
             if sale_row["payment_status"] not in ("failed", "expired", "canceled"):
                 for item in items:
                     db.execute(
@@ -884,7 +889,7 @@ def _player_statement_context(db):
                    COALESCE(dt.net_delivered,0) net_delivered,
                    sc.canceled_at,sc.reason cancellation_reason,cu.name cancellation_operator
             FROM sales s
-            JOIN sale_items si ON si.sale_id=s.id
+            JOIN sale_items_net si ON si.sale_id=s.id
             JOIN products p ON p.id=si.product_id
             LEFT JOIN sports_sale_item_details d ON d.sale_item_id=si.id
             LEFT JOIN delivery_totals dt ON dt.sale_item_id=si.id
@@ -996,6 +1001,20 @@ def _player_statement_context(db):
                 "quantity": row["quantity"], "sale_id": row["sale_id"],
                 "operator_name": row["operator_name"], "reason": row["reason"],
             })
+    partial_cancellations = db.execute(
+        f"""SELECT c.*,i.product_id,p.name product_name,u.name operator_name
+            FROM sale_item_cancellations c JOIN sale_items i ON i.id=c.sale_item_id
+            JOIN products p ON p.id=i.product_id JOIN users u ON u.id=c.canceled_by
+            WHERE c.sale_item_id IN ({','.join('?' for _ in included_item_ids) or 'NULL'})""",
+        tuple(included_item_ids),
+    ).fetchall()
+    for c in partial_cancellations:
+        movements.append({
+            'kind': 'CANCELAMENTO PARCIAL/CRÉDITO', 'occurred_at': c['canceled_at'],
+            'product_name': c['product_name'], 'variant_size': '', 'quantity': c['quantity'],
+            'sale_id': c['sale_id'], 'operator_name': c['operator_name'],
+            'reason': f"{c['reason']} · Crédito {money(c['amount_cents'])} · Transação #{c['credit_transaction_id']}",
+        })
     movements.sort(key=lambda item: (item["occurred_at"] is None, str(item["occurred_at"] or "")))
 
     balance_map = {}
@@ -1983,7 +2002,7 @@ def delivery_order_data(db, sale, items_for_sales=None):
                                 FROM sale_item_deliveries sid
                                 LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
                                 WHERE sid.sale_item_id=si.id),0) delivered_quantity
-               FROM sale_items si
+               FROM sale_items_net si
                JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
             (sale["id"],),
         ).fetchall()
@@ -2007,6 +2026,22 @@ def delivery_order_data(db, sale, items_for_sales=None):
     } for item in items]
     delivered_quantity = sum(item["delivered_quantity"] for item in item_data)
     pending_quantity = sum(item["pending_quantity"] for item in item_data)
+    from src.services.item_cancellations import cancellation_state
+    cancelable = set()
+    cancel_error = ''
+    try:
+        cancelable = {i['id'] for i in cancellation_state(db, sale) if i['quantity'] > i['delivered_quantity']}
+    except ValueError as exc:
+        cancel_error = str(exc)
+    original_items = {i['id']: dict(i) for i in db.execute('SELECT * FROM sale_items_net WHERE sale_id=?', (sale['id'],)).fetchall()}
+    canceled_cents = 0
+    for item in item_data:
+        original = original_items[item['id']]
+        item['canceled_quantity'] = original['canceled_quantity']
+        item['original_quantity'] = original['original_quantity']
+        item['can_cancel'] = item['id'] in cancelable
+        item['unit_credit_cents'] = original['unit_price_cents']
+        canceled_cents += original['canceled_quantity'] * original['unit_price_cents']
     reservation = db.execute(
         """SELECT amount_cents FROM bar_credit_reservations
            WHERE sale_id=? AND status='reserved'
@@ -2024,6 +2059,9 @@ def delivery_order_data(db, sale, items_for_sales=None):
         "is_event": bool(sale.get("event_id")),
         "guest_name": sale.get("guest_name") or "",
         "total_cents": sale.get("total_cents", 0),
+        "canceled_cents": canceled_cents,
+        "net_total_cents": sale.get("total_cents", 0) - canceled_cents,
+        "cancellation_block_reason": cancel_error,
         "credit_reserved_cents": credit_reserved_cents,
         "cash_due_cents": max(0, int(sale.get("total_cents", 0) or 0) - credit_reserved_cents),
         "payment_method": sale.get("payment_method") or "",
@@ -2084,7 +2122,7 @@ def orders_feed():
         items_rows = db.execute(
             f"""SELECT si.id AS sale_item_id, si.sale_id, si.quantity, p.id AS product_id, p.name,
                          COALESCE(SUM(sid.quantity-COALESCE(r.quantity,0)), 0) AS delivered_quantity
-                  FROM sale_items si
+                  FROM sale_items_net si
                   JOIN products p ON p.id=si.product_id
                   LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
                   LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
@@ -2103,7 +2141,7 @@ def orders_feed():
             })
 
     return jsonify(
-        pending=[delivery_order_data(db, sale, items_for_sales) for sale in pending],
+        pending=[order for sale in pending if (order := delivery_order_data(db, sale, items_for_sales))["pending_quantity"] > 0],
         delivered=[delivery_order_data(db, sale, items_for_sales) for sale in delivered],
         canceled=[delivery_order_data(db, sale, items_for_sales) for sale in canceled],
         payment_method=payment_method,
@@ -2220,7 +2258,7 @@ def deliver_order(sale_id):
                                     FROM sale_item_deliveries sid
                                     LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
                                     WHERE sid.sale_item_id=si.id),0) delivered_quantity
-                   FROM sale_items si JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
+                   FROM sale_items_net si JOIN products p ON p.id=si.product_id WHERE si.sale_id=? ORDER BY si.id""",
                 (sale_id,),
             ).fetchall()
             if not item_rows:
@@ -2258,7 +2296,7 @@ def deliver_order(sale_id):
                 )
             delivered_totals = db.execute(
                 """SELECT si.quantity,COALESCE(SUM(sid.quantity-COALESCE(r.quantity,0)),0) delivered_quantity
-                    FROM sale_items si LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
+                    FROM sale_items_net si LEFT JOIN sale_item_deliveries sid ON sid.sale_item_id=si.id
                     LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
                     WHERE si.sale_id=? GROUP BY si.id,si.quantity""", (sale_id,)
             ).fetchall()
@@ -2360,6 +2398,24 @@ def restore_delivered_order(sale_id):
     )
     return jsonify(ok=True, sale_id=sale_id)
 
+@bp.post("/orders/<int:sale_id>/cancel-item")
+@roles_allowed("manager", "staff")
+def cancel_order_item(sale_id):
+    from src.services.item_cancellations import cancel_item
+    payload = request.get_json(silent=True) or {}
+    if payload.get('confirmed') is not True:
+        return jsonify(error='Confirme a conversão em crédito antes de continuar.'), 400
+    try:
+        operation = cancel_item(get_db(), sale_id, payload.get('sale_item_id'), payload.get('quantity'),
+                                payload.get('reason'), payload.get('idempotency_key'), g.user['id'])
+        return jsonify(ok=True, operation=operation)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 409
+    except Exception:
+        current_app.logger.exception('Falha no cancelamento parcial da venda %s', sale_id)
+        return jsonify(error='Não foi possível cancelar o item. Nenhuma alteração foi confirmada.'), 500
+
+
 @bp.post("/orders/<int:sale_id>/cancel")
 @roles_allowed("manager", "staff")
 def cancel_cash_order(sale_id):
@@ -2373,10 +2429,14 @@ def cancel_cash_order(sale_id):
         reason = "Cancelamento registrado pela atendente (sem justificativa informada)."
     reason = reason[:500]
     try:
+        if not db.is_postgres and not db.conn.in_transaction:
+            db.execute("BEGIN IMMEDIATE")
         sale = db.execute(
-            "SELECT id,player_id,payment_method,paid,payment_status,delivered_at FROM sales WHERE id=?",
+            "SELECT id,player_id,payment_method,paid,payment_status,delivered_at FROM sales WHERE id=?" + (" FOR UPDATE" if db.is_postgres else ""),
             (sale_id,),
         ).fetchone()
+        if db.execute("SELECT 1 FROM sale_item_cancellations WHERE sale_id=?", (sale_id,)).fetchone():
+            return jsonify(error="Pedido com cancelamento parcial: cancele somente os itens pendentes."), 409
         if sale and sale["payment_status"] == "refunded":
             return jsonify(ok=True, sale_id=sale_id, already_refunded=True)
         if sale and sale["paid"] and sale["payment_status"] == "approved":
@@ -2472,12 +2532,12 @@ def receipt(sale_id):
     if not sale["paid"] and sale["payment_status"] != "approved":
         return "O comprovante estará disponível após a confirmação do pagamento.", 409
     items = db.execute(
-        """SELECT i.id item_id,i.quantity,i.unit_price_cents,p.name product_name,
+        """SELECT i.id item_id,i.quantity,i.original_quantity,i.canceled_quantity,i.unit_price_cents,p.name product_name,
                   COALESCE((SELECT SUM(sid.quantity-COALESCE(r.quantity,0))
                             FROM sale_item_deliveries sid
                             LEFT JOIN sale_item_delivery_restorations r ON r.delivery_id=sid.id
                             WHERE sid.sale_item_id=i.id),0) delivered_quantity
-           FROM sale_items i JOIN products p ON p.id=i.product_id
+           FROM sale_items_net i JOIN products p ON p.id=i.product_id
            WHERE i.sale_id=? ORDER BY i.id""",
         (sale_id,),
     ).fetchall()
