@@ -1488,6 +1488,8 @@ def init_sqlite(wrapper):
     migrate_credit_payment_method(conn)
     migrate_sale_delivery_operations(conn)
     conn.executescript(SCHEMA)
+    from src.item_cancellation_schema import schema_sql as cancellation_schema_sql
+    conn.executescript(cancellation_schema_sql().replace("CREATE VIEW ", "CREATE VIEW IF NOT EXISTS "))
     from src.purchase_observation_schema import schema_sql
     conn.executescript(schema_sql())
     from src.purchase_monitor_schema import schema_sql as monitor_schema_sql

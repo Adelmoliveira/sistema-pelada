@@ -84,7 +84,7 @@ def _sales_data(db, start, end, player_id="", payment_method=""):
     conditions = [
         "s.paid=1",
         "date(COALESCE(s.paid_at,s.created_at)) BETWEEN ? AND ?",
-        "NOT EXISTS (SELECT 1 FROM sale_items department_item JOIN products department_product "
+        "NOT EXISTS (SELECT 1 FROM sale_items_net department_item JOIN products department_product "
         "ON department_product.id=department_item.product_id WHERE department_item.sale_id=s.id "
         "AND department_product.category=?)",
     ]
@@ -96,10 +96,10 @@ def _sales_data(db, start, end, player_id="", payment_method=""):
         conditions.append("s.payment_method=?")
         params.append(payment_method)
     clause = " AND ".join(conditions)
-    rows = db.execute(f"SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,p.war_name,e.name event_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id WHERE {clause} ORDER BY sale_date DESC,s.id DESC", tuple(params)).fetchall()
-    by_payment = db.execute(f"SELECT s.payment_method,COUNT(*) count,COALESCE(SUM(s.total_cents),0) total FROM sales s WHERE {clause} GROUP BY s.payment_method ORDER BY total DESC", tuple(params)).fetchall()
-    by_product = db.execute(f"SELECT p.name,SUM(i.quantity) quantity,COALESCE(SUM(i.quantity*i.unit_price_cents),0) total FROM sale_items i JOIN sales s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id WHERE {clause} GROUP BY p.id,p.name ORDER BY quantity DESC,total DESC", tuple(params)).fetchall()
-    by_player = db.execute(f"SELECT COALESCE(p.name,s.guest_name,'Convidado') name,COUNT(s.id) purchases,COALESCE(SUM(s.total_cents),0) total FROM sales s LEFT JOIN players p ON p.id=s.player_id WHERE {clause} GROUP BY COALESCE(p.name,s.guest_name,'Convidado') ORDER BY total DESC", tuple(params)).fetchall()
+    rows = db.execute(f"SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,p.war_name,e.name event_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales_net s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id WHERE {clause} ORDER BY sale_date DESC,s.id DESC", tuple(params)).fetchall()
+    by_payment = db.execute(f"SELECT s.payment_method,COALESCE(SUM(s.total_cents),0) gross_total,COALESCE(SUM(s.canceled_cents),0) canceled_total,COUNT(*) count,COALESCE(SUM(s.net_total_cents),0) total FROM sales_net s WHERE {clause} GROUP BY s.payment_method ORDER BY total DESC", tuple(params)).fetchall()
+    by_product = db.execute(f"SELECT p.name,SUM(i.quantity) quantity,COALESCE(SUM(i.quantity*i.unit_price_cents),0) total FROM sale_items_net i JOIN sales_net s ON s.id=i.sale_id JOIN products p ON p.id=i.product_id WHERE {clause} GROUP BY p.id,p.name ORDER BY quantity DESC,total DESC", tuple(params)).fetchall()
+    by_player = db.execute(f"SELECT COALESCE(p.name,s.guest_name,'Convidado') name,COUNT(s.id) purchases,COALESCE(SUM(s.net_total_cents),0) total FROM sales_net s LEFT JOIN players p ON p.id=s.player_id WHERE {clause} GROUP BY COALESCE(p.name,s.guest_name,'Convidado') ORDER BY total DESC", tuple(params)).fetchall()
     return rows, by_payment, by_product, by_player
 
 
@@ -126,21 +126,22 @@ def sales_report():
 @roles_allowed("manager")
 def sale_detail(sale_id):
     db = get_db()
-    sale = db.execute("SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,p.cpf,e.name event_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id WHERE s.id=?", (sale_id,)).fetchone()
+    sale = db.execute("SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,p.cpf,e.name event_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales_net s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id WHERE s.id=?", (sale_id,)).fetchone()
     if not sale:
         return "Venda não encontrada", 404
-    items = db.execute("SELECT i.*,p.name product_name FROM sale_items i JOIN products p ON p.id=i.product_id WHERE i.sale_id=? ORDER BY i.id", (sale_id,)).fetchall()
-    return render_template("report_sale_detail.html", sale=sale, items=items)
+    items = db.execute("SELECT i.*,p.name product_name FROM sale_items_net i JOIN products p ON p.id=i.product_id WHERE i.sale_id=? ORDER BY i.id", (sale_id,)).fetchall()
+    from src.services.item_cancellations import cancellation_history
+    return render_template("report_sale_detail.html", sale=sale, items=items, cancellations=cancellation_history(db,sale_id))
 
 
 @bp.get("/vendas/<int:sale_id>.pdf")
 @roles_allowed("manager")
 def sale_detail_pdf(sale_id):
     db = get_db()
-    sale = db.execute("SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,e.name event_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id WHERE s.id=?", (sale_id,)).fetchone()
+    sale = db.execute("SELECT s.*,COALESCE(p.name,s.guest_name,'Convidado') player_name,e.name event_name,COALESCE(s.paid_at,s.created_at) sale_date FROM sales_net s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN bar_events e ON e.id=s.event_id WHERE s.id=?", (sale_id,)).fetchone()
     if not sale:
         return "Venda não encontrada", 404
-    items = db.execute("SELECT i.*,p.name product_name FROM sale_items i JOIN products p ON p.id=i.product_id WHERE i.sale_id=? ORDER BY i.id", (sale_id,)).fetchall()
+    items = db.execute("SELECT i.*,p.name product_name FROM sale_items_net i JOIN products p ON p.id=i.product_id WHERE i.sale_id=? ORDER BY i.id", (sale_id,)).fetchall()
     return send_file(build_sale_detail_pdf(sale, items), mimetype="application/pdf", as_attachment=False, download_name=f"venda-{sale_id}.pdf")
 
 
@@ -149,7 +150,7 @@ def sale_detail_pdf(sale_id):
 def consolidated():
     db = get_db()
     start, end = _period()
-    sales = db.execute("SELECT COALESCE(SUM(total_cents),0) total,COUNT(*) count FROM sales WHERE paid=1 AND date(COALESCE(paid_at,created_at)) BETWEEN ? AND ?", (start, end)).fetchone()
+    sales = db.execute("SELECT COALESCE(SUM(net_total_cents),0) total,COUNT(*) count FROM sales_net WHERE paid=1 AND date(COALESCE(paid_at,created_at)) BETWEEN ? AND ?", (start, end)).fetchone()
     memberships = db.execute("SELECT COALESCE(SUM(amount_cents),0) total,COUNT(*) count FROM membership_payments WHERE date(created_at) BETWEEN ? AND ?", (start, end)).fetchone()
     finance = db.execute("SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount_cents ELSE 0 END),0) incoming,COALESCE(SUM(CASE WHEN direction='out' THEN amount_cents ELSE 0 END),0) outgoing FROM finance_movements WHERE date(created_at) BETWEEN ? AND ?", (start, end)).fetchone()
     return render_template("report_consolidated.html", start=start, end=end, sales=sales, memberships=memberships, finance=finance, balance=finance_summary(db), bar=latest_bar_balances(db))
@@ -195,8 +196,8 @@ def sports_material_report():
                    COALESCE(SUM(CASE WHEN s.id IS NOT NULL THEN i.quantity*i.unit_cost_cents ELSE 0 END),0) cost_cents,
                    MAX(CASE WHEN s.id IS NOT NULL THEN COALESCE(s.paid_at,s.created_at) END) last_sale_at
             FROM products p
-            LEFT JOIN sale_items i ON i.product_id=p.id
-            LEFT JOIN sales s ON s.id=i.sale_id AND s.paid=1
+            LEFT JOIN sale_items_net i ON i.product_id=p.id
+            LEFT JOIN sales_net s ON s.id=i.sale_id AND s.paid=1
               AND date(COALESCE(s.paid_at,s.created_at)) BETWEEN ? AND ?
             WHERE p.category=?{product_filter}
             GROUP BY p.id,p.name,p.category,p.stock,p.min_stock
@@ -214,7 +215,7 @@ def sports_material_report():
     ).fetchall()
     pending_orders = db.execute(
         """SELECT COUNT(DISTINCT s.id) total
-           FROM sales s JOIN sale_items i ON i.sale_id=s.id JOIN products p ON p.id=i.product_id
+           FROM sales_net s JOIN sale_items_net i ON i.sale_id=s.id JOIN products p ON p.id=i.product_id
            WHERE p.category=? AND s.ready_for_delivery=1 AND s.delivered_at IS NULL
              AND (s.paid=1 OR s.payment_status='pending_cash')""",
         (SPORTS_MATERIAL_CATEGORY,),

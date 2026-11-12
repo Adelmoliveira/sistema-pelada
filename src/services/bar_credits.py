@@ -217,6 +217,7 @@ def credit_cash_change(db, player_id, amount_cents, sale_id, created_by=None):
     amount_cents = int(amount_cents)
     if amount_cents <= 0:
         raise ValueError("O troco convertido deve ser maior que zero.")
+    _lock_credit_account(db, player_id)
     existing = db.execute(
         """SELECT balance_after_cents FROM bar_credit_transactions
            WHERE sale_id=? AND type='ADJUSTMENT'
@@ -340,6 +341,8 @@ def approve_topup(db, topup, payment_id=None, created_by=None):
     row = db.execute("SELECT * FROM bar_credit_topups WHERE id=?", (topup_id,)).fetchone()
     if not row:
         return False
+    _lock_credit_account(db, row["player_id"])
+    row = db.execute("SELECT * FROM bar_credit_topups WHERE id=?", (topup_id,)).fetchone()
     if int(row["paid"] or 0):
         return True
     account = ensure_account(db, row["player_id"])
@@ -376,6 +379,7 @@ def adjust_balance(db, player_id, amount_cents, actor_user_id, reason):
     reason = (reason or "").strip()
     if not amount_cents or len(reason) < 5:
         raise ValueError("Informe um valor diferente de zero e uma justificativa (mínimo de 5 caracteres).")
+    _lock_credit_account(db, player_id)
     account = ensure_account(db, player_id)
     current = int(account["balance_cents"] or 0)
     new_balance = current + amount_cents

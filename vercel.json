@@ -24,7 +24,8 @@
   ],
   "git": {
     "deploymentEnabled": {
-      "feat/push-compras-inteligentes-gestores": false
+      "feat/push-compras-inteligentes-gestores": false,
+      "hotfix/cancelamento-parcial-itens-credito": false
     }
   }
 }
