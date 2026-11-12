@@ -1,5 +1,6 @@
 import unittest
 from datetime import date
+from pathlib import Path
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -11,7 +12,17 @@ from src.services.sports_installment_reconciliation import reconcile_installment
 
 
 class SportsEligibilityTest(unittest.TestCase):
-    setUp=fixtures.MercadoPagoFlowTest.setUp
+    def setUp(self):
+        fixtures.MercadoPagoFlowTest.setUp(self)
+        # Receivables reads checkout closures even when none exist for this plan.
+        # Use the official migration, adapting only PostgreSQL types for SQLite.
+        migration = Path(__file__).resolve().parents[1] / 'supabase/migrations/20261005010000_pix_checkout_closures.sql'
+        sql = migration.read_text().replace('BIGSERIAL PRIMARY KEY', 'INTEGER PRIMARY KEY').replace('TIMESTAMPTZ', 'TEXT')
+        with app.app_context():
+            db = get_db()
+            db.conn.executescript(sql)
+            db.commit()
+
     tearDown=fixtures.MercadoPagoFlowTest.tearDown
     create_sports_schema=fixtures.MercadoPagoFlowTest.create_sports_schema
     create_sports_product=fixtures.MercadoPagoFlowTest.create_sports_product
