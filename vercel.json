@@ -24,7 +24,8 @@
   ],
   "git": {
     "deploymentEnabled": {
-      "feat/push-compras-inteligentes-gestores": false
+      "feat/push-compras-inteligentes-gestores": false,
+      "test/fix-sports-eligibility-fixture": false
     }
   }
 }
