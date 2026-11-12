@@ -25,7 +25,8 @@
   "git": {
     "deploymentEnabled": {
       "feat/push-compras-inteligentes-gestores": false,
-      "hotfix/cancelamento-parcial-itens-credito": false
+      "hotfix/cancelamento-parcial-itens-credito": false,
+      "test/fix-sports-eligibility-fixture": false
     }
   }
 }
